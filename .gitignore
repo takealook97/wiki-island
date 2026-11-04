@@ -1,0 +1,6 @@
+/target/
+.cache/
+.DS_Store
+.wiki-island/local/
+.omc/
+output/

@@ -1,0 +1,5 @@
+# Decision I8: every fsync goes through wi_history::durable::{barrier, barrier_dir}.
+disallowed-methods = [
+    { path = "std::fs::File::sync_all", reason = "use wi_history::durable::barrier (durability modes)" },
+    { path = "std::fs::File::sync_data", reason = "use wi_history::durable::barrier (durability modes)" },
+]
