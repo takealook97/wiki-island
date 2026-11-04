@@ -20,8 +20,11 @@ mod lock;
 mod manifest;
 mod missing;
 mod pin;
+mod recovery;
 mod vault;
 
+#[cfg(test)]
+mod barrier_tests;
 
 pub use changes::{PublicationMark, changed_paths_since, publication_mark};
 pub use cloud::cloud_sync_warning;
@@ -36,6 +39,10 @@ pub use manifest::{
 };
 pub use missing::{Missing, MissingEntry};
 pub use pin::{PinRef, PinResolution, PinSource, resolve_pin};
+pub use recovery::{
+    ConflictEntry, FsWorkingTree, QuarantineEntry, Recovery, RecoveryReport, UnsettledIntent,
+    WorkingTree,
+};
 pub use vault::{Blob, BlobId, Vault, blob_id_of, generation, hash_bytes, publication_state};
 
 /// Trailer naming the internal manifest sequence id: `Wi-Seq: <seq> <manifest-id>`.

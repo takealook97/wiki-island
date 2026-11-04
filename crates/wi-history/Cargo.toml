@@ -17,6 +17,11 @@ toml_edit = "0.23"
 # Crash and race hooks driven by `WI_FAULT` (tests only).
 fault-injection = []
 
+[[bin]]
+name = "wi-history-testproc"
+path = "src/bin/wi-history-testproc.rs"
+required-features = ["fault-injection"]
+
 [dev-dependencies]
 wi-history = { path = ".", features = ["fault-injection"] }
 tempfile = "3"
