@@ -8,26 +8,34 @@
 //! prefix. See `docs/OPERATIONS.md#publisher-and-manifest`.
 #![forbid(unsafe_code)]
 
+mod changes;
 mod cloud;
 pub mod durable;
 mod error;
 mod fault;
 mod flush;
 mod gitops;
+mod history;
 mod lock;
 mod manifest;
+mod missing;
+mod pin;
 mod vault;
 
 
+pub use changes::{PublicationMark, changed_paths_since, publication_mark};
 pub use cloud::cloud_sync_warning;
 pub use durable::Durability;
 pub use error::{HistoryError, Result};
 pub use flush::{CommitSummary, FlushBlock, FlushReport, Flusher};
+pub use history::{Deletion, History, HistoryEntry, OperationHit, OperationScan, OperationTrailer};
 pub use lock::{FlushLock, PublisherGuard, PublisherLock};
 pub use manifest::{
     BatchMark, IngestRecord, IntentRecord, Manifest, ManifestEntry, ManifestSnapshot, OpRecord,
     OpStatus, Seq,
 };
+pub use missing::{Missing, MissingEntry};
+pub use pin::{PinRef, PinResolution, PinSource, resolve_pin};
 pub use vault::{Blob, BlobId, Vault, blob_id_of, generation, hash_bytes, publication_state};
 
 /// Trailer naming the internal manifest sequence id: `Wi-Seq: <seq> <manifest-id>`.
