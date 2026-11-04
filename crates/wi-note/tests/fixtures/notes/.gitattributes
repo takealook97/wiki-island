@@ -1,0 +1,3 @@
+# Preserve byte fixtures and intentional empty bodies.
+bytes/crlf.md -text whitespace=cr-at-eol
+edge-cases/empty.md whitespace=-blank-at-eof
