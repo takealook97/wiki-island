@@ -24,3 +24,6 @@ memchr = "2"
 tempfile = "3"
 criterion = "0.7"
 
+[[bench]]
+name = "index"
+harness = false
