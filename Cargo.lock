@@ -149,6 +149,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono"
+version = "0.4.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
+dependencies = [
+ "num-traits",
+ "serde",
+]
+
+[[package]]
 name = "clru"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1795,6 +1805,20 @@ dependencies = [
  "thiserror",
  "toml_edit 0.23.10+spec-1.0.0",
  "wi-history",
+]
+
+[[package]]
+name = "wi-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "proptest",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "wi-note",
 ]
 
 [[package]]
