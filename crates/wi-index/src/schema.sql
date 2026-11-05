@@ -1,0 +1,16 @@
+CREATE TABLE index_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE files(path TEXT PRIMARY KEY, mtime_ns TEXT NOT NULL, size INTEGER NOT NULL, content_hash TEXT NOT NULL);
+CREATE TABLE notes(path TEXT NOT NULL UNIQUE REFERENCES files(path) ON DELETE CASCADE, permalink TEXT NOT NULL, title TEXT NOT NULL, note_type TEXT NOT NULL, content TEXT NOT NULL, metadata TEXT NOT NULL CHECK(json_valid(metadata)));
+CREATE INDEX notes_permalink ON notes(permalink);
+CREATE INDEX notes_title ON notes(title);
+CREATE INDEX notes_type ON notes(note_type);
+CREATE TABLE observations(path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE, category TEXT, content TEXT NOT NULL, tags TEXT NOT NULL, context TEXT, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL);
+CREATE INDEX observations_path ON observations(path);
+CREATE TABLE relations(from_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE, to_name TEXT NOT NULL, to_path TEXT, relative_target TEXT, relation_type TEXT NOT NULL, target_file INTEGER NOT NULL DEFAULT 0, UNIQUE(from_path,to_name,relation_type));
+CREATE INDEX relations_from ON relations(from_path);
+CREATE INDEX relations_to ON relations(to_path);
+CREATE INDEX relations_name ON relations(to_name);
+CREATE INDEX relations_relative ON relations(relative_target);
+CREATE VIRTUAL TABLE search_fts USING fts5(title,content,script_ngrams,permalink,tokenize='unicode61',prefix='1 2 3 4');
+CREATE TABLE operations(op_id TEXT PRIMARY KEY, request_digest TEXT NOT NULL, commit_id TEXT NOT NULL, seq INTEGER, path TEXT NOT NULL, moved_from TEXT);
+CREATE TABLE lifecycle_snapshots(path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE, content_hash TEXT NOT NULL, format TEXT NOT NULL, snapshot TEXT);

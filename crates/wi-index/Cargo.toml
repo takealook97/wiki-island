@@ -1,0 +1,26 @@
+[package]
+name = "wi-index"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wi-note = { path = "../wi-note" }
+wi-lifecycle = { path = "../wi-lifecycle" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+sha2 = "0.10"
+rayon = "1"
+ignore = "0.4"
+dirs = "6"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+unicode-normalization = "0.1"
+unicode-general-category = "1"
+memchr = "2"
+
+[dev-dependencies]
+tempfile = "3"
+criterion = "0.7"
+
