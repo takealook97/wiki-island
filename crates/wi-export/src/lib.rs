@@ -5,5 +5,6 @@ pub mod install;
 pub mod local;
 pub mod procedures;
 pub mod rules;
+pub mod service;
 pub mod skills;
 pub use rules::{Host, Regenerator, export_rules};
