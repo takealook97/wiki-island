@@ -1,0 +1,211 @@
+# Operations
+
+How the engine writes, records history, watches, recovers and maintains itself. Crates: `wi-history` (git, manifest, flush, replay), `wi-store` (write path, ingress, watcher, recovery, maintenance), `wi-export` (service), `wi-docs` (import).
+
+## Write path
+
+Every engine write, from the CLI or a `wi_*` tool, runs these steps:
+
+1. Resolve the target path or permalink. Ordinary tools refuse the vault config, generated exports, anything under `.git` and paths outside the vault, and never follow a symlink. Names are compared by file-system identity ([path identity](#path-identity-and-containment)).
+2. If the caller gave an operation id, look it up first ([idempotency](#idempotency-and-first-results)). A known id returns its first result before any checksum check.
+3. Take the [publisher lock](#publisher-and-manifest). Hash the current file (`old_hash`). If the caller gave an expected checksum and it differs, the write is refused as stale. Reserve the change budget if the operation removes a current claim ([KNOWLEDGE](KNOWLEDGE.md#conflicts-and-the-automatic-change-cap)); the reservation is recorded in the intent.
+4. Write a temp file in the same directory and fsync it.
+5. Write the new bytes as a git blob and make it durable (object file and directory fsync).
+6. Append an `intent` record to the manifest and fsync it.
+7. Exchange or rename the temp file into place ([editor race](#editor-race)).
+8. Append a `done` record and fsync it. **The write is acknowledged here.** The vault generation advances and the lock is released.
+9. Update the index. If this fails, the response carries `index: pending` and the next start repairs the index.
+10. Enqueue the commit ([Git history](#git-history-and-sync)). Commits are coalesced and are not part of the acknowledgment.
+
+Steps 4 and 5 run before the lock: the temp file is `<dir>/.<name>.wi-tmp-<pid>-<n>-<nanos>`. The lock is released before the index update. Edits read and transform the note before the lock and require the read hash under it; a concurrent change makes the edit redo itself up to three times unless the caller pinned a checksum.
+
+- Frontmatter edits are byte-preserving ([FORMAT](FORMAT.md#byte-preserving-frontmatter-edits)).
+- **Current state.** The current state of a note is the durable working-tree file after fsync, identified by its content hash. It is not HEAD. There is no current-pointer file.
+- **Ingress actor.** Each operation records its actor (CLI, MCP, watcher, import, engine) in the manifest and in a commit trailer. The actor is separate from a note's `origin` ([AUTHORITY](AUTHORITY.md#origin-by-ingress)).
+- **Crash recovery.** A crash before step 6 leaves the old file and no record. For an `intent` without `done`, startup compares the target's hash: equal to `new_blob` completes the operation with the recorded actor; equal to `old_hash` drops the intent; anything else keeps both versions as a conflict and opens a work item. A refused write changes nothing. A failure after step 8 never undoes the acknowledged file.
+- **Multi-file operations** are ordered so that read-time rules keep every intermediate state safe: a supersede writes the successor first; an archive moves the note first, and any note under `archive/` counts as archived whatever its status key; a conflict flag is written to the candidate first.
+- **No delete.** Archiving moves a note to `archive/`, keeping its relative path, permalink and history.
+- **Missing.** A note deleted outside the engine is detected (by the watcher, a scan or `wi reindex`) and recorded as `missing` in a work item. Its content stays recoverable from git.
+- **Engine-owned fields.** A write or edit through `cli` or `mcp` that sets or changes `status`, `adoption`, `check`, `conflict_with`, `origin`, `excluded`, `work`, `deferred`, `work_id`, `work_kind` or `restores` is refused (`restores` is allowed at creation). A replace that omits an existing engine-owned key keeps its value. MCP may not change claim content of a `memory`, `capture` or `work` note, nor change a lifecycle note's `type`: `claim-edit-requires-candidate`.
+- **Origin at creation.** A note created through `cli` gets `origin: {kind: user, locator: "cli:write", captured_at}`; through `mcp`, `kind: agent`; through import, `kind: file`. The key is appended byte-preservingly. A change that makes a plain note a lifecycle note is a creation: `origin` comes from the current ingress. A `cli` change of claim content sets `origin.kind=user` and resets a non-candidate memory note to `status: candidate`, as file ingress does.
+- **Engine-owned work state.** Write, edit, move, archive and revert through `cli` or `mcp` refuse paths under the work directory (`protected-path`) and any note whose old or new `type` is `work` (`engine-owned-field`). With `lifecycle: on`, a lifecycle note with a future or unparseable `observed_at`, `checked_at` or observation time is refused (`future-timestamp`, `unparseable-timestamp`).
+- **Revert.** `wi revert` restores old bytes as a new write. A lifecycle note is refused with `lifecycle-revert-requires-fork`; the lifecycle restores it as a fork with `restores`. A missing file is restored through the creation checks.
+- **Locked notes.** `locked: true` refuses every engine write, edit, move and archive.
+- **Conflict markers.** A file with `<<<<<<<`, `=======` and `>>>>>>>` at line starts is refused for engine writes; ingress records a `merge-conflict` work request; index hits carry `conflict_markers: true`.
+- **Index pending.** A failed index update returns `index: pending` and appends the paths to `.git/wi/index-pending`; the next open or maintenance pass re-indexes them. If repair fails (an unusable cache), the open still succeeds: `OpenReport.index_degraded` and `wi doctor` report it, reads and writes work, and search uses the literal scan. The next CLI command or maintenance pass then rebuilds the index from the files on its own; only if that also fails does the command print one plain warning, and it tries again next time. No manual step is needed. A repair takes the marker by renaming it to `index-pending.claim-<pid>-<n>-<ns>` under the marker lock; writers always append to a fresh marker, and the repair deletes only its claims. Claims left by a stopped repair are taken over by the next one.
+- **Generation.** Write results carry `generation` = their `done` sequence id. Reads and searches take the publication state (generation and any open intent) before and after reading and retry once unless both are equal with no intent open; a second inconsistency yields `generation-changed`.
+- **Fault hooks.** `WI_FAULT` = `before_intent_fsync`, `after_intent_before_swap`, `after_swap_before_done`, `after_done` abort the process; `index_update` makes the index update fail; `lifecycle_after_candidate` aborts after an adopted candidate is written and before its targets are marked `superseded`. Unset in normal operation.
+
+### Editor race
+
+An editor can save between step 3 and step 7. Where the platform has an atomic exchange (Linux `renameat2` with `RENAME_EXCHANGE`, macOS `renameatx_np` with `RENAME_SWAP`; `NOREPLACE` for creates), the engine swaps the new file in and hashes the displaced bytes. If they differ from `old_hash`, it keeps them as a conflict copy `<dir>/.<name>.wi-conflict-<seq>` with a `conflict-copy` work request, so nothing is lost; a create that loses a race swaps instead and keeps the editor's file the same way. A move takes its source aside as `.<name>.wi-moved-<seq>`, then removes it if unchanged or keeps it as a conflict copy. Where exchange is unsupported (`EINVAL`/`ENOTSUP`/`ENOSYS`, for example exFAT), the engine re-hashes the target, refuses as stale on a change, then renames; the window is best effort. Displaced bytes that matched the precondition are re-hashed through the engine's open handle right before they are unlinked; changed bytes become a conflict copy and the result names it. An editor that writes through a descriptor opened before the swap, after this final check, still loses that write.
+
+| Platform / filesystem | Evidence | Limit |
+| --- | --- | --- |
+| macOS arm64 / APFS | race tests pass | process crashes tested; power loss untested |
+| Linux arm64 / overlay, tmpfs, btrfs | race tests pass in a container | no bare-metal, ext4 or power-loss claim |
+| Windows | atomic exchange not implemented | Rust-only type check; runtime untested |
+| exFAT | exchange returns `ENOTSUP` | re-hash then rename |
+
+### Idempotency and first results
+
+The operation id is scoped to the vault. The request digest covers the tool, the target and the arguments. The same id with the same digest returns the first result; with a different digest it is refused. The durable record is the manifest record, then the commit trailer `Wi-Operation: <id> <request-digest>`, so it survives restart and index deletion. Across devices the guarantee holds only after sync.
+
+A write with an operation id stores `{op_id, request_digest, manifest_id, seq, path, checksum, previous_checksum, conflict_copy, moved_from}` at `.git/wi/ops/<h[..2]>/<h[2..]>.json` (`h` = SHA-256 of the id) after the swap and before `done`. A retry returns these fields with `replayed: true`; `generation` and `index` are current. Lookup order: unretired manifest records, then the stored result when its sequence id is retired in the same manifest epoch, then commit trailers. A result found only in trailers has path, checksum, sequence id, `moved_from` and the conflict copy, but no `previous_checksum`. The device index keeps a disposable table `operation id → commit, digest, seq, path, moved-from` plus the newest scanned commit, so a new id costs one SQLite lookup instead of a walk over every commit.
+
+### Path identity and containment
+
+- **Identity.** Protected names are compared component by component after folding: Unicode NFC, lowercase, NFC again, on every platform. `.GIT`, `.Wiki-Island`, `Exports` or a decomposed `café` are refused wherever `.git`, `.wiki-island`, an export path `exports` or `café` would be. Ordinary note names are not folded: two spellings that alias on APFS are one file to the file system but two paths to git (a limit).
+- **Absolute input.** Only the prefix that resolves to the canonical vault root is canonicalized. Components inside the vault are checked as given; an in-vault symlink is refused.
+- **Containment.** Every file operation of the write path, reads, ingress and recovery opens directories one component at a time from the root with `O_NOFOLLOW | O_DIRECTORY` and acts relative to that descriptor (`openat`, `renameat`, `unlinkat`). A symlink or non-directory component is refused, and a directory replaced after the check cannot redirect the operation.
+- **Persisted paths.** Paths read from the manifest get the same treatment before any read or change. A changed directory leaves outside bytes untouched and records `recovery-problem`.
+
+## Git history and sync
+
+- Commits are coalesced in an in-process queue: flushed in batches off the hot path, one commit per acknowledged operation, one per bulk import. The queue flushes on exit, including a one-shot CLI exit.
+- The watcher commits external editor changes after a debounce. On Linux it expands directory events into file ingress using the vault's ignore rules, without following symlinks.
+- `wi commit` commits pending changes by hand.
+- **Pending manifest.** Until a commit covers it, every acknowledged engine save is recoverable from its git blob and manifest record. Startup replays the manifest before it accepts writes: it settles open intents, commits each uncommitted `done` record, then publishes remaining external changes as watcher ingress.
+- **Limit.** Intermediate external-editor saves the engine never saw are not preserved.
+- Revert never rewrites history. It is a new commit that restores earlier bytes; for a lifecycle note it is a new note with `restores` that runs the gates again.
+- `wi history` and `wi revert`, and MCP `wi_history` and `wi_revert`, show a note's git log and run revert. Renames are not followed: history of a moved note is under its old path.
+- Sync is an optional git remote, through push and pull. The index is never synced; each device rebuilds its own.
+- **Merge conflicts are never resolved automatically.** A note left with conflict markers gets the `conflict` flag and a work item. The engine does not write into that file. The owner resolves it in any editor, and the next commit clears it.
+- Never put `.git` inside an iCloud Drive or Google Drive folder ([DESIGN](DESIGN.md#storage-and-history)).
+
+## Publisher and manifest
+
+- **One publisher per vault.** A short OS advisory lock on a file inside `.git` (`.git/wi/publish.lock`) serializes publishing. It is held only from the budget reservation through the manifest records (steps 3-8), never across a model or network call.
+- **Files** in `.git/wi/`: `manifest.log`, `publish.lock`, `flush.lock` (serializes flush, replay and revert), `quarantine/<time_ms>-<offset>.bin`, `ops/`, `work-requests.jsonl`, `index-pending`, `watcher-lease`.
+- **Framing.** The manifest starts with the line `wi-manifest 1`. Each frame is a little-endian `u32` payload length, the first 8 bytes of SHA-256 of the payload, then one JSON record. Every append is one write followed by a file barrier.
+- **Records.** `checkpoint {manifest_id, next_seq, generation, retired_upto}` is always first. `intent {seq, op_id?, request_digest, actor, path, moved_from?, old_hash?, new_hash, new_blob, revert_of?, batch?, losses?, time_ms}`, `done {seq}`, `ingest {seq, actor, path, new_hash, new_blob, batch?}`, `abort {seq}`, `conflict {seq, current_hash}` and `conflict_ack {seq}`. Hashes are `sha256:<hex>`; `new_blob` is the git blob id. Open intents have disjoint paths; an `intent` or `ingest` on a path an open intent changes is refused.
+- **Blob before record.** `Blob::write_durable` barriers the loose object, its fan-out directory and the objects directory; an append refuses a blob id the object database lacks.
+- **Retirement** rewrites the log atomically (temp file, barrier, rename, directory barrier) as a new checkpoint plus the byte-identical frames of later records. The manifest id is random, so sequence ids never collide across devices.
+- **Sequence high-water mark.** A sequence id is never handed out twice within one manifest id. Quarantine does not roll `next_seq` back; gaps are harmless.
+- **Corrupt tail.** A record that fails its frame or checksum, and everything after it, is moved to a quarantine file inside `.git` (durable first), and a work item is opened. Nothing is silently dropped.
+- **Generation.** Every publish advances the vault generation, the sequence id of the last published record; it survives retirement.
+- **Committed-record check.** A record counts as already committed only when the commit naming its sequence id also holds it (`Wi-Actor` or `Wi-Batch` matches and each path effect is visible in the commit tree or superseded by a later record). Otherwise the flush stops with `CommittedMismatch`.
+- **Commits.** Each carries `Wi-Seq: <seqs> <manifest-id>`, `Wi-Actor`, and when present `Wi-Operation`, `Wi-Batch`, `Wi-Moved-From`, `Wi-Revert` and one `Wi-Loss: <json>` per charged loss event (`{at, target, entities, kind, actor}`). The branch moves only by compare-and-swap from the parent the flush built on; a moved branch fails the flush with nothing forced or retired. After a commit the git index is rewritten from the new tree (best effort) so a manual `git commit` keeps engine files.
+- **Flush stops** at an open intent, an unacknowledged conflict, a `CommittedMismatch`, or the first record of a bulk batch whose `last` record is not yet appended; it retires only the prefix whose records are all committed or settled. A batch commits as one commit at the position of its `last` record; records interleaved with it commit first as their own commits. The tree after the last commit equals applying every record in manifest order.
+- **Replay** order: quarantine a frame that fails its length, checksum, decoding or ordering check together with everything after it; settle the open intent through a `WorkingTree` hash; flush. A conflict blocks the flush until `Manifest::ack_conflict`.
+- **Revert.** `History::revert` flushes first and then, holding the publisher lock through the ref update, refuses with `PendingFlush` while any record is left.
+- **Limits.** An import that dies mid-batch blocks the flush until a record with the same batch id and `last: true` is appended. Power loss is not simulated; crash tests kill the process, and barrier order is asserted on an in-process trace.
+
+### Durability modes
+
+Vault config key `durability`, `"standard"` (default) or `"full"`; `Vault::with_durability` overrides it. An unknown value or unreadable config fails `Vault::open` with `InvalidConfig`. Every barrier goes through `wi_history::durable::{barrier, barrier_dir}`; the workspace `clippy.toml` disallows direct `File::sync_all` and `File::sync_data`.
+
+- `standard`: POSIX `fsync` on files and directories. On Apple platforms it orders writes and survives process and OS crashes but may not survive power loss, because the drive cache is not flushed. This follows Apple's `fsync(2)` and `fcntl(2)` man pages; it is not measured here.
+- `full`: `F_FULLFSYNC` on Apple platforms, falling back to `fsync` only where unsupported; `fsync` elsewhere.
+
+Ordering rules are identical in both modes.
+
+### Barrier order
+
+- **Save:** blob object, its fan-out directory and `objects/` → manifest `intent` append → working-tree write → `done` append.
+- **Flush, per commit:** commit object, root tree, and every tree and blob along each changed path (including the path a move removed) → ref update → ref file and every directory up to `.git/refs` → retirement.
+- **Flush of already-committed records:** the commits holding them, along their paths, and the ref again → retirement. A visible ref is not proof that its barrier completed.
+- **Init:** the repository is built in `.wiki-island-init.tmp/`; every file and directory of its `.git` passes the barrier; then `.git` is renamed into the vault root. Opening then barriers the root and only afterwards writes `.git/wi/init-complete`. An absent marker makes the next open or init redo the root barrier before any write.
+- **Quarantine:** quarantine file and directory → manifest rewrite.
+
+Setup records absolute host configuration paths, skill directories, the setup home and cache root in `.wiki-island/local/targets.json`; automatic skill sync and uninstall use those recorded destinations, and the service sets that home explicitly. Existing vault notes and index rebuilds are unaffected; installations without recorded destinations skip automatic host writes until setup records them.
+
+Rule exports share a device-local digest and refresh after watcher maintenance, MCP background work and `wi maintain`; unchanged rules do not cause publications. Log rotation failures warn once per watcher and leave background care running. Doctor counts ready work items as tasks for the AI; maintenance reports the same count in its summary and `tasks_ready` result field.
+
+## Watcher
+
+The watcher runs inside the MCP server, `wi watch` or the service. Nothing requires it.
+
+- **Ready versus catch-up.** "Ready" (≤ 300 ms) means usable with no vault scan. Before answering, a one-shot CLI query runs a stat-walk catch-up: a directory walk that hashes a file only when its stat data changed.
+- The MCP server answers `initialize` before any vault scan: reconciliation, the stat catch-up and rules-export regeneration run on its background thread. Until they finish, results carry the older `index_as_of`, and a current read may report `generation-changed` while startup publications touch its dependency set; clients retry only that diagnostic.
+- **Correlation.** The watcher ignores an event whose path and hash match an in-flight (`intent`) or `done` manifest record, comparing the file's git blob id with the newest manifest record for the path, else with the blob at the branch tip. The comparison runs under the publisher lock, so an event that arrives during an engine write waits for `done`. Only an unmatched change is file ingress: the watcher publishes it as an `ingest` record (blob first, actor `watcher`).
+- `notify` through `notify-debouncer-mini`, debounce `watch_debounce_ms` (default 200 ms). The watcher thread opens its own vault handle. Each debounced batch is ingested, indexed and flushed. Engine scratch files, `.git`, `.wiki-island/local`, `.obsidian/`, `.trash/` and `.gitignore` matches are skipped. A directory is matched with directory semantics before it is read, so an ignored directory, even an unreadable one, is pruned without an error. `wi commit` runs the same ingress over the whole vault (`reconcile`) and records tracked files missing from the working tree.
+- **Order and retry.** `wi watch` starts the watcher first, then runs `reconcile` and `flush` while events queue, then enters the loop, so a change during start-up is not lost. When a flush fails, the watcher keeps a dirty flag and retries every 5 s, and keeps the shutdown flush.
+- **Repair scan.** The watcher runs a stat-scoped repair scan at start, every 30 s, and within 1 s (coalesced) after a backend error or a skipped directory event, so a save the event stream missed still reaches history. A repair succeeds only when the scan reports no failed paths; otherwise the lease is withdrawn and a retry follows after `min(30 s, 5 s)`.
+- **Lease.** A running watcher writes `.git/wi/watcher-lease` (magic, pid, host name, heartbeat in ms, per-watcher token), refreshed every 2 s and removed on stop only when the token is its own. While a lease is held, `auto_ingest` returns an empty report, so one-shot commands skip the stat scan. A lease counts as held only when the host name matches, the heartbeat is within 10 s and the pid is alive. The 2 s, 10 s, 30 s and 5 s values are unmeasured policy choices.
+- Results carry `index_as_of`. A current read re-verifies the file hash of each returned hit (at most 8) and re-reads or withholds on a mismatch.
+- **Ingress on lifecycle notes.** A new `memory`, `capture` or `work` note without `origin` gets `origin.kind=user`; a claim-content change sets `origin.kind=user` and resets a `memory` note's `status` to `candidate`. This is an engine write recorded after the `ingest`; the gates then run.
+- **Hooks.** `Vault::watch_with_hooks(tuning, WatchHooks { on_maintained })` lets the CLI react to a maintenance pass; the older watch APIs remain.
+
+## Index rebuild and fallback
+
+- `wi reindex` rebuilds the device index from files. Deleting the index loses nothing; file-first writes leave no state that files cannot rebuild.
+- If the index is missing or corrupt, search uses a literal file scan; those hits are labelled `fallback`. A change of the index schema version rebuilds it on open, and maintenance rebuilds it on detected drift.
+- The `lifecycle_snapshots` table holds one row per lifecycle note: the indexed content hash, a format tag (`note-snapshot/1/<crate version>`) and the parsed snapshot. A row with another format tag is ignored, so a binary that parses differently re-reads the files until the index is rebuilt.
+
+## Maintenance
+
+`Vault::maintain(&MaintainOptions { full, time_budget }) -> MaintainReport` ([KNOWLEDGE](KNOWLEDGE.md#self-maintenance) lists what a pass does). `MaintainReport` is serializable: `repaired`, `index_rebuilt`, `work_created`, `work_closed`, `procedures_changed`, `migrated`, `elapsed_ms`, `complete`. A pass is idempotent and deterministic, commits nothing and writes nothing when nothing changed, and calls no model or network. It also moves work notes from an older layout into `.wiki-island/` once (`migrated`); existing captures stay where they are. Archiving honors the configured `archive_dir`. Notes under the default `archive/` folder or any previously configured archive directory remain archived when `archive_dir` changes. A pass records the vault generation and redoes scan input that becomes stale. It publishes at most one commit for all work-item changes and the built-in procedure refresh. Host-config backups taken by `wi setup` live in `.wiki-island/local/backups/`. `write_attachment` and every import write refuse `.wiki-island` and `.git` at any depth.
+
+- `wi maintain [--full] [--json]` runs one pass now (`--full` also compares every file with the index).
+- **Cleanup.** A pass removes engine temp files whose writer process is dead and that no open intent or recovery problem references; they hold only engine bytes nobody acknowledged. It closes any work item whose cause is gone, for example a gate item for a note that became active, and a recheck for a request already converted.
+- **Owner deletes and renames.** A delete or rename made in an editor or Obsidian is committed automatically as an owner action; no recheck work item is opened for it.
+- **Schedule.** The watcher runs a pass after its first repair, then only when the vault generation changed since the last pass, at most once per 15 minutes (`WatchTuning::maintain_interval`), plus one full pass per 24 hours (`full_maintain_interval`). Idle cost is one generation check. A pass runs on the watcher thread between events with a time budget (default 2 s per slice) and resumes on the next tick. No new daemon.
+- Skills sync does not depend on maintenance: it is driven by a persisted digest that the watcher, the MCP server and the CLI each compare ([INTEGRATIONS](INTEGRATIONS.md#skills-export)). The MCP server also notices when the index file was replaced and reopens it.
+
+## Work items
+
+A work item is a `type: work` note under `.wiki-island/work/` with `work: {target, state, next_action, next_trigger, outcome, reason, limits, reopen}` ([FORMAT](FORMAT.md#status-sets)).
+
+- States: `ready` → `investigating` → `checkpointed` → `closed`.
+- Closed outcomes: `adopted`, `narrowed`, `alternative`, `not_supported`, `evidence_unavailable`, `closed_without_supported_answer`.
+- Every outcome except `adopted`, `narrowed` and `alternative` needs `limits` and a concrete `reopen` trigger. A failed or unsupported result stays visible as unresolved and never counts as success.
+- A stop for time or budget alone is `checkpointed`, never `closed`.
+- Triggers: `session` (start or end), `source-change`, `query` (a miss), `cooldown`. An empty pass writes nothing.
+- Sources: pending captures, failed or undecidable gates, conflicts, invalid `supersedes` targets, drift rechecks, ingest failures, `missing` notes, merge conflicts, recovery conflicts, quarantined manifest tails, deferred capped changes and procedure health problems. Maintenance closes an item automatically when its cause is gone.
+- `wi work list|close|open-conflict` and `wi_work` (`list`, `open`, `close`, `sweep`, `next`) list, open and close items; a close that lacks the required limits or reopen trigger is refused (`work-close-refused`).
+- Per-device requests in `.git/wi/work-requests.jsonl` (deduplicated by kind, path and detail): `conflict-copy`, `recovery-conflict`, `recovery-problem`, `merge-conflict`, `missing`, `quarantine`, `ingest-failed`, `gate`. Maintenance turns them into synced work notes.
+
+## Attachments
+
+Originals stay inside the git repository by default and import never modifies them. For attachments above an unmeasured 20 MiB threshold, `wi doctor` warns and recommends considering Git LFS. LFS setup is never automatic. A hash folder outside git is not provided: it needs another backup and sync contract.
+
+## Document import
+
+`wi import` prints the reason for each failed file in its human output.
+
+`wi import <path>... [--ocr auto|off|required] [--json]` accepts files and directories; for a Notion ZIP or folder export an absolute path outside the vault is allowed (read-only source, converted copy written into the vault). It reads existing vault-relative originals through the contained store reader, extracts locally, checks the source checksum again, and ingests the original bytes with actor `import`. It publishes the run note before the sidecar, each through the expected-checksum write path; the run snapshot lets a retry complete a missing sidecar. A Notion export ([FORMAT](FORMAT.md#notion-exports)) is converted into notes by the same command.
+
+- A CLI invocation, or library `import_many`, uses batch marks for one commit containing all successful publications; `.git/wi/import.lock` serializes import batches. After interruption, recovery settles any open intent and closes abandoned `wi-import-` batches. A retry can make additional commits after a stopped partial batch.
+- Partial per-file failures are reported; other inputs continue, acknowledged output is committed, and the command exits nonzero if any import failed. `wi import <dir>` continues past an unreadable subdirectory or non-UTF-8 name, reporting each as a coded entry, and skips files matched by the vault's ignore rules; explicitly named ignored files report failure.
+- Existing hand-enriched sidecars or inconsistent provenance cause a conflict; move the note aside to import a fresh projection.
+- `Off` never invokes OCR. `Auto` and `Required` use an existing local Tesseract for supported images and PDF pages via local `pdftoppm`; unmet OCR is a reported `needs_ocr` state, never an installation or network operation. PDF pages without extractable native text first try local `pdftotext -layout`, even with `Off`, then rasterization and OCR when enabled. OCR uses `kor+eng` when Korean traineddata exists, otherwise `eng`. Models, VLMs and macOS Vision are not used.
+- **Tool discovery** is tri-state: present (with version), absent (spawn `NotFound`) or unknown (probe timeout, budget, any other probe error). Present and absent are part of the cache identity and final; unknown is transient, retried on the next import, and its cause appears in the run diagnostics.
+- **Timeouts.** Each external extraction tool runs in its own process group with a 60 s timeout per call (`WI_TOOL_TIMEOUT_MS`) and an output cap; a timeout or cap kill stops its descendants too. Each document has a total budget (`WI_IMPORT_BUDGET_MS`). A run that ended `partial` from a timeout or the budget, or `needs_ocr`, is re-extracted on the next import; if the retry fails, the prior original/run pair stays intact. Permanent results are reused from the cache.
+- **Safety bounds** (unmeasured): a 256 MiB source-size preflight; both derived notes must fit `max_note_bytes` (oversized output keeps a whole-page prefix, status `partial`, `pages_not_indexed`); CSV records parse incrementally and stop at the logical-page text bound. These are not a hard process memory limit.
+
+## Zero-maintenance operations
+
+Nothing here puts a daemon, network or model on the capture or search path.
+
+- **Auto-ingest on one-shot commands.** Opening a vault for any `wi` command except `init`, `mcp` and `note` first runs `Vault::auto_ingest`, a stat-scoped reconcile: it ingests (actor `user`) the paths whose stat changed since the last walk and that the engine has not recorded, without hashing unchanged files. The command then flushes before it returns success. A flush failure is returned as an error; if the command itself failed, the flush is still attempted and the command error is reported first. `Vault::open` and MCP `initialize` do not auto-ingest. Cost is O(number of paths): tens of milliseconds at 10,000 notes with nothing changed; a missing cache costs a one-time full compare ([PERFORMANCE](PERFORMANCE.md#targets)).
+- **Ingress-stat cache.** The baseline is a disposable per-device file next to the index cache, keyed by vault id. A stamp is written only after a file's bytes were matched to the manifest or HEAD, or ingested. A missing or invalid cache, or a HEAD change not made by the cache owner, compares the affected paths against history. Every ingress-eligible regular file is covered, attachments included. Deleting the cache loses nothing.
+- **Limit.** A change that preserves size, mtime, ctime and inode is detected only by the full compare: `wi commit`, `wi watch` start, or `wi doctor`.
+- **Per-path ingest failures.** `auto_ingest` and `reconcile` do not stop at the first failing path. Each failure goes into `ReconcileReport.failed`, gets an `ingest-failed` work request and is not stamped, so the next run retries it; every other path is still ingested and committed. The CLI prints `warning: <path> is not in history yet: <error>` for each and keeps its exit status.
+- **Deletion bookkeeping.** Every successful engine publication is recorded, and `Vault::flush` then re-stamps those paths whether or not the flush succeeds, re-checking the file against the manifest and its stat. A file the engine wrote is not hashed again, and deleting it later is recorded as `missing`. When the branch tip moved or no cache exists, the survey adds every tip-tree path absent from the working tree to the deleted set.
+- **Doctor `unseen`.** `wi doctor` reports `unseen`: `ok` when no ingress-eligible file is unrecorded, otherwise `warn` with the count. Files that cannot be read produce a separate `warn` with the count and the first 5 paths.
+- **First index walk at init.** `wi init` records a completed first walk, so a fresh vault does not answer from the literal fallback.
+- **MCP first query.** When the index has no complete walk, the first `wi_search`, `wi_list`, `wi_find` or `wi_context` call runs one foreground catch-up; later calls do not. A failed catch-up stays retryable and the literal fallback answers meanwhile. `initialize` performs no scan.
+- **Warnings.** CLI `--json` object outputs carry a `warnings` array for ingest failures that did not stop the command. Array outputs keep their original shape; nonempty warnings go to stderr as one compact JSON line `{"warnings":[...]}`.
+- `wi watch --json` writes newline-delimited JSON, one event per line.
+
+## Service
+
+`wi service install|uninstall|status` manages an optional macOS launchd LaunchAgent that runs `wi watch`; `wi setup` and `wi uninstall` call the same code. Off macOS, install returns an unsupported error. No capture or search path depends on the service.
+
+- Label `com.wiki-island.watch.<vault_id>`. Plist `$HOME/Library/LaunchAgents/<label>.plist` with `ProgramArguments` `[<absolute wi binary>, "watch", "--vault", <absolute vault root>]`, `RunAtLoad` and `KeepAlive` true, `ProcessType` Background, stdout and stderr to `$HOME/Library/Logs/wiki-island/<vault_id>.log` (only changes and errors are logged; the file rotates at 1 MiB and one old file is kept), and a fixed `PATH`.
+- `service install` without `--yes` prints a diff. Applying writes the plist atomically, backs up a differing existing file under a unique name, rejects a symlink or non-regular destination, refuses a stale preview, creates the log directory, runs `launchctl bootout` (only a recognized not-loaded result is ignored) and then `launchctl bootstrap gui/<uid>`. A bootstrap failure rolls the change back. Other launchctl failures are reported. Paths are XML-escaped and must be absolute and exist.
+- The installer refuses a development binary: a Cargo `CACHEDIR.TAG` or `.rustc_info.json` among up to four canonical executable ancestors (custom `CARGO_TARGET_DIR` included). `--allow-dev-binary` overrides.
+- `status` reports label, installed, loaded and the plist and log paths. `wi doctor` says in plain words whether the background service is loaded, reports no warning for a work request already converted, and its help names `~/WikiIsland` as the default notes folder. Tests use a fake launchctl and a temporary HOME.
+
+## Recovery of a single path
+
+A recovery problem on one path (unreadable, non-UTF-8, unexpected kind, rename failure) becomes a work request and a `wi doctor` problem, and recovery continues with the other intents. `Vault::open` does not fail because of one intent's path. A manifest, lock or corruption error still fails the open.
+
+- **Held intent.** A file-system error on one of an open intent's own paths records one `recovery-problem` work request per sequence id and path and leaves the intent open. Maintenance and the next write to the path retry it.
+- **Unexpected entry kinds.** An engine scratch name (`.wi-tmp-`, `.wi-conflict-`, `.wi-moved-`) that is not a regular file (directory, FIFO, symlink, other) is never treated as absent: recovery records one `recovery-problem` for (seq, path) and holds the intent; `wi doctor` reports such entries by name, of every kind, without following symlinks.
+- **Held intents block only their own paths.** Several intents may be open when their paths are disjoint. A write, edit, move, revert or import that touches a held path first retries recovery once, then fails fast with `recovery-held`, naming the path and the sequence id of its work request. Other paths proceed. Watcher and `wi commit` ingress skip a held path. The flush commits later records out of sequence order and retires only up to the held sequence id; a held member of a bulk-import batch still stops the flush. `wi doctor` lists the held paths.
+- **No unlinking of unread bytes.** A displaced temp whose bytes cannot be read is renamed to its conflict copy (a rename needs no read permission) with a `conflict-copy` request noting it was unread; if that fails, the temp is kept with a `recovery-problem` request. `wi commit`'s dead-pid temp cleanup skips a temp named by a `recovery-problem` request or belonging to a held intent.
+- **Conflict-copy names.** A copy is `.<name>.wi-conflict-<seq>`; when taken, `-2`, `-3`, … is appended. Opening the vault records a missing `conflict-copy` request for any existing copy of an open intent's target or move source. `wi doctor` warns (`conflict-copies`) about any copy no request names.
+- **Move sources.** An aside (`.<name>.wi-moved-<seq>`) is always settled at open: removed when it still derives the moved bytes, otherwise kept as a conflict copy; when the move was undone it is always kept as a conflict copy. The live source name is settled only when the destination holds the moved bytes, and it is renamed aside before it is read, so an editor's atomic save there is never removed.
+- **Crash cleanup at open.** Under the lock, for an open intent: temp files holding the old or new bytes are removed, any other bytes become a conflict copy; a completed move's source is removed when it still has the moved bytes. A temp file of a writer killed before its intent is removed by `wi commit` once its pid is gone.
