@@ -36,3 +36,6 @@ serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 criterion = "0.7"
 
+[[bench]]
+name = "store"
+harness = false
