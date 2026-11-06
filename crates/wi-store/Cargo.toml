@@ -1,0 +1,38 @@
+[package]
+name = "wi-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wi-note = { path = "../wi-note" }
+wi-history = { path = "../wi-history" }
+wi-index = { path = "../wi-index" }
+wi-lifecycle = { path = "../wi-lifecycle" }
+rustix = { version = "1", features = ["fs", "process", "system"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+toml_edit = "0.23"
+ignore = "0.4"
+unicode-normalization = "0.1"
+notify-debouncer-mini = "0.7"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+rayon = "1"
+
+[features]
+# Crash and race hooks driven by `WI_FAULT` (tests only).
+fault-injection = ["wi-history/fault-injection"]
+
+[dev-dependencies]
+wi-store = { path = ".", features = ["fault-injection"] }
+tempfile = "3"
+rusqlite = { version = "0.37", features = ["bundled"] }
+wi-lifecycle = { path = "../wi-lifecycle" }
+wi-note = { path = "../wi-note" }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+criterion = "0.7"
+
