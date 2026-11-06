@@ -1,0 +1,23 @@
+[package]
+name = "wi-mcp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wi-export = { path = "../wi-export" }
+wi-store = { path = "../wi-store" }
+wi-note = { path = "../wi-note" }
+serde = { version = "1", features = ["derive"] }
+rmcp = { version = "3.8", default-features = false, features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "io-std", "macros"] }
+serde_json = "1"
+thiserror = "2"
+ignore = "0.4"
+globset = "0.4"
+pulldown-cmark = "0.13"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3"
+wi-lifecycle = { path = "../wi-lifecycle" }
