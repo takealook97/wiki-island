@@ -2261,6 +2261,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.2+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.5",
 ]
 
@@ -2436,6 +2437,22 @@ checksum = "d7d179596ff5ec0f6de4db64d54011bde6289cc49603d3a6e4ce3f329207ab88"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "wi-export"
+version = "0.1.0"
+dependencies = [
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml_edit 0.25.18+spec-1.1.0",
+ "wi-history",
+ "wi-lifecycle",
+ "wi-note",
+ "wi-store",
 ]
 
 [[package]]

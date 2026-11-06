@@ -1,0 +1,18 @@
+[package]
+name = "wi-export"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wi-store = { path = "../wi-store" }
+wi-note = { path = "../wi-note" }
+wi-lifecycle = { path = "../wi-lifecycle" }
+wi-history = { path = "../wi-history" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml_edit = "0.25"
+percent-encoding = "2"
+
+tempfile = "3"
