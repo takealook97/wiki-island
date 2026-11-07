@@ -1,0 +1,563 @@
+{
+  "now": "2026-11-07T12:00:00Z",
+  "hosts": {
+    ".claude.json": "{\"theme\":1}\n",
+    ".codex/config.toml": "# keep\nmodel = 'chosen'\n"
+  },
+  "steps": [
+    {
+      "id": "setup-hosts",
+      "do": {
+        "op": "cli",
+        "args": [
+          "setup"
+        ]
+      },
+      "expect": [
+        {
+          "layer": "integration",
+          "check": "file_contains",
+          "path": "@home/.claude.json",
+          "text": "wiki-island"
+        },
+        {
+          "layer": "integration",
+          "check": "file_contains",
+          "path": "@home/.codex/config.toml",
+          "text": "wiki-island"
+        },
+        {
+          "layer": "integration",
+          "check": "file_exists",
+          "path": ".git",
+          "exists": true
+        }
+      ]
+    },
+    {
+      "id": "editor-capture-fact",
+      "do": {
+        "op": "editor_write",
+        "path": "region.md",
+        "fixture": "region-eu.md"
+      },
+      "expect": [
+        {
+          "layer": "capture",
+          "check": "frontmatter",
+          "path": "region.md",
+          "key": "origin.kind",
+          "equals": "user"
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "region.md",
+          "key": "status",
+          "equals": "active"
+        },
+        {
+          "layer": "delivery",
+          "check": "delivered",
+          "via": "cli",
+          "query": "Production",
+          "paths": [
+            "region.md"
+          ],
+          "withheld": []
+        }
+      ]
+    },
+    {
+      "id": "editor-capture-rule-and-text",
+      "do": {
+        "op": "sequence",
+        "steps": [
+          {
+            "op": "editor_write",
+            "path": "rule.md",
+            "fixture": "rule-owner.md"
+          },
+          {
+            "op": "cli",
+            "args": [
+              "capture",
+              "--title",
+              "Standup",
+              "--file",
+              "@fixture/plain-capture.md"
+            ]
+          }
+        ]
+      },
+      "expect": [
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "rule.md",
+          "key": "status",
+          "equals": "active"
+        },
+        {
+          "layer": "capture",
+          "check": "delivered",
+          "via": "cli",
+          "query": "capturemarkerkiwi",
+          "min_hits": 1
+        },
+        {
+          "layer": "delivery",
+          "check": "brief",
+          "contains": [
+            "Sign every release tag"
+          ],
+          "excludes": [],
+          "max_bytes": 2048
+        }
+      ]
+    },
+    {
+      "id": "agent-adds-conflicting-claim",
+      "do": {
+        "op": "mcp",
+        "calls": [
+          {
+            "tool": "wi_write",
+            "args": {
+              "identifier": "agent-region.md",
+              "content": "@fixture/region-us-agent.md"
+            }
+          },
+          {
+            "tool": "wi_work",
+            "args": {
+              "action": "next"
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "agent-region.md",
+          "key": "origin.kind",
+          "equals": "agent"
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "agent-region.md",
+          "key": "status",
+          "equals": "candidate"
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "delivered",
+          "via": "mcp",
+          "query": "Production",
+          "paths": [
+            "region.md"
+          ],
+          "withheld": [
+            "not-current"
+          ]
+        },
+        {
+          "layer": "maintenance",
+          "check": "work_next",
+          "kinds": [
+            "conflict"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "agent-tries-to-adopt-a-rule",
+      "do": {
+        "op": "mcp",
+        "calls": [
+          {
+            "tool": "wi_write",
+            "args": {
+              "identifier": "agent-rule.md",
+              "content": "@fixture/rule-agent.md"
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "layer": "lifecycle gate",
+          "check": "file_exists",
+          "path": "agent-rule.md",
+          "exists": false
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "rules/agent-rule.md",
+          "key": "noted_by",
+          "equals": "agent"
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "rule.md",
+          "key": "status",
+          "equals": "active"
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "rule.md",
+          "key": "summary",
+          "equals": "Sign every release tag"
+        },
+        {
+          "layer": "delivery",
+          "check": "delivered",
+          "via": "cli",
+          "query": "Friday",
+          "paths": [
+            "rules/agent-rule.md"
+          ],
+          "withheld": []
+        },
+        {
+          "layer": "delivery",
+          "check": "brief",
+          "contains": [
+            "Sign every release tag"
+          ],
+          "excludes": [],
+          "max_bytes": 2048
+        }
+      ]
+    },
+    {
+      "id": "owner-supersedes-the-fact",
+      "do": {
+        "op": "editor_write",
+        "path": "region2.md",
+        "fixture": "region-us-owner.md"
+      },
+      "expect": [
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "region.md",
+          "key": "status",
+          "equals": "superseded"
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "region2.md",
+          "key": "status",
+          "equals": "active"
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "delivered",
+          "via": "cli",
+          "query": "Production",
+          "paths": [
+            "region2.md"
+          ],
+          "withheld": [
+            "not-active"
+          ]
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "delivered",
+          "via": "mcp",
+          "query": "Production",
+          "paths": [
+            "region2.md"
+          ],
+          "withheld": [
+            "not-current"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pinned-source-is-delivered",
+      "do": {
+        "op": "sequence",
+        "steps": [
+          {
+            "op": "editor_write",
+            "path": "source.txt",
+            "text": "Release cadence is weekly.\n"
+          },
+          {
+            "op": "editor_write",
+            "path": "cadence.md",
+            "fixture": "cadence.md",
+            "pin": "source.txt"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "cadence.md",
+          "key": "status",
+          "equals": "active"
+        },
+        {
+          "layer": "delivery",
+          "check": "delivered",
+          "via": "cli",
+          "query": "cadence",
+          "paths": [
+            "cadence.md"
+          ],
+          "withheld": []
+        }
+      ]
+    },
+    {
+      "id": "pinned-source-drifts",
+      "do": {
+        "op": "editor_write",
+        "path": "source.txt",
+        "text": "Release cadence is daily.\n"
+      },
+      "expect": [
+        {
+          "layer": "lifecycle gate",
+          "check": "frontmatter",
+          "path": "cadence.md",
+          "key": "status",
+          "equals": "active"
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "delivered",
+          "via": "cli",
+          "query": "cadence",
+          "paths": [],
+          "withheld": [
+            "drift"
+          ]
+        },
+        {
+          "layer": "lifecycle gate",
+          "check": "delivered",
+          "via": "mcp",
+          "query": "cadence",
+          "paths": [],
+          "withheld": [
+            "drift"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "note-is-moved",
+      "do": {
+        "op": "cli",
+        "args": [
+          "move",
+          "region2.md",
+          "notes/region2.md"
+        ]
+      },
+      "expect": [
+        {
+          "layer": "index",
+          "check": "file_exists",
+          "path": "region2.md",
+          "exists": false
+        },
+        {
+          "layer": "index",
+          "check": "delivered",
+          "via": "cli",
+          "query": "Production",
+          "paths": [
+            "notes/region2.md"
+          ],
+          "withheld": [
+            "not-active"
+          ],
+          "permalinks": {
+            "notes/region2.md": "region2"
+          }
+        },
+        {
+          "layer": "index",
+          "check": "delivered",
+          "via": "mcp",
+          "query": "Production",
+          "paths": [
+            "notes/region2.md"
+          ],
+          "withheld": [
+            "not-current"
+          ],
+          "permalinks": {
+            "notes/region2.md": "region2"
+          }
+        }
+      ]
+    },
+    {
+      "id": "obsidian-churn",
+      "do": {
+        "op": "obsidian_churn",
+        "token": "obsidianchurntoken"
+      },
+      "expect": [
+        {
+          "layer": "index",
+          "check": "delivered",
+          "via": "cli",
+          "query": "obsidianchurntoken",
+          "paths": [],
+          "withheld": []
+        },
+        {
+          "layer": "index",
+          "check": "delivered",
+          "via": "cli",
+          "query": "Production",
+          "paths": [
+            "notes/region2.md"
+          ],
+          "withheld": [
+            "not-active"
+          ]
+        },
+        {
+          "layer": "index",
+          "check": "git_log_lacks",
+          "text": ".obsidian"
+        }
+      ]
+    },
+    {
+      "id": "notion-zip-import",
+      "do": {
+        "op": "notion_zip",
+        "page": "# Home\n\nnotionpagemarker lives here.\n"
+      },
+      "expect": [
+        {
+          "layer": "capture",
+          "check": "delivered",
+          "via": "cli",
+          "query": "notionpagemarker",
+          "min_hits": 1
+        }
+      ]
+    },
+    {
+      "id": "maintain-twice",
+      "do": {
+        "op": "maintain_twice"
+      },
+      "expect": [
+        {
+          "layer": "maintenance",
+          "check": "maintain_idempotent"
+        }
+      ]
+    },
+    {
+      "id": "agent-reads-context-brief-work",
+      "do": {
+        "op": "mcp",
+        "calls": [
+          {
+            "tool": "wi_search",
+            "args": {
+              "query": "Production"
+            }
+          },
+          {
+            "tool": "wi_context",
+            "args": {
+              "identifier": "notes/region2.md"
+            }
+          },
+          {
+            "tool": "wi_work",
+            "args": {
+              "action": "next"
+            }
+          }
+        ],
+        "brief_resource": true
+      },
+      "expect": [
+        {
+          "layer": "delivery",
+          "check": "mcp_ok"
+        },
+        {
+          "layer": "delivery",
+          "check": "mcp_bytes",
+          "max_bytes": 16384
+        },
+        {
+          "layer": "delivery",
+          "check": "work_next_bytes",
+          "max_bytes": 4096
+        },
+        {
+          "layer": "delivery",
+          "check": "brief",
+          "contains": [
+            "Sign every release tag",
+            "Noted by your AI",
+            "Always deploy on Friday"
+          ],
+          "excludes": [],
+          "protected_excludes": [
+            "Always deploy on Friday"
+          ],
+          "max_bytes": 2048
+        }
+      ]
+    },
+    {
+      "id": "uninstall",
+      "do": {
+        "op": "cli",
+        "args": [
+          "uninstall"
+        ]
+      },
+      "expect": [
+        {
+          "layer": "integration",
+          "check": "hosts_restored"
+        },
+        {
+          "layer": "integration",
+          "check": "file_exists",
+          "path": "notes/region2.md",
+          "exists": true
+        },
+        {
+          "layer": "integration",
+          "check": "file_exists",
+          "path": "rule.md",
+          "exists": true
+        },
+        {
+          "layer": "integration",
+          "check": "file_exists",
+          "path": "region.md",
+          "exists": true
+        }
+      ]
+    }
+  ]
+}
