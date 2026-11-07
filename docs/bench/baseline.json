@@ -1,0 +1,269 @@
+{
+  "schema": 1,
+  "date": "2026-11-05",
+  "commit": "4e6ea66d047ce9497797db100ccfcae34484ad00",
+  "machine": {
+    "model": "Apple M5",
+    "arch": "arm64",
+    "memory_bytes": "17179869184",
+    "os": "26.5.2",
+    "rust": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  },
+  "corpus": {
+    "version": "mixed-v1",
+    "notes": 10000,
+    "lifecycle_notes": 3000,
+    "tree_sha256": "sha256:9fb60019bd5967fcdea83465406233d9b037ab7bdc8b93f43aa9b0fd48c72972",
+    "bytes_min": 40,
+    "bytes_p50": 1220,
+    "bytes_p95": 4402,
+    "bytes_max": 5147,
+    "bytes_total": 14733452
+  },
+  "metrics": {
+    "binary_size": {
+      "unit": "MB",
+      "n": 1,
+      "p50": 14.60368,
+      "p95": 14.60368,
+      "max": 14.60368,
+      "target": 30.0,
+      "pass": true
+    },
+    "cli_query_with_catch_up": {
+      "unit": "ms",
+      "n": 20,
+      "p50": 80.20925000892021,
+      "p95": 87.84774999367073,
+      "max": 89.4223749928642,
+      "target": null,
+      "pass": null
+    },
+    "context_depth_2": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 0.14141600000000001,
+      "p95": 0.16933399999999998,
+      "max": 0.40254100000000004,
+      "target": 100.0,
+      "pass": true
+    },
+    "context_mcp_depth_2": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 5.058917013229802,
+      "p95": 5.955417000222951,
+      "max": 6.192875007400289,
+      "target": 100.0,
+      "pass": true
+    },
+    "flush_per_commit_full": {
+      "unit": "ms",
+      "n": 1,
+      "p50": 29.245973809523807,
+      "p95": 29.245973809523807,
+      "max": 29.245973809523807,
+      "target": null,
+      "pass": null
+    },
+    "flush_per_commit_standard": {
+      "unit": "ms",
+      "n": 1,
+      "p50": 0.6668017857142857,
+      "p95": 0.6668017857142857,
+      "max": 0.6668017857142857,
+      "target": null,
+      "pass": null
+    },
+    "idle_mcp_rss": {
+      "unit": "MB",
+      "n": 25,
+      "p50": 79.396864,
+      "p95": 80.822272,
+      "max": 80.822272,
+      "target": 100.0,
+      "pass": true
+    },
+    "reindex": {
+      "unit": "ms",
+      "n": 3,
+      "p50": 2565.1807909999998,
+      "p95": 2594.5955409999997,
+      "max": 2594.5955409999997,
+      "target": 10000.0,
+      "pass": true
+    },
+    "save_full": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 30.050583,
+      "p95": 35.143083999999995,
+      "max": 44.398792,
+      "target": 50.0,
+      "pass": true
+    },
+    "save_mcp_full": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 31.947166979080066,
+      "p95": 34.73354200832546,
+      "max": 47.3450830031652,
+      "target": 50.0,
+      "pass": true
+    },
+    "save_mcp_standard": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 2.6680839946493506,
+      "p95": 2.9117500234860927,
+      "max": 5.748166993726045,
+      "target": 50.0,
+      "pass": true
+    },
+    "save_standard": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 1.099917,
+      "p95": 1.473792,
+      "max": 13.033249999999999,
+      "target": 50.0,
+      "pass": true
+    },
+    "search_after_write_full": {
+      "unit": "ms",
+      "n": 20,
+      "p50": 11.001666,
+      "p95": 13.832625,
+      "max": 14.482417,
+      "target": 50.0,
+      "pass": true
+    },
+    "search_after_write_standard": {
+      "unit": "ms",
+      "n": 20,
+      "p50": 8.23925,
+      "p95": 8.795333000000001,
+      "max": 9.677125,
+      "target": 50.0,
+      "pass": true
+    },
+    "search_current_generation_cold": {
+      "unit": "ms",
+      "n": 20,
+      "p50": 39.526084000000004,
+      "p95": 41.867208000000005,
+      "max": 43.293583,
+      "target": 50.0,
+      "pass": true
+    },
+    "search_current_warm": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 4.079667000000001,
+      "p95": 8.519584,
+      "max": 9.649709,
+      "target": 50.0,
+      "pass": true
+    },
+    "search_mcp_current_warm": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 6.431124988012016,
+      "p95": 6.977875018492341,
+      "max": 10.043665999546647,
+      "target": 50.0,
+      "pass": true
+    },
+    "search_mcp_ranked_en": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 8.651875017676502,
+      "p95": 9.295958006987348,
+      "max": 12.724708009045571,
+      "target": 50.0,
+      "pass": true
+    },
+    "search_mcp_ranked_ko": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 21.168166014831513,
+      "p95": 22.76833399082534,
+      "max": 25.532750005368143,
+      "target": 50.0,
+      "pass": true
+    },
+    "search_mcp_ranked_ko_phrase": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 16.935499996179715,
+      "p95": 18.034666019957513,
+      "max": 19.58166601252742,
+      "target": 50.0,
+      "pass": true
+    },
+    "search_mcp_ranked_partial_en": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 7.1106669784057885,
+      "p95": 7.618208008352667,
+      "max": 9.301083016907796,
+      "target": 50.0,
+      "pass": true
+    },
+    "search_mcp_strict_ko_not": {
+      "unit": "ms",
+      "n": 200,
+      "p50": 11.276166973402724,
+      "p95": 12.136042001657188,
+      "max": 14.90275000105612,
+      "target": 50.0,
+      "pass": true
+    },
+    "startup_cli_read": {
+      "unit": "ms",
+      "n": 30,
+      "p50": 3.8936249911785126,
+      "p95": 4.810291982721537,
+      "max": 26.968125021085143,
+      "target": 300.0,
+      "pass": true
+    },
+    "startup_library": {
+      "unit": "ms",
+      "n": 30,
+      "p50": 0.865,
+      "p95": 1.043833,
+      "max": 1.6795410000000002,
+      "target": 300.0,
+      "pass": true
+    },
+    "startup_mcp_initialize": {
+      "unit": "ms",
+      "n": 5,
+      "p50": 10.593832994345576,
+      "p95": 12.073082994902506,
+      "max": 12.073082994902506,
+      "target": 300.0,
+      "pass": true
+    },
+    "stat_catch_up": {
+      "unit": "ms",
+      "n": 20,
+      "p50": 22.337,
+      "p95": 23.738625,
+      "max": 23.840166999999997,
+      "target": null,
+      "pass": null
+    },
+    "write_cli_including_flush": {
+      "unit": "ms",
+      "n": 20,
+      "p50": 11.277291981969029,
+      "p95": 14.188417000696063,
+      "max": 19.558916974347085,
+      "target": null,
+      "pass": null
+    }
+  },
+  "method": "release; deterministic mixed-v1; OS cache warm; nearest-rank percentiles; corpus generation/build excluded; 20 search warmups; 10 save warmups per mode; saves exclude flush; context library depth=2; generation-cold search and post-write read reported separately; library ready=open+index without stat walk; process metrics from processes.py Median of 3 runs: per-metric median p50/p95/max."
+}
