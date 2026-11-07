@@ -1,0 +1,30 @@
+[package]
+name = "wiki-island"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "wi"
+path = "src/main.rs"
+
+[[bin]]
+name = "wiki-island"
+path = "src/bin/wiki-island.rs"
+
+[dependencies]
+wi-lifecycle = { path = "../wi-lifecycle" }
+wi-export = { path = "../wi-export" }
+wi-docs = { path = "../wi-docs" }
+wi-note = { path = "../wi-note" }
+wi-store = { path = "../wi-store" }
+wi-mcp = { path = "../wi-mcp" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+# Tests drive `WI_FAULT` crash steps through the `wi` binary.
+wi-store = { path = "../wi-store", features = ["fault-injection"] }
