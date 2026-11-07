@@ -24,3 +24,6 @@ lindera = { version = "=0.43.3", optional = true, features = ["ko-dic"] }
 [dev-dependencies]
 criterion = "0.7"
 
+[[bench]]
+name = "paths"
+harness = false
