@@ -1,0 +1,26 @@
+[package]
+name = "wi-bench"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+korean = ["dep:tantivy", "dep:lindera"]
+
+[dependencies]
+wi-store = { path = "../wi-store" }
+wi-index = { path = "../wi-index" }
+wi-history = { path = "../wi-history" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tantivy = { version = "=0.25.0", optional = true, default-features = false, features = ["mmap", "lz4-compression"] }
+lindera = { version = "=0.43.3", optional = true, features = ["ko-dic"] }
+
+[dev-dependencies]
+criterion = "0.7"
+
