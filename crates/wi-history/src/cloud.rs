@@ -125,7 +125,18 @@ pub fn resolve_path(path: &Path) -> PathBuf {
                             pending.push_front(part);
                         }
                     }
-                    Ok(_) => resolved = joined,
+                    Ok(_) => {
+                        #[cfg(windows)]
+                        {
+                            // Expand short names and keep the same absolute path form
+                            // used by read_link targets and canonical vault roots.
+                            resolved = joined.canonicalize().unwrap_or(joined);
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            resolved = joined;
+                        }
+                    }
                     Err(_) => tail.push(name),
                 }
             }
@@ -160,8 +171,8 @@ mod tests {
     fn junction(target: impl AsRef<Path>, link: impl AsRef<Path>) -> std::io::Result<()> {
         let output = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
-            .arg(link.as_ref())
-            .arg(target.as_ref())
+            .arg(link.as_ref().components().collect::<PathBuf>())
+            .arg(target.as_ref().components().collect::<PathBuf>())
             .output()?;
         assert!(
             output.status.success(),
