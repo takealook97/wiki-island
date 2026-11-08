@@ -120,6 +120,9 @@ pub struct Hooks {
     pub before_swap: Option<PathHook>,
     /// Runs after the swap and before the `done` record.
     pub after_swap: Option<PathHook>,
+    /// Runs immediately before the final displaced-file read, after the swap
+    /// and initial displaced-byte check, with the absolute target path.
+    pub before_displaced_recheck: Option<PathHook>,
     /// Runs inside a current read after the hits are verified and before
     /// the generation is checked, with the attempt number.
     pub during_read: Option<AttemptHook>,
@@ -285,7 +288,7 @@ pub struct InitReport {
 
 impl Vault {
     fn check_platform() -> Result<()> {
-        if cfg!(unix) {
+        if cfg!(any(unix, windows)) {
             Ok(())
         } else {
             Err(StoreError::UnsupportedPlatform)
@@ -1050,6 +1053,11 @@ impl Vault {
             return;
         }
         let Some(opened) = self.index_identity.get() else {
+            // Without an identity Windows cannot tell a rebuilt database
+            // from the open one: reopen conservatively.
+            if cfg!(windows) {
+                self.close_index();
+            }
             return;
         };
         let path = match self.index_path() {
@@ -1417,8 +1425,18 @@ fn file_identity(path: &Path) -> Option<(u64, u64)> {
     std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
 }
 
+/// (volume serial, file id) of `path` from an open handle, when it exists
+/// (D12). The 128-bit id is folded to 64 bits; on NTFS its high half is 0.
+#[cfg(windows)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    let stat = crate::contained::stamp_path(path, true)?;
+    #[allow(clippy::cast_possible_truncation)]
+    let id = (stat.file_id as u64) ^ ((stat.file_id >> 64) as u64);
+    Some((stat.volume_serial, id))
+}
+
 /// No file identity is available on this platform yet.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn file_identity(_path: &Path) -> Option<(u64, u64)> {
     None
 }

@@ -158,7 +158,30 @@ impl Vault {
         })
     }
 
-    #[cfg(not(unix))]
+    /// Check containment, readability and regular-file kind without reading
+    /// bytes, through the same checked handles as a full read.
+    #[cfg(windows)]
+    pub fn name_stat(&self, path: &str) -> Result<NameStat> {
+        let target = resolve_readable(self.root(), path)?;
+        let (dir, name) = crate::contained::Dir::open_parent(self.root(), &target.rel)?
+            .ok_or_else(|| StoreError::NotFound {
+                path: target.rel.clone(),
+            })?;
+        let file = dir
+            .open_regular(&name)?
+            .ok_or_else(|| StoreError::NotFound {
+                path: target.rel.clone(),
+            })?;
+        let stat = wi_sys::fs::stamp(&file).map_err(|e| StoreError::io(&target.abs, e))?;
+        let modified = file.metadata().ok().and_then(|m| m.modified().ok());
+        Ok(NameStat {
+            size: stat.size,
+            mtime_ns: crate::contained::filetime_ns(stat.last_write),
+            modified,
+        })
+    }
+
+    #[cfg(not(any(unix, windows)))]
     pub fn name_stat(&self, _path: &str) -> Result<NameStat> {
         Err(StoreError::UnsupportedPlatform)
     }
@@ -234,15 +257,15 @@ impl Vault {
                 hits.push(hit);
                 continue;
             }
-            let current = hit
-                .rel_path
-                .to_str()
+            let rel = crate::paths::rel_string(&hit.rel_path);
+            let current = rel
+                .as_deref()
                 .and_then(|rel| read_rel(self.root(), rel).ok().flatten())
                 .map(|b| hash_bytes(&b));
             if current.as_deref() == Some(hit.content_hash.as_str()) {
                 hits.push(hit);
             } else {
-                changed.push(hit.rel_path.to_string_lossy().into_owned());
+                changed.push(rel.unwrap_or_else(|| hit.rel_path.to_string_lossy().into_owned()));
             }
         }
         let mut withheld = Vec::new();

@@ -669,6 +669,9 @@ impl Vault {
         old_hash: Option<&str>,
         seq: u64,
     ) -> Option<String> {
+        if let Some(hook) = &self.hooks.before_displaced_recheck {
+            hook(&target.abs);
+        }
         use std::io::Seek;
         let now = file
             .seek(std::io::SeekFrom::Start(0))

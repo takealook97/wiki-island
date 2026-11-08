@@ -67,9 +67,29 @@ struct StatKey {
 }
 
 impl StatKey {
+    #[cfg(not(windows))]
     fn of(path: &Path) -> Option<Self> {
         let meta = std::fs::symlink_metadata(path).ok()?;
         meta.file_type().is_file().then(|| Self::from_meta(&meta))
+    }
+
+    /// Windows (D12): size, last write, change time, volume serial and file
+    /// id from one handle opened without following a reparse point. The
+    /// change time goes in `ctime.0`, the volume serial in `ctime.1`, and
+    /// the 128-bit file id folded to 64 bits in `ino`.
+    #[cfg(windows)]
+    fn of(path: &Path) -> Option<Self> {
+        let stat = crate::contained::stamp_path(path, false)?;
+        if stat.kind != wi_sys::fs::Kind::File {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        Some(Self {
+            size: stat.size,
+            mtime: (stat.last_write, 0),
+            ctime: (stat.change_time, stat.volume_serial as i64),
+            ino: (stat.file_id as u64) ^ ((stat.file_id >> 64) as u64),
+        })
     }
 
     #[cfg(unix)]
@@ -83,7 +103,7 @@ impl StatKey {
         }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn from_meta(meta: &std::fs::Metadata) -> Self {
         let mtime = meta
             .modified()
