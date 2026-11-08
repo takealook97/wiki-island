@@ -2,7 +2,7 @@
 //! and removes what it creates.
 #![cfg(windows)]
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -13,6 +13,8 @@ use wi_sys::process::{Liveness, liveness, spawn_in_job};
 
 /// Environment variable that turns `helper_process` into a helper role.
 const HELPER: &str = "WI_SYS_TEST_HELPER";
+/// Where the parent helper writes its grandchild's pid.
+const PID_FILE: &str = "WI_SYS_TEST_PID_FILE";
 
 fn mklink_junction(link: &Path, target: &Path) {
     let status = Command::new("cmd")
@@ -347,8 +349,11 @@ fn helper_process() {
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap();
-            println!("GRANDCHILD={}", grandchild.id());
-            std::io::stdout().flush().unwrap();
+            let out = std::path::PathBuf::from(std::env::var_os(PID_FILE).unwrap());
+            let tmp = out.with_extension("tmp");
+            std::fs::write(&tmp, grandchild.id().to_string()).unwrap();
+            std::fs::rename(&tmp, &out).unwrap();
+            eprintln!("helper parent started grandchild {}", grandchild.id());
             std::thread::sleep(Duration::from_secs(60));
             let _ = grandchild.kill();
             let _ = grandchild.wait();
@@ -378,25 +383,49 @@ fn helper(role: &str) -> Command {
     cmd
 }
 
-/// Spawn the parent helper in a job and return it with its grandchild pid.
-fn spawn_tree() -> (std::process::Child, wi_sys::process::Job, u32) {
+/// A spawned parent helper, its job, its grandchild pid, and the scratch
+/// directory holding the helper's report.
+struct Tree {
+    child: std::process::Child,
+    job: wi_sys::process::Job,
+    grandchild: u32,
+    _scratch: tempfile::TempDir,
+}
+
+/// Spawn the parent helper in a job and wait for it to report the pid of
+/// the grandchild it starts.
+fn spawn_tree() -> Tree {
+    let scratch = tempfile::tempdir().unwrap();
+    let out = scratch.path().join("grandchild.pid");
+    let err = scratch.path().join("stderr.txt");
     let mut cmd = helper("parent");
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    cmd.env(PID_FILE, &out)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&err).unwrap());
     let (mut child, job) = spawn_in_job(&mut cmd).unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut pid = None;
-    for line in BufReader::new(stdout).lines() {
-        let line = line.unwrap();
-        if let Some(rest) = line.strip_prefix("GRANDCHILD=") {
-            pid = Some(rest.trim().parse::<u32>().unwrap());
-            break;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let grandchild = loop {
+        if let Ok(text) = std::fs::read_to_string(&out) {
+            break text.trim().parse::<u32>().unwrap();
         }
+        if Instant::now() > deadline || matches!(child.try_wait(), Ok(Some(_))) {
+            let status = child.try_wait();
+            let _ = job.terminate(1);
+            panic!(
+                "helper reported no grandchild; status {status:?}; stderr: {}",
+                std::fs::read_to_string(&err).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(liveness(grandchild), Liveness::Alive);
+    Tree {
+        child,
+        job,
+        grandchild,
+        _scratch: scratch,
     }
-    let pid = pid.expect("helper reported no grandchild");
-    assert_eq!(liveness(pid), Liveness::Alive);
-    (child, job, pid)
 }
 
 fn wait_gone(pid: u32) {
@@ -409,16 +438,21 @@ fn wait_gone(pid: u32) {
 
 #[test]
 fn terminating_the_job_kills_a_grandchild() {
-    let (mut child, job, grandchild) = spawn_tree();
-    job.terminate(1).unwrap();
-    let status = child.wait().unwrap();
+    let mut tree = spawn_tree();
+    tree.job.terminate(1).unwrap();
+    let status = tree.child.wait().unwrap();
     assert_eq!(status.code(), Some(1));
-    wait_gone(grandchild);
+    wait_gone(tree.grandchild);
 }
 
 #[test]
 fn dropping_the_job_kills_a_grandchild() {
-    let (mut child, job, grandchild) = spawn_tree();
+    let Tree {
+        mut child,
+        job,
+        grandchild,
+        _scratch,
+    } = spawn_tree();
     drop(job);
     child.wait().unwrap();
     wait_gone(grandchild);

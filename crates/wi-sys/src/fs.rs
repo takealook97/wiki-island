@@ -20,9 +20,10 @@ use std::path::{Path, PathBuf};
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT,
-    NtCreateFile,
+    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
+    FILE_OPEN_REPARSE_POINT, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
+    FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, FileRenameInformationEx, NtCreateFile,
+    NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_CANT_ACCESS_FILE, ERROR_DELETE_PENDING, ERROR_INVALID_FUNCTION,
@@ -41,9 +42,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FILE_STANDARD_INFO, FILE_TRAVERSE, FileAttributeTagInfo, FileBasicInfo, FileDispositionInfo,
     FileDispositionInfoEx, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo,
-    FileNameInfo, FileNormalizedNameInfo, FileRenameInfo, FileRenameInfoEx, FileStandardInfo,
-    FlushFileBuffers, GetFileInformationByHandle, GetFileInformationByHandleEx,
-    GetFinalPathNameByHandleW, OPEN_EXISTING, SYNCHRONIZE, SetFileInformationByHandle,
+    FileNameInfo, FileNormalizedNameInfo, FileStandardInfo, FlushFileBuffers,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
+    OPEN_EXISTING, SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -181,7 +182,9 @@ impl Dir {
     /// `ErrorKind::AlreadyExists` when any entry named `name` exists,
     /// including a reparse point, which is left untouched.
     pub fn create_dir(&self, name: &str) -> io::Result<Dir> {
-        let handle = self.nt_open(name, DIR_ACCESS, FILE_CREATE, FILE_DIRECTORY_FILE)?;
+        let handle = self
+            .nt_open(name, DIR_ACCESS, FILE_CREATE, FILE_DIRECTORY_FILE)
+            .map_err(|e| self.collision(name, e))?;
         Ok(Dir { handle })
     }
 
@@ -203,12 +206,14 @@ impl Dir {
     /// `ErrorKind::AlreadyExists` when any entry named `name` exists,
     /// including a reparse point, which is left untouched.
     pub fn create_file(&self, name: &str) -> io::Result<File> {
-        let handle = self.nt_open(
-            name,
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-            FILE_CREATE,
-            FILE_NON_DIRECTORY_FILE,
-        )?;
+        let handle = self
+            .nt_open(
+                name,
+                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                FILE_CREATE,
+                FILE_NON_DIRECTORY_FILE,
+            )
+            .map_err(|e| self.collision(name, e))?;
         Ok(File::from(handle))
     }
 
@@ -271,10 +276,14 @@ impl Dir {
             flags |= FILE_RENAME_REPLACE_IF_EXISTS;
         }
         let root = to_dir.handle.as_raw_handle() as HANDLE;
-        match set_rename(&handle, FileRenameInfoEx, flags, root, &target) {
-            Err(e) if is_unsupported_class(&e) => {
-                set_rename(&handle, FileRenameInfo, u32::from(replace), root, &target)
-            }
+        match set_rename(&handle, FileRenameInformationEx, flags, root, &target) {
+            Err(e) if is_unsupported_class(&e) => set_rename(
+                &handle,
+                FileRenameInformation,
+                u32::from(replace),
+                root,
+                &target,
+            ),
             other => other,
         }
     }
@@ -366,6 +375,19 @@ impl Dir {
         String::from_utf16(last).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "entry name is not valid UTF-16")
         })
+    }
+
+    /// A create can fail with access denied instead of a name collision
+    /// when the existing entry is of the other kind or a reparse point;
+    /// report that as `AlreadyExists` so "never overwrite" is one error.
+    fn collision(&self, name: &str, e: io::Error) -> io::Error {
+        if e.kind() == io::ErrorKind::PermissionDenied && matches!(self.stat(name), Ok(Some(_))) {
+            return io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("an entry named {name:?} already exists"),
+            );
+        }
+        e
     }
 
     fn raw(&self) -> HANDLE {
@@ -663,11 +685,13 @@ fn delete_handle(handle: &OwnedHandle, ignore_readonly: bool) -> io::Result<()> 
 }
 
 /// Issue a rename with a `FILE_RENAME_INFO` whose first field is `flags`
-/// (for `FileRenameInfoEx`) or the `ReplaceIfExists` boolean (for
-/// `FileRenameInfo`, passed as 0 or 1).
+/// (for `FileRenameInformationEx`) or the `ReplaceIfExists` boolean (for
+/// `FileRenameInformation`, passed as 0 or 1). Calls `NtSetInformationFile`
+/// directly: the Win32 wrapper rejects a relative target name combined
+/// with `RootDirectory`.
 fn set_rename(
     handle: &OwnedHandle,
-    class: FILE_INFO_BY_HANDLE_CLASS,
+    class: FILE_INFORMATION_CLASS,
     flags: u32,
     root: HANDLE,
     name: &[u16],
@@ -687,7 +711,7 @@ fn set_rename(
     // through `info` is in bounds. The name is copied to `name_offset`,
     // and `name_offset + name_bytes + 2 <= total <= buf` bytes.
     unsafe {
-        if class == FileRenameInfo {
+        if class == FileRenameInformation {
             (*info).Anonymous.ReplaceIfExists = flags != 0;
         } else {
             (*info).Anonymous.Flags = flags;
@@ -700,19 +724,21 @@ fn set_rename(
             name.len(),
         );
     }
-    // SAFETY: the buffer holds a complete FILE_RENAME_INFO of `total`
-    // bytes and outlives the call; `root` is a valid directory handle
-    // borrowed from the caller.
-    let ok = unsafe {
-        SetFileInformationByHandle(
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: the buffer holds a complete FILE_RENAME_INFORMATION of
+    // `total` bytes and outlives the call; `root` is a valid directory
+    // handle borrowed from the caller; `status_block` is writable.
+    let status = unsafe {
+        NtSetInformationFile(
             handle.as_raw_handle() as HANDLE,
-            class,
+            &mut status_block,
             buf.as_ptr().cast(),
             u32::try_from(total).unwrap_or(u32::MAX),
+            class,
         )
     };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
+    if status < 0 {
+        return Err(nt_error(status));
     }
     Ok(())
 }
