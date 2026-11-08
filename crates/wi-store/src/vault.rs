@@ -120,6 +120,9 @@ pub struct Hooks {
     pub before_swap: Option<PathHook>,
     /// Runs after the swap and before the `done` record.
     pub after_swap: Option<PathHook>,
+    /// Runs immediately before the final displaced-file read, after the swap
+    /// and initial displaced-byte check, with the absolute target path.
+    pub before_displaced_recheck: Option<PathHook>,
     /// Runs inside a current read after the hits are verified and before
     /// the generation is checked, with the attempt number.
     pub during_read: Option<AttemptHook>,

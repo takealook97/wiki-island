@@ -976,121 +976,57 @@ fn a_valid_225_byte_remote_name_this_device_skips_is_never_deleted() {
 #[cfg(unix)]
 #[test]
 fn an_editor_save_to_the_file_an_oversized_write_displaces_is_kept() {
-    use std::os::unix::fs::{FileExt, MetadataExt};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    let p = Pair::new();
-    let a = p.a.open();
-    let precious = b"precious editor save before unlink\n";
-    for trial in 0..8 {
-        let name = format!("race-{trial}.dat");
-        write(&a, &name, "old bytes\n");
-        let path = p.a.root.join(&name);
-        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        let inode = file.metadata().unwrap().ino();
-        let checksum = wi_history::hash_bytes(b"old bytes\n");
-        let done = Arc::new(AtomicBool::new(false));
-        let stop = done.clone();
-        let editor = std::thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                if std::fs::metadata(&path).is_ok_and(|m| m.ino() != inode) {
-                    file.write_all_at(precious, 0).unwrap();
-                    return file.metadata().unwrap().nlink() > 0;
-                }
-                std::hint::spin_loop();
-            }
-            false
-        });
-        let result = a.write_attachment(
-            &name,
-            vec![b'x'; 50 * 1024 * 1024 + 1],
-            Some(checksum),
-            wi_store::Ingress::Import,
-        );
-        done.store(true, Ordering::Release);
-        let saved_while_still_named = editor.join().unwrap();
-        result.unwrap();
-        if saved_while_still_named {
-            let mut preserved = false;
-            for e in std::fs::read_dir(&p.a.root).unwrap().flatten() {
-                if e.file_name().to_string_lossy().contains(&name) {
-                    let bytes = std::fs::read(e.path()).unwrap();
-                    preserved |= bytes.windows(precious.len()).any(|w| w == precious);
-                }
-            }
-            eprintln!(
-                "trial {trial}: editor saved while displaced inode was still named; precious saved in any sibling: {preserved}; requests: {:?}",
-                a.work_requests().unwrap()
-            );
-            assert!(
-                preserved,
-                "the engine unlinked an editor save made before temp retirement"
-            );
-            return;
-        }
-    }
-    panic!("inconclusive scheduling: no editor write preceded unlink");
+    editor_save_before_displaced_recheck_is_kept(50 * 1024 * 1024 + 1);
 }
 
 #[cfg(unix)]
 #[test]
 fn an_editor_save_to_the_file_a_small_attachment_write_displaces_is_kept() {
+    editor_save_before_displaced_recheck_is_kept(1024 * 1024);
+}
+
+#[cfg(unix)]
+fn editor_save_before_displaced_recheck_is_kept(size: usize) {
+    use std::cell::Cell;
     use std::os::unix::fs::{FileExt, MetadataExt};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
+    use std::rc::Rc;
+
     let p = Pair::new();
-    let a = p.a.open();
-    let precious = b"precious editor save before unlink\n";
-    for trial in 0..8 {
-        let name = format!("race-{trial}.dat");
-        write(&a, &name, "old bytes\n");
-        let path = p.a.root.join(&name);
-        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        let inode = file.metadata().unwrap().ino();
-        let checksum = wi_history::hash_bytes(b"old bytes\n");
-        let done = Arc::new(AtomicBool::new(false));
-        let stop = done.clone();
-        let editor = std::thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                if std::fs::metadata(&path).is_ok_and(|m| m.ino() != inode) {
-                    file.write_all_at(precious, 0).unwrap();
-                    return file.metadata().unwrap().nlink() > 0;
-                }
-                std::hint::spin_loop();
-            }
-            false
-        });
-        let result = a.write_attachment(
-            &name,
-            vec![b'x'; 1024 * 1024],
-            Some(checksum),
+    let mut a = p.a.open();
+    let name = "race.dat";
+    let precious = b"precious editor save before final check\n";
+    write(&a, name, "old bytes\n");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(p.a.root.join(name))
+        .unwrap();
+    let inode = file.metadata().unwrap().ino();
+    let saved = Rc::new(Cell::new(false));
+    let observed = saved.clone();
+    a.set_hooks(wi_store::Hooks {
+        before_displaced_recheck: Some(Rc::new(move |path| {
+            assert_ne!(std::fs::metadata(path).unwrap().ino(), inode);
+            assert!(file.metadata().unwrap().nlink() > 0);
+            file.write_all_at(precious, 0).unwrap();
+            observed.set(true);
+        })),
+        ..Default::default()
+    });
+    let result = a
+        .write_attachment(
+            name,
+            vec![b'x'; size],
+            Some(wi_history::hash_bytes(b"old bytes\n")),
             wi_store::Ingress::Import,
-        );
-        done.store(true, Ordering::Release);
-        let saved_while_still_named = editor.join().unwrap();
-        result.unwrap();
-        if saved_while_still_named {
-            let mut preserved = false;
-            for e in std::fs::read_dir(&p.a.root).unwrap().flatten() {
-                if e.file_name().to_string_lossy().contains(&name) {
-                    let bytes = std::fs::read(e.path()).unwrap();
-                    preserved |= bytes.windows(precious.len()).any(|w| w == precious);
-                }
-            }
-            eprintln!(
-                "trial {trial}: editor saved while displaced inode was still named; precious saved in any sibling: {preserved}; requests: {:?}",
-                a.work_requests().unwrap()
-            );
-            assert!(
-                preserved,
-                "the engine unlinked an editor save made before temp retirement"
-            );
-            return;
-        }
-    }
-    panic!("inconclusive scheduling: no editor write preceded unlink");
+        )
+        .unwrap();
+    assert!(
+        saved.get(),
+        "the final displaced-byte check must be exercised"
+    );
+    let copy = result.conflict_copy.unwrap();
+    assert_eq!(std::fs::read(p.a.root.join(&copy)).unwrap(), precious);
+    assert!(a.work_requests().unwrap().iter().any(|request| {
+        request.kind == wi_store::WorkKind::ConflictCopy && request.path == name
+    }));
 }
