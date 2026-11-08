@@ -257,15 +257,15 @@ impl Vault {
                 hits.push(hit);
                 continue;
             }
-            let current = hit
-                .rel_path
-                .to_str()
+            let rel = crate::paths::rel_string(&hit.rel_path);
+            let current = rel
+                .as_deref()
                 .and_then(|rel| read_rel(self.root(), rel).ok().flatten())
                 .map(|b| hash_bytes(&b));
             if current.as_deref() == Some(hit.content_hash.as_str()) {
                 hits.push(hit);
             } else {
-                changed.push(hit.rel_path.to_string_lossy().into_owned());
+                changed.push(rel.unwrap_or_else(|| hit.rel_path.to_string_lossy().into_owned()));
             }
         }
         let mut withheld = Vec::new();

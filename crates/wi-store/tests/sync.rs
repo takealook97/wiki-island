@@ -308,6 +308,25 @@ fn rejected_push_is_retried_without_losing_local_history() {
     assert_eq!(p.b.open().read("pending.md").unwrap().bytes, b"pending\n");
 }
 
+/// Windows counterpart: Git for Windows runs a hook through its own shell
+/// without an executable bit.
+#[cfg(windows)]
+#[test]
+fn rejected_push_is_retried_without_losing_local_history_on_windows() {
+    let p = Pair::new();
+    let a = p.a.open();
+    write(&a, "pending.md", "pending\n");
+    let hook = p.remote.join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    let head = git(&p.a.root, &["rev-parse", "HEAD"]);
+    assert!(a.sync().is_err());
+    assert_eq!(git(&p.a.root, &["rev-parse", "HEAD"]), head);
+    std::fs::remove_file(hook).unwrap();
+    assert!(a.sync().unwrap().pushed);
+    p.b.open().sync().unwrap();
+    assert_eq!(p.b.open().read("pending.md").unwrap().bytes, b"pending\n");
+}
+
 #[test]
 fn files_over_fifty_megabytes_stay_local_and_get_one_work_request() {
     let p = Pair::new();
@@ -595,8 +614,9 @@ fn a_note_that_grows_past_fifty_megabytes_is_never_deleted_on_any_device() {
         "important small note\n"
     );
     let committed = git(&p.a.root, &["rev-parse", "HEAD:big.md"]);
+    // Write access: Windows refuses `set_len` on an append-only handle.
     let file = std::fs::OpenOptions::new()
-        .append(true)
+        .write(true)
         .open(p.a.root.join("big.md"))
         .unwrap();
     file.set_len(50 * 1024 * 1024 + 1).unwrap();
@@ -663,8 +683,20 @@ fn an_ingested_file_over_fifty_megabytes_before_sync_setup_never_blocks_sync() {
 
 #[test]
 fn a_remote_file_name_this_device_cannot_create_is_skipped_and_sync_continues() {
+    remote_name_is_skipped_and_kept(format!("{}.md", "a".repeat(300)));
+}
+
+/// D7: a name Windows reserves, committed by a peer on another platform,
+/// stays in history and is skipped here with one work request.
+#[cfg(windows)]
+#[test]
+fn a_remote_name_windows_reserves_is_skipped_and_sync_continues() {
+    remote_name_is_skipped_and_kept("CON.md".to_owned());
+    remote_name_is_skipped_and_kept("trailing dot.md.".to_owned());
+}
+
+fn remote_name_is_skipped_and_kept(long: String) {
     let p = Pair::new();
-    let long = format!("{}.md", "a".repeat(300));
     // A careless peer commits a name no local file system can hold.
     let blob = {
         let mut child = Command::new("git")

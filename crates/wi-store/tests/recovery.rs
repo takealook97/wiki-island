@@ -85,6 +85,8 @@ fn watcher_repair_and_cli_writes_keep_final_acknowledged_version() {
     assert!(common::git(vault.root(), &["show", "HEAD:a.md"]).ends_with("engine 24\n"));
 }
 
+// Needs atomic exchange; Windows placement is stale instead (tests/windows.rs).
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 #[test]
 fn late_editor_save_through_open_handle_must_survive_exchange() {
     use std::{

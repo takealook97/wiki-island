@@ -56,6 +56,12 @@ fn a_junction_inside_the_vault_is_refused_for_read_write_list_and_move() {
     write(&vault, "x.md", "# x\n", Ingress::Cli);
 
     assert!(vault.read("link/a.md").is_err(), "read through a junction");
+    let absolute = vault.root().join("link").join("a.md");
+    assert!(
+        vault.read(absolute.to_str().unwrap()).is_err(),
+        "absolute path through a junction"
+    );
+    assert!(vault.read("LINK\\a.md").is_err(), "case and backslash");
     assert!(
         vault.name_stat("link/a.md").is_err(),
         "stat through a junction"
@@ -278,4 +284,31 @@ fn a_note_round_trips_through_write_read_move_and_maintain() {
     assert!(paths.contains(&"archive/a.md"), "{paths:?}");
     assert!(paths.contains(&"outside-editor.md"), "{paths:?}");
     assert!(vault.doctor().is_ok());
+}
+
+/// D7b: a short (8.3) alias of an existing folder is refused before any
+/// change, so protected-path checks always see the real long name. Runs
+/// only where the volume generates short names.
+#[test]
+fn a_short_name_alias_is_refused() {
+    let (_fx, vault) = Fixture::new();
+    write(&vault, "Long Folder Name/a.md", "# a\n", Ingress::Cli);
+    let long = vault.root().join("Long Folder Name");
+    let out = Command::new("cmd")
+        .arg("/C")
+        .arg(format!("for %I in (\"{}\") do @echo %~sI", long.display()))
+        .output()
+        .unwrap();
+    let short_path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let Some(short) = short_path.rsplit('\\').next().filter(|s| s.contains('~')) else {
+        eprintln!("no short names on this volume: {short_path:?}");
+        return;
+    };
+    let alias = format!("{short}/b.md");
+    assert!(
+        vault.write(request(&alias, "# b\n", None)).is_err(),
+        "{alias}"
+    );
+    assert!(!long.join("b.md").exists());
+    assert!(vault.read(&format!("{short}/a.md")).is_err());
 }
