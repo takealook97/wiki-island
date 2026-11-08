@@ -30,6 +30,7 @@ mod publish;
 mod read;
 mod sync;
 mod vault;
+mod view;
 mod watch;
 mod work;
 
@@ -54,6 +55,7 @@ pub use vault::{
     CACHE_DIR_ENV, Hooks, IndexState, Ingress, InitReport, OpenOptions, OpenReport,
     PRIMARY_DEVICE_KEY, Placement, Vault, WriteResult,
 };
+pub use view::CommittedNote;
 pub use watch::{
     DEBOUNCE_KEY, FLUSH_RETRY, FULL_MAINTAIN_INTERVAL, MAINTAIN_INTERVAL, MAINTAIN_SLICE,
     MaintainedHook, REPAIR_INTERVAL, REPAIR_START_DELAY, STARTUP_TIMEOUT, WatchEvent, WatchHandle,

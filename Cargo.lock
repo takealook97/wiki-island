@@ -4812,9 +4812,11 @@ dependencies = [
  "tokio",
  "wi-docs",
  "wi-export",
+ "wi-history",
  "wi-lifecycle",
  "wi-mcp",
  "wi-note",
+ "wi-notion",
  "wi-store",
 ]
 

@@ -7,6 +7,7 @@ mod error_codes;
 mod import_paths;
 #[path = "lifecycle_cmd.rs"]
 mod lifecycle_cmd;
+mod publish_cmd;
 #[path = "service_cmd.rs"]
 mod service_cmd;
 #[path = "setup_cmd.rs"]
@@ -139,6 +140,11 @@ enum Command {
     Sync {
         #[command(subcommand)]
         command: Option<sync_cmd::SyncCommand>,
+    },
+    /// Publish committed notes to a read-only view (Notion).
+    Publish {
+        #[command(subcommand)]
+        command: publish_cmd::PublishCommand,
     },
     /// Remove Wiki Island connections and background care; keep your notes.
     Uninstall,
@@ -925,6 +931,7 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
             // Start the watcher first so edits made during the catch-up queue.
             let handle = vault.watch_with_hooks(wi_store::WatchTuning::default(), hooks)?;
             let mut sync = vault.start_sync()?;
+            let mut publisher = publish_cmd::start(&vault)?;
             eprintln!(
                 "watching {} (debounce {:?})",
                 vault.root().display(),
@@ -968,6 +975,10 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
                 if sync.is_none() && vault.sync_status().is_ok_and(|status| status.configured) {
                     sync = vault.start_sync()?;
                 }
+                if publisher.is_none() && publish_cmd::configured(&vault).is_ok_and(|p| p.is_some())
+                {
+                    publisher = publish_cmd::start(&vault)?;
+                }
                 if cfg!(target_os = "macos")
                     && let Some(home) = &log_home
                     && wi_export::service::rotate_log(home, vault.vault_id()).is_err()
@@ -986,6 +997,9 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
             if let Some(sync) = sync {
                 sync.stop();
             }
+            if let Some(publisher) = publisher {
+                publisher.stop();
+            }
             let report = vault.flush()?;
             Ok(Output {
                 json: json!({"events": seen, "commits": report.commits.len(), "warnings": warnings}),
@@ -999,6 +1013,7 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
 fn run_in_vault(vault: &Session, command: Command) -> Result<Output> {
     match command {
         Command::Sync { command } => sync_cmd::run(vault, command),
+        Command::Publish { command } => publish_cmd::run(vault, command),
         Command::Export {
             command: ExportCommand::Rules { host },
         } => {

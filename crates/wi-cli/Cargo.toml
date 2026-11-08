@@ -19,6 +19,8 @@ wi-docs = { path = "../wi-docs" }
 wi-note = { path = "../wi-note" }
 wi-store = { path = "../wi-store" }
 wi-mcp = { path = "../wi-mcp" }
+wi-notion = { path = "../wi-notion" }
+wi-history = { path = "../wi-history" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
