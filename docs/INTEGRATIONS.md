@@ -72,9 +72,9 @@ Export the workspace as Markdown & CSV (zip or folder) and run `wi import <expor
 ## Notion view
 
 - One-way and read-only: committed notes (the branch tip, never unsaved files) become pages under one parent page. Each page says it is a read-only view; edits made in Notion are never imported.
-- `wi publish notion setup --parent <page link or id>` reads an integration token from standard input or a hidden prompt and stores it in the macOS keychain (service `wiki-island.notion`, account = vault id) through `/usr/bin/security`. The token never reaches the vault, the data directory, logs or output. Setup does not contact Notion.
+- `wi publish notion setup --parent <page link or id>` reads an integration token from standard input or a hidden prompt (if terminal echo cannot be turned off, the prompt refuses and asks for the token on standard input) and stores it in the macOS keychain (service `wiki-island.notion`, account = vault id) through `/usr/bin/security`. The token never reaches the vault, the data directory, logs or output. Setup does not contact Notion.
 - `wi publish notion [--json]` publishes once; `wi publish notion status` reads local state only.
-- The parent, the permalink-to-page map with content hashes, and retry state live in this device's data directory (`<data_dir>/wiki-island/vaults/<vault_id>/notion/`). Only the device where publishing was set up publishes. Unchanged notes make no requests; archived or deleted notes archive their page.
+- The parent, the permalink-to-page map with content hashes, and retry state live in this device's data directory (`<data_dir>/wiki-island/vaults/<vault_id>/notion/`). Only the device where publishing was set up publishes. Setup refuses to run while a publish holds the device lock, so the parent cannot change under a publish in progress. Unchanged notes make no requests; archived or deleted notes archive their page.
 - Background care runs a publish thread beside the sync thread: after the committed state has been still for a minute, and every five minutes. Failures back off from one minute to one hour; after a day of continuous failure one plain health line is logged. Markdown mapping, API limits and the non-atomic create caveat are in [wi-notion](../crates/wi-notion/README.md).
 
 ## Git remote sync
