@@ -138,3 +138,15 @@ wiki-island is a Rust workspace. Start with [CONTRIBUTING](CONTRIBUTING.md) and 
 - [Design](docs/DESIGN.md), [format](docs/FORMAT.md), [knowledge lifecycle](docs/KNOWLEDGE.md), [operations](docs/OPERATIONS.md), [protocol](docs/PROTOCOL.md), [origin and trust](docs/AUTHORITY.md)
 - [Integrations](docs/INTEGRATIONS.md), [skills](docs/SKILLS.md), [dependencies](docs/DEPENDENCIES.md)
 - [Validation](docs/VALIDATION.md), [performance targets](docs/PERFORMANCE.md)
+
+## License
+
+Copyright (C) 2026 takealook97
+
+wiki-island is free software: you can redistribute it and/or modify it under the terms of the [GNU Affero General Public License, version 3](LICENSE), as published by the Free Software Foundation.
+
+In short: you may use, study, change and share it, but if you distribute a modified version, or let others use one over a network, you must release its complete source under this same license and keep the copyright and license notices. You cannot take the code into a closed-source product.
+
+wiki-island is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the license for details.
+
+The name "wiki-island" and its logo are not licensed under the AGPL. A modified version must not use them in a way that suggests it is the original project or endorsed by it.

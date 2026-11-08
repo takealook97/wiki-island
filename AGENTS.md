@@ -27,6 +27,7 @@ These constraints bind every change unless the owner revises them:
 - No custom UI, dashboard, web app or mobile app. Existing agents, apps and Obsidian use the shared files and protocol.
 - Adoption has no human approval step. Rules and preferences follow the origin rule in [docs/AUTHORITY.md](docs/AUTHORITY.md).
 - No third-party dependency is added without a written reason ([docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)).
+- The project is licensed under AGPL-3.0-only (see LICENSE). New dependencies must use AGPL-3.0-compatible licenses. Do not add per-file license headers.
 
 ## Writing rules
 

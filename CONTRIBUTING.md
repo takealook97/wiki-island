@@ -81,3 +81,7 @@ Format: `{category}: {description}`, at most 72 characters, English.
 Categories: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
 
 The description is imperative, lowercase and has no final period. Explain why in the body when it is not obvious. Example: `docs: add vault conflict scenarios`.
+
+## License
+
+wiki-island is licensed under the [GNU Affero General Public License v3.0 only](LICENSE). By submitting a contribution, you agree that it is licensed under the same terms and that you have the right to submit it. Do not add code copied from projects whose licenses are incompatible with AGPL-3.0. A new dependency must use an AGPL-3.0-compatible license; record it in docs/DEPENDENCIES.md as usual.
