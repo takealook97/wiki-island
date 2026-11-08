@@ -113,8 +113,7 @@ fn main() -> Result<()> {
                 (0..runs)
                     .map(|run| {
                         let current = fresh_run(&base, &wi)?;
-                        let path =
-                            std::env::temp_dir().join(format!("wi-bench-current-{run}.json"));
+                        let path = scratch_root().join(format!("wi-bench-current-{run}.json"));
                         write_report(&current, &path)?;
                         Ok(current)
                     })
@@ -126,10 +125,7 @@ fn main() -> Result<()> {
                     .collect::<Result<Vec<_>>>()?
             };
             let candidate = median_report(&reports)?;
-            write_report(
-                &candidate,
-                &std::env::temp_dir().join("wi-bench-current.json"),
-            )?;
+            write_report(&candidate, &scratch_root().join("wi-bench-current.json"))?;
             check(&base, &candidate)?;
             println!(
                 "PASS: median p95 of {} run(s) within regression thresholds for every metric",
@@ -142,11 +138,21 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// One fresh complete measurement (library + process) in a new temporary scratch directory.
+/// Where scratch runs and current reports go: `/tmp` on Unix, the system
+/// temporary directory on Windows.
+fn scratch_root() -> PathBuf {
+    if cfg!(windows) {
+        std::env::temp_dir()
+    } else {
+        PathBuf::from("/tmp")
+    }
+}
+
+/// One fresh complete measurement (library + process) in a new /tmp scratch.
 fn fresh_run(base: &wi_bench::Report, wi: &std::path::Path) -> Result<wi_bench::Report> {
     let scratch = tempfile::Builder::new()
         .prefix("wi-bench-")
-        .tempdir_in(std::env::temp_dir())?;
+        .tempdir_in(scratch_root())?;
     let root = scratch.path().join("vault");
     let cache = scratch.path().join("cache");
     std::fs::create_dir_all(&cache)?;
