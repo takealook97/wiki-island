@@ -22,6 +22,8 @@ use crate::work::{self, WorkKind, WorkRequest};
 /// platform cache for the index (`<dir>/<vault_id>/index.sqlite3`).
 pub const CACHE_DIR_ENV: &str = "WI_CACHE_DIR";
 const INDEX_PENDING: &str = "index-pending";
+/// Config key naming the device that runs lifecycle maintenance in folder mode.
+pub const PRIMARY_DEVICE_KEY: &str = "primary_device";
 const INDEX_PENDING_LOCK: &str = "index-pending.lock";
 /// Prefix of a pending-marker claim: `index-pending.claim-<pid>-<n>-<ns>`.
 const INDEX_PENDING_CLAIM: &str = "index-pending.claim-";
@@ -140,6 +142,18 @@ pub struct OpenOptions {
     pub index_path: Option<PathBuf>,
 }
 
+/// Where a vault's history and per-device state live (S1, S2).
+#[derive(Debug, Clone, Default)]
+pub struct Placement {
+    /// Explicit per-device data directory (default `$WI_DATA_DIR`, else the
+    /// platform data directory); holds folder-mode history and local state.
+    pub data_root: Option<PathBuf>,
+    /// Storage mode for `init` of a vault without history on this device.
+    /// `None` chooses folder mode inside a known file-synced folder, else
+    /// git mode. An existing vault keeps its mode.
+    pub storage: Option<wi_history::StorageMode>,
+}
+
 /// What `open` did before accepting writes.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct OpenReport {
@@ -188,6 +202,7 @@ pub struct Vault {
     pub(crate) config: VaultConfig,
     pub(crate) vault_id: String,
     pub(crate) options: OpenOptions,
+    pub(crate) placement: Placement,
     pub(crate) index: RefCell<Option<Index>>,
     /// File identity (device, inode) of the database the open index
     /// connection uses. Another process that deletes and recreates the
@@ -282,10 +297,36 @@ impl Vault {
 
     /// `init` with explicit open options.
     pub fn init_with(root: impl AsRef<Path>, options: OpenOptions) -> Result<(Self, InitReport)> {
+        Self::init_placed(root, options, Placement::default())
+    }
+
+    /// `init` with explicit open options and placement.
+    pub fn init_placed(
+        root: impl AsRef<Path>,
+        options: OpenOptions,
+        placement: Placement,
+    ) -> Result<(Self, InitReport)> {
         Self::check_platform()?;
         let root =
             std::path::absolute(root.as_ref()).map_err(|e| StoreError::io(root.as_ref(), e))?;
-        let history = HistoryVault::init(&root)?;
+        let data_root = placement.data_root.as_deref();
+        let folder = match wi_history::storage_mode(&root, data_root)? {
+            Some(existing) => existing == wi_history::StorageMode::Folder,
+            None => match placement.storage {
+                Some(requested) => requested == wi_history::StorageMode::Folder,
+                None => wi_history::cloud_service(&root).is_some(),
+            },
+        };
+        if folder {
+            // Folder mode keys its external history by `vault_id`, so the
+            // config exists first (default durability: there was no config).
+            Self::ensure_vault_id(&root, durable::Durability::default())?;
+        }
+        let history = if folder {
+            HistoryVault::init_folder(&root, data_root)?
+        } else {
+            HistoryVault::init(&root)?
+        };
         let root = history.root().to_path_buf();
         let mode = history.durability();
         let config_path = root.join(VAULT_CONFIG_PATH);
@@ -307,7 +348,17 @@ impl Vault {
             durable::write_atomic(&config_path, next.to_text().as_bytes(), mode)?;
             ingest.push(VAULT_CONFIG_PATH.to_owned());
         }
-        let gitignore = root.join(".gitignore");
+        // Folder mode keeps the rules in `<gitdir>/info/exclude`, so the
+        // notes folder holds no `.gitignore` written by the engine.
+        let folder = history.storage_mode() == wi_history::StorageMode::Folder;
+        let gitignore = if folder {
+            history.exclude_file()
+        } else {
+            root.join(".gitignore")
+        };
+        if folder && let Some(dir) = gitignore.parent() {
+            durable::create_dir_durable(dir, mode)?;
+        }
         let current = std::fs::read_to_string(&gitignore).unwrap_or_default();
         let missing: Vec<&str> = GITIGNORE_LINES
             .iter()
@@ -325,12 +376,20 @@ impl Vault {
                 text.push('\n');
             }
             durable::write_atomic(&gitignore, text.as_bytes(), mode)?;
-            ingest.push(".gitignore".to_owned());
+            if !folder {
+                ingest.push(".gitignore".to_owned());
+            }
         }
-        let vault = Self::open_with(&root, options)?;
-        for rel in [VAULT_CONFIG_PATH, ".gitignore"] {
+        let vault = Self::open_placed(&root, options, placement)?;
+        let engine_files: &[&str] = if folder {
+            &[VAULT_CONFIG_PATH]
+        } else {
+            &[VAULT_CONFIG_PATH, ".gitignore"]
+        };
+        for rel in engine_files {
             vault.ingest_engine_file(rel)?;
         }
+        vault.ensure_primary_device()?;
         let report = vault.flush()?;
         // A complete first walk sets `index_as_of`, so a fresh vault never
         // answers from the literal fallback. A failure stays retryable.
@@ -355,11 +414,27 @@ impl Vault {
 
     /// `open` with explicit options.
     pub fn open_with(root: impl AsRef<Path>, options: OpenOptions) -> Result<Self> {
+        Self::open_placed(root, options, Placement::default())
+    }
+
+    /// `open` with explicit options and placement.
+    pub fn open_placed(
+        root: impl AsRef<Path>,
+        options: OpenOptions,
+        placement: Placement,
+    ) -> Result<Self> {
         Self::check_platform()?;
-        let history = HistoryVault::open(root.as_ref()).map_err(|e| match e {
-            HistoryError::NotARepository(path) => StoreError::NotInitialised(path),
-            other => other.into(),
-        })?;
+        let history = HistoryVault::open_in(root.as_ref(), placement.data_root.as_deref())
+            .map_err(|e| match e {
+                HistoryError::NotARepository(path) => StoreError::NotInitialised(path),
+                other => other.into(),
+            })?;
+        wi_index::set_exclude_file(
+            history.root(),
+            (history.storage_mode() == wi_history::StorageMode::Folder)
+                .then(|| history.exclude_file())
+                .as_deref(),
+        );
         let config_path = history.root().join(VAULT_CONFIG_PATH);
         let text = std::fs::read_to_string(&config_path)
             .map_err(|_| StoreError::NotInitialised(history.root().to_path_buf()))?;
@@ -373,6 +448,7 @@ impl Vault {
             config,
             vault_id,
             options,
+            placement,
             index: RefCell::new(None),
             index_identity: std::cell::Cell::new(None),
             index_epoch: std::cell::Cell::new(0),
@@ -412,6 +488,96 @@ impl Vault {
 
     pub fn vault_id(&self) -> &str {
         &self.vault_id
+    }
+
+    /// Where this vault keeps its history on this device.
+    pub fn storage_mode(&self) -> wi_history::StorageMode {
+        self.history.storage_mode()
+    }
+
+    /// Per-device state directory (S2): `.wiki-island/local` in git mode,
+    /// `<data>/vaults/<vault_id>/local` in folder mode.
+    pub fn local_dir(&self) -> PathBuf {
+        self.history.local_dir()
+    }
+
+    /// This device's id (created on first use in the data directory).
+    pub fn device_id(&self) -> Result<String> {
+        Ok(wi_history::device_id(self.placement.data_root.as_deref())?)
+    }
+
+    /// The `primary_device` recorded in the vault config, if any. Read
+    /// anew, so a setup through another handle is visible.
+    pub fn primary_device(&self) -> Option<String> {
+        let text = std::fs::read_to_string(self.root().join(VAULT_CONFIG_PATH)).ok()?;
+        VaultConfig::parse(&text)
+            .ok()?
+            .get(PRIMARY_DEVICE_KEY)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    }
+
+    /// Whether this device runs lifecycle-mutating maintenance (S4). A
+    /// git-mode vault has one writer per clone, so every device does; in
+    /// folder mode only the recorded primary device does (no record: this
+    /// device, until a setup records one).
+    pub fn is_primary_device(&self) -> bool {
+        if self.storage_mode() == wi_history::StorageMode::Git {
+            return true;
+        }
+        match (self.primary_device(), self.device_id()) {
+            (None, _) => true,
+            (Some(primary), Ok(me)) => primary == me,
+            (Some(_), Err(_)) => false,
+        }
+    }
+
+    /// Record this device as `primary_device` when the config names none.
+    pub(crate) fn ensure_primary_device(&self) -> Result<()> {
+        if self.storage_mode() == wi_history::StorageMode::Folder && self.primary_device().is_none()
+        {
+            self.set_primary_device()?;
+        }
+        Ok(())
+    }
+
+    /// Record this device as the vault's `primary_device` (`wi setup
+    /// --primary`): the config is rewritten (unknown keys kept) and
+    /// published like init's config write.
+    pub fn set_primary_device(&self) -> Result<()> {
+        let id = self.device_id()?;
+        let path = self.root().join(VAULT_CONFIG_PATH);
+        let text = std::fs::read_to_string(&path).map_err(|e| StoreError::io(&path, e))?;
+        let next = VaultConfig::parse(&text)?
+            .set(PRIMARY_DEVICE_KEY, toml_edit::Value::from(id))?
+            .to_text();
+        if next != text {
+            durable::write_atomic(&path, next.as_bytes(), self.history.durability())?;
+            self.ingest_engine_file(VAULT_CONFIG_PATH)?;
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Create `.wiki-island/config.toml` with a fresh `vault_id` when the
+    /// config is missing or has none.
+    fn ensure_vault_id(root: &Path, mode: durable::Durability) -> Result<()> {
+        let config_path = root.join(VAULT_CONFIG_PATH);
+        let existing = std::fs::read_to_string(&config_path).ok();
+        let config = VaultConfig::parse(existing.as_deref().unwrap_or(
+            "# wiki-island vault config. See docs/FORMAT.md#vault-layout-and-config.\n",
+        ))?;
+        if config.vault_id().is_some() {
+            return Ok(());
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let next = config.set("vault_id", toml_edit::Value::from(id))?;
+        if let Some(dir) = config_path.parent() {
+            durable::create_dir_durable(dir, mode)?;
+        }
+        durable::write_atomic(&config_path, next.to_text().as_bytes(), mode)?;
+        Ok(())
     }
 
     pub fn config(&self) -> &VaultConfig {

@@ -14,6 +14,7 @@ mod capture;
 mod deferred;
 mod evidence;
 mod losses;
+mod ownership;
 mod reads;
 mod revise;
 mod snapshot;
@@ -38,7 +39,8 @@ use crate::vault::{Ingress, Vault};
 pub const NOW_ENV: &str = "WI_NOW";
 
 /// Archive directories configured on this device (device-local).
-const ARCHIVE_DIRS_FILE: &str = ".wiki-island/local/archive-dirs.json";
+/// Inside the per-device local directory ([`Vault::local_dir`]).
+const ARCHIVE_DIRS_FILE: &str = "archive-dirs.json";
 
 /// A change-cap charge: the requests, who acts, the active counts before
 /// the change and the events to record when the budget allows.
@@ -78,7 +80,7 @@ impl Vault {
     /// Best effort: an unwritable state file only forgets a custom
     /// directory the next time the key changes.
     pub(crate) fn record_archive_dir(&self) -> Vec<String> {
-        let file = self.root().join(ARCHIVE_DIRS_FILE);
+        let file = self.local_dir().join(ARCHIVE_DIRS_FILE);
         let mut seen: Vec<String> = std::fs::read(&file)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())

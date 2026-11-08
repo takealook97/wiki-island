@@ -25,7 +25,7 @@ impl Targets {
     }
     pub fn load(root: &Path) -> Result<Option<Self>, Error> {
         crate::install::preflight_local(root)?;
-        let path = root.join(".wiki-island/local/targets.json");
+        let path = crate::install::local_base(root).join("targets.json");
         match std::fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),

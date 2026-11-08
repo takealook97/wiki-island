@@ -49,8 +49,8 @@ pub use read::{
     GENERATION_CHANGED, NameStat, ReadResult, SearchOptions, SearchResponse, VERIFY_LIMIT, Withheld,
 };
 pub use vault::{
-    CACHE_DIR_ENV, Hooks, IndexState, Ingress, InitReport, OpenOptions, OpenReport, Vault,
-    WriteResult,
+    CACHE_DIR_ENV, Hooks, IndexState, Ingress, InitReport, OpenOptions, OpenReport,
+    PRIMARY_DEVICE_KEY, Placement, Vault, WriteResult,
 };
 pub use watch::{
     DEBOUNCE_KEY, FLUSH_RETRY, FULL_MAINTAIN_INTERVAL, MAINTAIN_INTERVAL, MAINTAIN_SLICE,
@@ -59,5 +59,5 @@ pub use watch::{
 };
 pub use work::{WorkKind, WorkRequest};
 
-pub use wi_history::{FlushReport, HistoryEntry, PublicationMark};
+pub use wi_history::{FlushReport, HistoryEntry, PublicationMark, StorageMode};
 pub use wi_index::{Query, SearchHit, SearchMode, ignored, ignored_dir};

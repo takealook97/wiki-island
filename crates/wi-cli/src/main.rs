@@ -125,7 +125,12 @@ enum SkillsCommand {
 #[derive(Subcommand)]
 enum Command {
     /// Set up your notes and connect all installed AI apps.
-    Setup,
+    Setup {
+        /// Make this device the one that runs lifecycle maintenance of a
+        /// notes folder shared by a file-sync service.
+        #[arg(long)]
+        primary: bool,
+    },
     /// Remove Wiki Island connections and background care; keep your notes.
     Uninstall,
     /// Keep AI app skills up to date with your procedures.
@@ -308,10 +313,12 @@ enum Command {
     Doctor,
     /// Store a capture note (filtered); optionally a URL snapshot and candidates.
     Capture(lifecycle_cmd::CaptureArgs),
-    /// Rerun the lifecycle gates on a candidate and apply the outcome.
+    /// Adopt a note as yours: remove its agent label (agent origin or
+    /// `noted_by: agent`), then rerun the lifecycle gates and apply the
+    /// outcome. Removing the label in any editor does the same.
     #[command(hide = true)]
     Adopt {
-        /// Vault path of the candidate note.
+        /// Vault path of the note.
         path: String,
     },
     /// Model-free lint of one note or of every memory note.
@@ -698,7 +705,7 @@ fn run(cli: Cli) -> Result<Output> {
             | Command::Note { .. }
             | Command::Init { .. }
             | Command::Watch { .. }
-            | Command::Setup
+            | Command::Setup { .. }
             | Command::Uninstall
     ) {
         return run_standalone(&root, json, command);
@@ -781,17 +788,18 @@ fn finish(
 fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Result<Output> {
     let root = root.clone();
     match command {
-        Command::Setup | Command::Uninstall => {
+        Command::Setup { .. } | Command::Uninstall => {
             let home = setup_cmd::home()?;
             let root = setup_cmd::root(&root, &home);
             let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
-            if matches!(command, Command::Setup) {
+            if let Command::Setup { primary } = command {
                 setup_cmd::setup(
                     &root,
                     &home,
                     &setup_cmd::executable()?,
                     codex_home.as_deref(),
                     &wi_export::service::SystemLaunchctl,
+                    primary,
                 )
             } else {
                 setup_cmd::uninstall(
@@ -1462,7 +1470,7 @@ fn run_in_vault(vault: &Session, command: Command) -> Result<Output> {
             json["index_degraded"] = serde_json::to_value(&vault.open_report().index_degraded)?;
             Ok(Output { json, human })
         }
-        Command::Setup
+        Command::Setup { .. }
         | Command::Uninstall
         | Command::Mcp { .. }
         | Command::Note { .. }

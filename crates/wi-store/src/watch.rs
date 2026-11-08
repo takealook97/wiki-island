@@ -154,6 +154,7 @@ impl Vault {
     pub fn watch_with_hooks(&self, tuning: WatchTuning, hooks: WatchHooks) -> Result<WatchHandle> {
         let root = self.root().to_path_buf();
         let options = self.options.clone();
+        let placement = self.placement.clone();
         let debounce = tuning.debounce.unwrap_or_else(|| self.debounce());
         let startup_timeout = tuning.startup_timeout;
         let stop = Arc::new(AtomicBool::new(false));
@@ -167,6 +168,7 @@ impl Vault {
                 let setup = Setup {
                     root,
                     options,
+                    placement,
                     debounce,
                     tuning,
                     hooks,
@@ -255,6 +257,7 @@ impl Default for WatchTuning {
 struct Setup {
     root: PathBuf,
     options: OpenOptions,
+    placement: crate::vault::Placement,
     debounce: Duration,
     tuning: WatchTuning,
     hooks: WatchHooks,
@@ -596,7 +599,7 @@ fn run(setup: Setup, stop: Arc<AtomicBool>, events: Sender<WatchEvent>) {
     let error = |message: String| {
         let _ = events.send(WatchEvent::Error { message });
     };
-    let vault = match Vault::open_with(&setup.root, setup.options) {
+    let vault = match Vault::open_placed(&setup.root, setup.options, setup.placement) {
         Ok(vault) => vault,
         Err(e) => return error(e.to_string()),
     };

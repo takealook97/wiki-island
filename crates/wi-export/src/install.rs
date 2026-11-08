@@ -725,13 +725,35 @@ struct SavedConfig {
     installed: Vec<u8>,
 }
 
+/// The per-device local directory of `vault` (S2) and the containers from
+/// the first one this crate checks: git mode checks the vault root,
+/// `.wiki-island` and `.wiki-island/local`; folder mode checks only
+/// `<data>/vaults/<vault_id>/local`, which the engine owns.
+pub(crate) fn local_chain(vault: &Path) -> Vec<PathBuf> {
+    let base = wi_history::local_state_dir(vault, None)
+        .unwrap_or_else(|_| vault.join(wi_history::VAULT_LOCAL_DIR));
+    if base == vault.join(wi_history::VAULT_LOCAL_DIR) {
+        vec![
+            vault.to_path_buf(),
+            vault.join(".wiki-island"),
+            base.clone(),
+            base.join("backups"),
+        ]
+    } else {
+        vec![base.clone(), base.join("backups")]
+    }
+}
+
+/// The per-device local directory of `vault` (`.wiki-island/local` in git
+/// mode, the data directory in folder mode).
+pub(crate) fn local_base(vault: &Path) -> PathBuf {
+    wi_history::local_state_dir(vault, None)
+        .unwrap_or_else(|_| vault.join(wi_history::VAULT_LOCAL_DIR))
+}
+
 /// Check local ownership and backup containers without creating anything.
 pub fn preflight_local(vault: &Path) -> Result<(), Error> {
-    let mut path = vault.to_path_buf();
-    for part in ["", ".wiki-island", "local", "backups"] {
-        if !part.is_empty() {
-            path.push(part);
-        }
+    for path in local_chain(vault) {
         match std::fs::symlink_metadata(&path) {
             Ok(meta)
                 if !meta.is_dir()
@@ -751,10 +773,12 @@ pub fn preflight_local(vault: &Path) -> Result<(), Error> {
 }
 
 pub(crate) fn local_dir(vault: &Path) -> Result<PathBuf, Error> {
-    let mut path = vault.to_path_buf();
-    for part in [".wiki-island", "local", "backups"] {
-        path.push(part);
-        match std::fs::symlink_metadata(&path) {
+    let chain = local_chain(vault);
+    let path = chain.last().cloned().unwrap_or_default();
+    // The vault root itself (git mode) already exists.
+    let skip = usize::from(chain.len() == 4);
+    for dir in chain.iter().skip(skip) {
+        match std::fs::symlink_metadata(dir) {
             Ok(meta) if !meta.is_dir() || meta.file_type().is_symlink() => {
                 return Err(Error::Config(
                     "local backup folder must be a regular directory".into(),
@@ -763,7 +787,7 @@ pub(crate) fn local_dir(vault: &Path) -> Result<PathBuf, Error> {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 wi_history::durable::create_dir_durable(
-                    &path,
+                    dir,
                     wi_history::durable::Durability::Standard,
                 )?;
             }
@@ -779,8 +803,8 @@ pub(crate) fn local_dir(vault: &Path) -> Result<PathBuf, Error> {
 }
 fn record_path(vault: &Path, target: &Path, extension: &str) -> PathBuf {
     let hash = wi_lifecycle::sha256(target.as_os_str().as_encoded_bytes());
-    vault
-        .join(".wiki-island/local/backups")
+    local_base(vault)
+        .join("backups")
         .join(format!("{}.{}", &hash[7..], extension))
 }
 fn private_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
@@ -836,7 +860,7 @@ fn forget_config(vault: &Path, target: &Path) -> Result<(), Error> {
 
 /// Remember only missing directories, so removal never deletes a pre-existing container.
 pub fn record_created_dirs(vault: &Path, directories: &[PathBuf]) -> Result<(), Error> {
-    let path = vault.join(".wiki-island/local/backups/created-directories.json");
+    let path = local_base(vault).join("backups/created-directories.json");
     let mut created: Vec<PathBuf> = read_file(&path)?
         .map(|bytes| serde_json::from_slice(&bytes).map_err(|e| Error::Config(e.to_string())))
         .transpose()?
@@ -867,7 +891,7 @@ pub fn record_created_dirs(vault: &Path, directories: &[PathBuf]) -> Result<(), 
 
 /// Remove recorded empty containers; user files and other vaults' files always win.
 pub fn cleanup_created_dirs(vault: &Path) -> Result<(), Error> {
-    let path = vault.join(".wiki-island/local/backups/created-directories.json");
+    let path = local_base(vault).join("backups/created-directories.json");
     let Some(bytes) = read_file(&path)? else {
         return Ok(());
     };

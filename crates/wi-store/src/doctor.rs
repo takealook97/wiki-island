@@ -130,20 +130,21 @@ impl Vault {
             "no watcher in this process; one-shot queries run a stat-walk catch-up, `wi watch` ingests editor changes".into(),
             None,
         ));
-        checks.push(match cloud_sync_warning(self.root()) {
+        checks.push(match cloud_sync_warning(self.history.git_dir()) {
             Some(warning) => check(
                 "cloud-sync",
                 "warn",
                 warning,
-                Some("move the vault out of the cloud-synced folder; sync through a git remote"),
+                Some("move the notes folder out of the cloud-synced folder, or keep its history outside it (folder mode)"),
             ),
             None => check(
                 "cloud-sync",
                 "ok",
-                "not in a known cloud-sync folder".into(),
+                "history is not in a known cloud-sync folder".into(),
                 None,
             ),
         });
+        checks.push(self.storage_check());
         checks.push(self.unseen_check());
         let work = self.work_requests()?;
         checks.push(if work.is_empty() {
@@ -219,6 +220,34 @@ impl Vault {
 }
 
 impl Vault {
+    /// `storage`: where history lives, whether a moved folder was re-bound,
+    /// and which device runs lifecycle maintenance in folder mode.
+    fn storage_check(&self) -> Check {
+        let mut detail = match self.storage_mode() {
+            wi_history::StorageMode::Git => {
+                "git mode: history in .git inside the notes folder".to_owned()
+            }
+            wi_history::StorageMode::Folder => format!(
+                "folder mode: history in {} on this device",
+                self.history.git_dir().display()
+            ),
+        };
+        if let Some(from) = self.history.rebound_from() {
+            detail.push_str(&format!(
+                "; the notes folder moved from {} and history followed it",
+                from.display()
+            ));
+        }
+        if self.storage_mode() == wi_history::StorageMode::Folder {
+            detail.push_str(if self.is_primary_device() {
+                "; this device runs lifecycle maintenance"
+            } else {
+                "; another device runs lifecycle maintenance (`wi setup --primary` takes over)"
+            });
+        }
+        check("storage", "ok", detail, None)
+    }
+
     /// `unseen`: eligible files whose bytes history does not know (full
     /// compare, read-only).
     fn unseen_check(&self) -> Check {

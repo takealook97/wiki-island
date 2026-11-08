@@ -484,7 +484,7 @@ fn engine_owned_fields_are_refused_through_tools_and_origin_follows_ingress() {
 }
 
 #[test]
-fn file_ingress_of_a_claim_change_sets_origin_user_and_resets_candidate() {
+fn file_ingress_of_a_claim_change_keeps_written_origin_and_resets_candidate() {
     let (_fx, vault) = Fixture::new();
     write(
         &vault,
@@ -516,7 +516,11 @@ fn file_ingress_of_a_claim_change_sets_origin_user_and_resets_candidate() {
     assert!(!update.replayed);
     let text = std::fs::read_to_string(vault.root().join("claim.md")).unwrap();
     assert!(text.contains("status: candidate"), "{text}");
-    assert!(text.contains("kind: user"), "{text}");
+    // Provenance comes from the note: the agent label stays (S3).
+    assert!(
+        text.contains("kind: agent") && !text.contains("kind: user"),
+        "{text}"
+    );
     assert!(text.contains("summary: two"), "{text}");
     assert!(
         vault

@@ -13,9 +13,14 @@
 //! closing items whose cause is gone; procedure change detection; flush.
 //! A pass that finds nothing writes nothing and commits nothing.
 //!
+//! In folder mode only the primary device (`primary_device` in the vault
+//! config) runs the stages that write shared notes (migration, the
+//! built-in procedure and every lifecycle stage); other devices run
+//! recovery, the index and procedure change detection.
+//!
 //! With a time budget a pass stops between stages or between chunks of
 //! the work-note migration or the note scan, reports `complete: false`
-//! and records where it stopped in `.wiki-island/local/` (device-local,
+//! and records where it stopped in the per-device local directory (device-local,
 //! never committed). The next budgeted pass resumes there, so a slice
 //! exceeds its budget by at most one stage or chunk. A pass without a
 //! budget always runs every stage.
@@ -91,7 +96,8 @@ const MISSING_PREFIX: &str = "missing: ";
 const INGEST_FAILED_PREFIX: &str = "ingest-failed: ";
 
 /// Where a budget-stopped pass resumes (device-local).
-const CURSOR_FILE: &str = ".wiki-island/local/maintain-cursor.json";
+/// Inside the per-device local directory ([`Vault::local_dir`]).
+const CURSOR_FILE: &str = "maintain-cursor.json";
 
 /// Notes the scan reads before it checks the clock again.
 const SCAN_CHUNK: usize = 64;
@@ -266,6 +272,10 @@ impl Vault {
         input: &mut Option<wi_history::PublicationMark>,
     ) -> Result<bool> {
         let mut ran = false;
+        // Folder mode (S4): only the primary device writes shared notes in
+        // maintenance; others keep recovery, the index and change detection.
+        let primary = self.is_primary_device();
+        let lifecycle = primary && self.lifecycle_on();
         let mut at = STAGES
             .iter()
             .position(|s| *s == cursor.stage)
@@ -287,35 +297,35 @@ impl Vault {
             match stage {
                 Stage::Recovery => self.maintain_recovery(report)?,
                 Stage::Index => self.maintain_index(report, opts.full || cursor.full)?,
-                Stage::Migrate => {
+                Stage::Migrate if primary => {
                     if !self.maintain_migrate(report, cursor, over)? {
                         return Ok(false);
                     }
                 }
-                Stage::Builtin => self.maintain_builtin(report)?,
-                Stage::Deferred if self.lifecycle_on() => {
+                Stage::Builtin if primary => self.maintain_builtin(report)?,
+                Stage::Deferred if lifecycle => {
                     self.resume_deferred()?;
                 }
-                Stage::Supersedes if self.lifecycle_on() => {
+                Stage::Supersedes if lifecycle => {
                     self.recover_supersedes()?;
                 }
-                Stage::Conflicts if self.lifecycle_on() => {
+                Stage::Conflicts if lifecycle => {
                     self.propagate_conflicts()?;
                 }
-                Stage::Requests if self.lifecycle_on() => {
+                Stage::Requests if lifecycle => {
                     report.work_created += self.convert_work_requests()?.len();
                 }
-                Stage::Sweep if self.lifecycle_on() => {
+                Stage::Sweep if lifecycle => {
                     let mut summary = crate::lifecycle::SweepSummary::default();
                     self.sweep_items(&mut summary)?;
                     report.work_created += summary.work_created.len();
                 }
-                Stage::Scan if self.lifecycle_on() => {
+                Stage::Scan if lifecycle => {
                     if !self.maintain_read_notes(cursor, over)? {
                         return Ok(false);
                     }
                 }
-                Stage::Health if self.lifecycle_on() => {
+                Stage::Health if lifecycle => {
                     match self.scan_input(opts.time_budget.is_some())? {
                         Some((detection, mark)) => {
                             *input = Some(mark);
@@ -349,14 +359,14 @@ impl Vault {
     }
 
     fn load_cursor(&self) -> Option<Cursor> {
-        let bytes = std::fs::read(self.root().join(CURSOR_FILE)).ok()?;
+        let bytes = std::fs::read(self.local_dir().join(CURSOR_FILE)).ok()?;
         serde_json::from_slice(&bytes).ok()
     }
 
     /// Record (or, with `None`, forget) where the next pass resumes.
     /// Best effort: a lost cursor only makes the next pass start over.
     fn save_cursor(&self, cursor: Option<&Cursor>, exists: bool) {
-        let file = self.root().join(CURSOR_FILE);
+        let file = self.local_dir().join(CURSOR_FILE);
         match cursor {
             Some(cursor) => {
                 let Ok(text) = serde_json::to_vec(cursor) else {

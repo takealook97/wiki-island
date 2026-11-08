@@ -172,16 +172,24 @@ pub(crate) fn capture(vault: &Session, args: CaptureArgs) -> Result<Output> {
 }
 
 pub(crate) fn adopt(vault: &Session, path: &str) -> Result<Output> {
+    // Owner adoption first: the agent label goes, then the gates run.
+    let owned = vault.take_ownership(path)?;
     let report = vault.adopt(path)?;
     let resumed = vault.resume_deferred()?;
     let mut human = format!("{}: {}", report.path, report.outcome);
+    if owned.is_some() {
+        human.insert_str(0, "adopted as yours (agent label removed)\n");
+    }
     let adoption = serde_json::to_value(&report)?;
     if let Some(explained) = super::adoption_view::explain(Some(&json!({"adoption": adoption}))) {
         human.push('\n');
         human.push_str(&explained);
     }
     Ok(Output {
-        json: flushed(vault, json!({"adoption": report, "resumed": resumed}))?,
+        json: flushed(
+            vault,
+            json!({"adoption": report, "resumed": resumed, "owned": owned.is_some()}),
+        )?,
         human,
     })
 }

@@ -762,3 +762,21 @@ fn mcp_body_edit_of_a_user_rule_forks_an_agent_candidate() {
     assert_eq!(vault.key("rule.md", "origin")["kind"], "user");
     assert_eq!(vault.key("rule.md", "status"), "active", "{out}");
 }
+
+#[test]
+fn wi_adopt_removes_the_agent_label_of_an_agent_note() {
+    let vault = Vault::new();
+    std::fs::write(
+        vault.root.join("m.md"),
+        "---\ntype: memory\nkind: fact\nsummary: agent fact\norigin:\n  kind: agent\n  locator: mcp:write\n---\nbody\n",
+    )
+    .unwrap();
+    let (ok, value) = vault.cli(&["adopt", "m.md"]);
+    assert!(ok, "{value}");
+    assert_eq!(value["owned"], json!(true), "{value}");
+    let text = std::fs::read_to_string(vault.root.join("m.md")).unwrap();
+    assert!(
+        text.contains("kind: user") && text.contains("cli:adopt"),
+        "{text}"
+    );
+}

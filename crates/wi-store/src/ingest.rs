@@ -304,10 +304,16 @@ impl Vault {
     }
 
     /// Origin rules for file ingress on a lifecycle note (AUTHORITY,
-    /// FORMAT): a new note without `origin` gets `origin.kind=user`; a change
-    /// to claim content sets `origin.kind=user` and resets a memory note to
-    /// `candidate`. The change is a byte-preserving engine write; lifecycle
-    /// evaluation runs the gates from the recorded `gate` work request.
+    /// FORMAT): provenance is read from the note itself, never from the
+    /// channel that delivered the bytes (an editor, Obsidian, a file-sync
+    /// service or a git merge look the same). A note without `origin` gets
+    /// `origin.kind=user`: a new note, or one whose agent label the owner
+    /// removed (adoption). A written `origin` stays as written, so an
+    /// agent-origin note edited or synced in stays agent-origin, and
+    /// nothing is ever downgraded. A change to claim content resets a memory
+    /// note to `candidate`. The change is a byte-preserving engine write;
+    /// lifecycle evaluation runs the gates from the recorded `gate` work
+    /// request.
     fn file_ingress_lifecycle(
         &self,
         rel: &str,
@@ -361,10 +367,16 @@ impl Vault {
             });
         }
         let created = previous.is_none();
+        let previous_origin = previous.as_ref().and_then(|old| {
+            old.frontmatter()
+                .and_then(|f| f.get("origin"))
+                .and_then(|o| o.get("kind").and_then(|k| k.as_str().map(str::to_owned)))
+        });
+        // The owner removed (or rewrote) the agent label: adoption.
+        let adopted =
+            previous_origin.as_deref() == Some("agent") && origin_kind.as_deref() != Some("agent");
         let mut set = Vec::new();
-        if (created && origin_kind.is_none())
-            || (claim_changed && origin_kind.as_deref() != Some("user"))
-        {
+        if origin_kind.is_none() && (created || claim_changed || adopted) {
             let origin = json!({
                 "kind": "user",
                 "locator": "file",
@@ -380,7 +392,7 @@ impl Vault {
         {
             set.push(("status", json!("candidate")));
         }
-        if !claim_changed && !created {
+        if !claim_changed && !created && !adopted {
             return Ok(None);
         }
         self.record_work(
@@ -645,6 +657,8 @@ pub(crate) fn walk_files_parallel<T: Send>(
 fn walker(root: &Path, directory: &Path) -> ignore::WalkBuilder {
     let owned = root.to_path_buf();
     let directory = directory.to_path_buf();
+    // Folder mode: the `.gitignore` rules live in `<gitdir>/info/exclude`.
+    let exclude = wi_index::exclude_matcher(root);
     let mut builder = ignore::WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -665,6 +679,10 @@ fn walker(root: &Path, directory: &Path) -> ignore::WalkBuilder {
                     rel.is_empty() || !is_engine_internal(&rel)
                 })
                 .unwrap_or(false)
+                && !exclude.as_ref().is_some_and(|m| {
+                    m.matched(entry.path(), entry.file_type().is_some_and(|t| t.is_dir()))
+                        .is_ignore()
+                })
         });
     builder
 }

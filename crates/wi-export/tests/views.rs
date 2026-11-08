@@ -129,7 +129,10 @@ fn regeneration_start_change_expiry_clock_and_no_feedback_loop() {
     let mut regen = Regenerator::default();
     assert!(regen.refresh(&f.vault).unwrap());
     let before = f.text(".wiki-island/exports/AGENTS.md");
-    assert!(before.contains("generated_at: 2026-11-05T12:00:00"));
+    assert!(
+        !before.contains("generated_at"),
+        "no wall clock in the file"
+    );
     assert!(before.contains("valid_until: 2026-11-05T13:00:00"));
     assert!(!regen.refresh(&f.vault).unwrap());
     f.seed("new.md", json!({"kind":"preference"}), "Another rule.");
@@ -144,7 +147,7 @@ fn regeneration_start_change_expiry_clock_and_no_feedback_loop() {
     assert!(regen.refresh(&f.vault).unwrap());
     let after = f.text(".wiki-island/exports/AGENTS.md");
     assert!(!after.contains("Temporary rule."));
-    assert!(after.contains("generated_at: 2026-11-05T13:00:00"));
+    assert!(!after.contains("generated_at"));
     assert!(!regen.refresh(&f.vault).unwrap());
     std::fs::remove_file(f.vault.root().join(".wiki-island/exports/AGENTS.md")).unwrap();
     assert!(regen.refresh(&f.vault).unwrap());
@@ -676,4 +679,17 @@ fn reappearing_identical_legacy_exports_are_removed_by_maintenance() {
     assert_eq!(report.migrated, 1, "{report:?}");
     assert!(!f.vault.root().join("exports").exists());
     assert_eq!(f.text(&hidden("AGENTS.md")), generated);
+}
+
+#[test]
+fn rules_export_bytes_do_not_depend_on_the_clock() {
+    let f = Fixture::new();
+    f.seed("rule.md", json!({}), "Stable rule.");
+    export_rules(&f.vault, &[Host::Codex]).unwrap();
+    let first = f.text(".wiki-island/exports/AGENTS.md");
+    f.vault.set_lifecycle_clock(Some(
+        wi_lifecycle::parse_time("2026-11-05T12:30:00Z").unwrap(),
+    ));
+    export_rules(&f.vault, &[Host::Codex]).unwrap();
+    assert_eq!(f.text(".wiki-island/exports/AGENTS.md"), first);
 }

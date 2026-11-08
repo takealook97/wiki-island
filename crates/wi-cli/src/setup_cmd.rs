@@ -50,6 +50,7 @@ pub(crate) fn setup(
     binary: &Path,
     codex_home: Option<&Path>,
     launchctl: &dyn service::Launchctl,
+    primary: bool,
 ) -> Result<Output> {
     setup_with_options(
         root,
@@ -58,6 +59,7 @@ pub(crate) fn setup(
         codex_home,
         launchctl,
         wi_store::OpenOptions::default(),
+        primary,
     ).map_err(|_| anyhow::anyhow!("Setup could not finish; check that Wiki Island is installed in its permanent location and your AI app settings are readable and writable, then run wi setup again."))
 }
 fn setup_with_options(
@@ -67,6 +69,7 @@ fn setup_with_options(
     codex_home: Option<&Path>,
     launchctl: &dyn service::Launchctl,
     options: wi_store::OpenOptions,
+    primary: bool,
 ) -> Result<Output> {
     let home = std::path::absolute(home)?;
     let home = home.as_path();
@@ -123,7 +126,21 @@ fn setup_with_options(
     let plans = preflight().map_err(|_| anyhow::anyhow!(
         "Setup could not start; install the program in its permanent location and check that your AI app settings are readable and writable."
     ))?;
+    // Inside a file-synced folder the vault starts in folder mode (history
+    // in this device's data folder); otherwise in git mode.
     let (vault, _) = Vault::init_with(&root, options)?;
+    if primary {
+        vault.set_primary_device()?;
+    }
+    let storage = match vault.storage_mode() {
+        wi_store::StorageMode::Git => "",
+        wi_store::StorageMode::Folder if vault.is_primary_device() => {
+            "History is kept on this device, outside the synced folder; this device runs note maintenance.\n"
+        }
+        wi_store::StorageMode::Folder => {
+            "History is kept on this device, outside the synced folder; another device runs note maintenance (wi setup --primary takes over).\n"
+        }
+    };
     let targets = detected
         .iter()
         .filter_map(|host| skills::SkillTarget::for_host(*host))
@@ -181,11 +198,11 @@ fn setup_with_options(
     };
     Ok(Output {
         human: format!(
-            "Your notes are ready at {}.\nConnected {} AI app(s). {skill_message}\n{background}",
+            "Your notes are ready at {}.\n{storage}Connected {} AI app(s). {skill_message}\n{background}",
             root.display(),
             detected.len()
         ),
-        json: json!({"vault":root,"hosts":detected,"skills":synced,"background":cfg!(target_os="macos")}),
+        json: json!({"vault":root,"storage":vault.storage_mode(),"primary":vault.is_primary_device(),"hosts":detected,"skills":synced,"background":cfg!(target_os="macos")}),
     })
 }
 pub(crate) fn uninstall(
@@ -326,7 +343,7 @@ mod tests {
         let options = || wi_store::OpenOptions {
             index_path: Some(temp.path().join("cache.sqlite3")),
         };
-        let out = setup_with_options(&root, &home, &binary, None, &fake, options()).unwrap();
+        let out = setup_with_options(&root, &home, &binary, None, &fake, options(), false).unwrap();
         assert_eq!(out.human.lines().count(), 3);
         // Skills land only under the given home, one owned copy per target.
         let owned = |dir: &str| {
@@ -354,7 +371,7 @@ mod tests {
             .iter()
             .map(|h| std::fs::read(home.join(h.config_path)).unwrap())
             .collect::<Vec<_>>();
-        setup_with_options(&root, &home, &binary, None, &fake, options()).unwrap();
+        setup_with_options(&root, &home, &binary, None, &fake, options(), false).unwrap();
         assert_eq!(Vault::open_with(&root, options()).unwrap().vault_id(), id);
         assert_eq!(
             std::fs::read_to_string(&note).unwrap(),
