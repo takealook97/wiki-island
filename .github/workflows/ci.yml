@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      os:
+        type: choice
+        options: [all, windows-latest, ubuntu-latest, macos-latest]
+        default: all
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.matrix.outputs.os }}
+    steps:
+      - id: matrix
+        env:
+          SELECTED_OS: ${{ inputs.os || 'all' }}
+        run: |
+          if [ "$SELECTED_OS" = all ]; then
+            echo 'os=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "os=[\"$SELECTED_OS\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  gate:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
