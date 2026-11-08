@@ -7,20 +7,25 @@ use sha2::{Digest, Sha256};
 use crate::durable::{self, Durability};
 use crate::error::{HistoryError, Result};
 use crate::manifest::Manifest;
+use crate::storage::{self, StorageMode};
 
-/// Vault config file, relative to the root.
-const CONFIG_PATH: &str = ".wiki-island/config.toml";
 /// Staging directory for a new repository; `.git` appears only by rename
 /// after its metadata passed the durability barrier.
 const INIT_STAGING: &str = ".wiki-island-init.tmp";
 /// Written in `.git/wi` after the vault root passed its barrier with `.git`.
 const INIT_MARKER: &str = "init-complete";
+/// Staging name of an external git directory, next to its final `git`.
+const EXTERNAL_STAGING: &str = "git.tmp";
+/// Lock serialising a re-bind of a moved folder-mode vault.
+const REBIND_LOCK: &str = "rebind.lock";
+/// The folder a moved folder-mode vault was bound to, for doctor.
+const REBOUND_MARKER: &str = "rebound-from";
 
 /// The `durability` key of the vault config. A missing file or key means
 /// `standard`; an unreadable file or unknown value is an error, so a vault
 /// configured for `full` never silently runs weaker.
 pub(crate) fn read_durability(root: &Path) -> Result<Durability> {
-    let path = root.join(CONFIG_PATH);
+    let path = root.join(storage::CONFIG_PATH);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Durability::default()),
@@ -119,47 +124,125 @@ pub struct Vault {
     git_dir: PathBuf,
     repo: gix::Repository,
     durability: Durability,
+    mode: StorageMode,
+    data_root: Option<PathBuf>,
+    rebound_from: Option<PathBuf>,
 }
 
 impl fmt::Debug for Vault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Vault")
             .field("root", &self.root)
+            .field("mode", &self.mode)
             .field("durability", &self.durability)
             .finish()
     }
 }
 
 impl Vault {
-    /// Open the vault at `root`, which must hold a non-bare repository in
-    /// `root/.git`. The barrier strength comes from the config key
-    /// `durability` (default `standard`).
+    /// Open the vault at `root`: `root/.git` (git mode), else the external
+    /// git directory registered for its `vault_id` in the per-device data
+    /// directory (folder mode). The barrier strength comes from the config
+    /// key `durability` (default `standard`).
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
+        Self::open_in(root, None)
+    }
+
+    /// `open` with an explicit per-device data directory (default:
+    /// [`crate::data_root`]).
+    pub fn open_in(root: impl AsRef<Path>, data_root: Option<&Path>) -> Result<Self> {
         let root = root.as_ref();
         let root = root.canonicalize().map_err(|e| HistoryError::io(root, e))?;
         let git_dir = root.join(".git");
-        if !git_dir.is_dir() {
-            return Err(HistoryError::NotARepository(root));
+        if git_dir.is_dir() {
+            let repo = gix::open(&root).map_err(HistoryError::git)?;
+            let mut vault = Self::from_repo(root, git_dir, repo, StorageMode::Git)?;
+            vault.data_root = data_root.map(Path::to_path_buf);
+            vault.complete_init()?;
+            return Ok(vault);
         }
-        let repo = gix::open(&root).map_err(HistoryError::git)?;
-        let vault = Self::from_repo(root, git_dir, repo)?;
+        let Some(git_dir) = storage::external_git_dir(&root, data_root)? else {
+            return Err(HistoryError::NotARepository(root));
+        };
+        let rebound_from = Self::bind_worktree(&root, &git_dir)?;
+        let repo = gix::open(&git_dir).map_err(HistoryError::git)?;
+        let mut vault = Self::from_repo(root, git_dir, repo, StorageMode::Folder)?;
+        vault.data_root = data_root.map(Path::to_path_buf);
+        let marker = vault.wi_dir().join(REBOUND_MARKER);
+        vault.rebound_from = match rebound_from {
+            Some(old) => Some(old),
+            None => std::fs::read_to_string(&marker)
+                .ok()
+                .map(|t| PathBuf::from(t.trim_end_matches('\n'))),
+        };
         vault.complete_init()?;
         Ok(vault)
     }
 
-    /// Make the `.git` entry in the vault root durable once. `init` renames
-    /// a fully barriered `.git` into place, so a visible `.git` holds durable
-    /// contents, but a crash or failed barrier between that rename and the
-    /// root barrier leaves the entry itself unproven. The marker is written
-    /// only after the root barrier, so its absence (an interrupted init, or
-    /// a repository created by another tool) redoes the barrier before any
-    /// write is accepted.
+    /// Make sure the external git directory's `core.worktree` names `root`.
+    /// A vault moved on this device is re-bound under the rebind lock and
+    /// remembered for doctor; a second copy with the same `vault_id` while
+    /// the bound folder still exists is refused, never silently taken over.
+    fn bind_worktree(root: &Path, git_dir: &Path) -> Result<Option<PathBuf>> {
+        let bound = |dir: &Path| -> Result<Option<PathBuf>> {
+            let repo = gix::open(dir).map_err(HistoryError::git)?;
+            Ok(repo
+                .workdir()
+                .map(|w| w.canonicalize().unwrap_or_else(|_| w.to_path_buf())))
+        };
+        if bound(git_dir)?.as_deref() == Some(root) {
+            return Ok(None);
+        }
+        let wi = git_dir.join("wi");
+        durable::create_dir_durable(&wi, Durability::default())?;
+        let lock_path = wi.join(REBIND_LOCK);
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| HistoryError::io(&lock_path, e))?;
+        lock.lock().map_err(|e| HistoryError::io(&lock_path, e))?;
+        let old = bound(git_dir)?;
+        if old.as_deref() == Some(root) {
+            return Ok(None);
+        }
+        let mode = read_durability(root)?;
+        if let Some(old) = &old
+            && old.join(storage::CONFIG_PATH).is_file()
+            && storage::read_vault_id(old)? == storage::read_vault_id(root)?
+        {
+            return Err(HistoryError::BoundElsewhere { other: old.clone() });
+        }
+        durable::write_atomic(
+            &git_dir.join("config"),
+            storage::external_config(root)?.as_bytes(),
+            mode,
+        )?;
+        let from = old.unwrap_or_default();
+        durable::write_atomic(
+            &wi.join(REBOUND_MARKER),
+            format!("{}\n", from.display()).as_bytes(),
+            mode,
+        )?;
+        Ok(Some(from))
+    }
+
+    /// Make the history directory entry durable once. `init` renames a
+    /// fully barriered git directory into place, so a visible one holds
+    /// durable contents, but a crash or failed barrier between that rename
+    /// and its parent's barrier leaves the entry itself unproven. The marker
+    /// is written only after the parent barrier, so its absence (an
+    /// interrupted init, or a repository created by another tool) redoes the
+    /// barrier before any write is accepted.
     fn complete_init(&self) -> Result<()> {
         let marker = self.wi_dir().join(INIT_MARKER);
         if marker.is_file() {
             return Ok(());
         }
-        durable::barrier_dir(&self.root, self.durability)?;
+        let parent = self.git_dir.parent().unwrap_or(&self.root);
+        durable::barrier_dir(parent, self.durability)?;
         self.ensure_wi_dir()?;
         durable::write_atomic(&marker, b"wiki-island init complete\n", self.durability)
     }
@@ -197,7 +280,48 @@ impl Vault {
         Self::open(root)
     }
 
-    fn from_repo(root: PathBuf, git_dir: PathBuf, repo: gix::Repository) -> Result<Self> {
+    /// Initialise a folder-mode vault: history in
+    /// `<data>/vaults/<vault_id>/git` with `core.worktree` = `root`, so the
+    /// folder holds no `.git`. The config with a `vault_id` must exist. A
+    /// vault that already has `root/.git` stays in git mode.
+    ///
+    /// Same barrier discipline as [`Vault::init`]: the repository is built in
+    /// `git.tmp` next to its final place, every file passes the barrier, then
+    /// it is renamed to `git` and the parent is barriered on open.
+    pub fn init_folder(root: impl AsRef<Path>, data_root: Option<&Path>) -> Result<Self> {
+        let root = root.as_ref();
+        let root = root.canonicalize().map_err(|e| HistoryError::io(root, e))?;
+        if root.join(".git").is_dir() || storage::external_git_dir(&root, data_root)?.is_some() {
+            return Self::open_in(&root, data_root);
+        }
+        let Some(id) = storage::read_vault_id(&root)? else {
+            return Err(HistoryError::InvalidConfig {
+                reason: "folder mode needs a vault_id in .wiki-island/config.toml".into(),
+            });
+        };
+        let mode = read_durability(&root)?;
+        let state = storage::vault_state_dir(&storage::data_root_or_default(data_root)?, &id)?;
+        durable::create_dir_durable(&state, mode)?;
+        let staging = state.join(EXTERNAL_STAGING);
+        if staging.exists() {
+            std::fs::remove_dir_all(&staging).map_err(|e| HistoryError::io(&staging, e))?;
+        }
+        gix::init_bare(&staging).map_err(HistoryError::git)?;
+        std::fs::write(staging.join("config"), storage::external_config(&root)?)
+            .map_err(|e| HistoryError::io(staging.join("config"), e))?;
+        durable::barrier_tree(&staging, mode)?;
+        let target = state.join("git");
+        std::fs::rename(&staging, &target).map_err(|e| HistoryError::io(&target, e))?;
+        durable::trace::record(durable::trace::Kind::Rename, &target);
+        Self::open_in(&root, data_root)
+    }
+
+    fn from_repo(
+        root: PathBuf,
+        git_dir: PathBuf,
+        repo: gix::Repository,
+        mode: StorageMode,
+    ) -> Result<Self> {
         if repo.workdir().is_none() {
             return Err(HistoryError::NotARepository(root));
         }
@@ -207,7 +331,44 @@ impl Vault {
             git_dir,
             repo,
             durability,
+            mode,
+            data_root: None,
+            rebound_from: None,
         })
+    }
+
+    /// Where this vault keeps its history.
+    pub fn storage_mode(&self) -> StorageMode {
+        self.mode
+    }
+
+    /// The explicit per-device data directory this vault was opened with.
+    pub fn data_root(&self) -> Option<&Path> {
+        self.data_root.as_deref()
+    }
+
+    /// The folder this folder-mode vault was bound to before it moved on
+    /// this device (empty when unknown), for doctor.
+    pub fn rebound_from(&self) -> Option<&Path> {
+        self.rebound_from.as_deref()
+    }
+
+    /// Per-device state: `.wiki-island/local` in git mode,
+    /// `<data>/vaults/<vault_id>/local` in folder mode (next to the git dir).
+    pub fn local_dir(&self) -> PathBuf {
+        match self.mode {
+            StorageMode::Git => self.root.join(storage::VAULT_LOCAL_DIR),
+            StorageMode::Folder => self
+                .git_dir
+                .parent()
+                .map(|p| p.join("local"))
+                .unwrap_or_else(|| self.root.join(storage::VAULT_LOCAL_DIR)),
+        }
+    }
+
+    /// The git exclude file honoured in addition to `.gitignore` files.
+    pub fn exclude_file(&self) -> PathBuf {
+        self.git_dir.join("info").join("exclude")
     }
 
     /// Barrier strength used for every fsync of this vault.

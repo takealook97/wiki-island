@@ -293,3 +293,42 @@ fn every_append_barriers_its_blob_before_the_record() {
         .count();
     assert_eq!(appends, 2, "intent and done each pass a barrier");
 }
+
+#[test]
+fn folder_init_barriers_external_git_before_it_becomes_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    let root = base.join("vault");
+    std::fs::create_dir_all(root.join(".wiki-island")).unwrap();
+    std::fs::write(root.join(".wiki-island/config.toml"), "vault_id = \"v1\"\n").unwrap();
+    let data = base.join("data");
+    let (vault, events) = trace::capture(|| Vault::init_folder(&root, Some(&data)));
+    vault.unwrap();
+    let state = data.join("vaults/v1");
+    let target = state.join("git");
+    let rename = position(&events, Kind::Rename, &target).expect("staged rename");
+    let staged = state.join("git.tmp");
+    for file in ["HEAD", "config"] {
+        assert_before(&events, Kind::File, &staged.join(file), rename);
+    }
+    for sub in ["refs/heads", "refs", "objects", ""] {
+        let path = if sub.is_empty() {
+            staged.clone()
+        } else {
+            staged.join(sub)
+        };
+        assert_before(&events, Kind::Dir, &path, rename);
+    }
+    let parent_barrier = events
+        .iter()
+        .rposition(|(k, p)| *k == Kind::Dir && p == &state)
+        .unwrap();
+    assert!(parent_barrier > rename, "the new git entry is made durable");
+    let marked = position(&events, Kind::Rename, &target.join("wi/init-complete")).expect("marker");
+    assert!(
+        parent_barrier < marked,
+        "the marker follows the parent barrier"
+    );
+    assert!(!staged.exists());
+    assert!(!root.join(".git").exists());
+}

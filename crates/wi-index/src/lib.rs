@@ -21,7 +21,8 @@ use thiserror::Error;
 
 pub use operations::OperationRow;
 pub use sync::{
-    IndexDiagnostic, SyncReport, ignored, ignored_dir, ignored_with_errors, literal_search,
+    IndexDiagnostic, SyncReport, exclude_matcher, ignored, ignored_dir, ignored_with_errors,
+    literal_search, set_exclude_file,
 };
 pub type RelPath = PathBuf;
 pub type Result<T> = std::result::Result<T, Error>;

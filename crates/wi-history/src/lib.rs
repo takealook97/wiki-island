@@ -21,13 +21,14 @@ mod manifest;
 mod missing;
 mod pin;
 mod recovery;
+mod storage;
 mod vault;
 
 #[cfg(test)]
 mod barrier_tests;
 
 pub use changes::{PublicationMark, changed_paths_since, publication_mark};
-pub use cloud::cloud_sync_warning;
+pub use cloud::{cloud_service, cloud_sync_warning};
 pub use durable::Durability;
 pub use error::{HistoryError, Result};
 pub use flush::{CommitSummary, FlushBlock, FlushReport, Flusher};
@@ -42,6 +43,10 @@ pub use pin::{PinRef, PinResolution, PinSource, resolve_pin};
 pub use recovery::{
     ConflictEntry, FsWorkingTree, QuarantineEntry, Recovery, RecoveryReport, UnsettledIntent,
     WorkingTree,
+};
+pub use storage::{
+    DATA_DIR_ENV, StorageMode, VAULT_LOCAL_DIR, data_root, device_id, external_git_dir,
+    local_state_dir, read_vault_id, storage_mode, vault_state_dir,
 };
 pub use vault::{Blob, BlobId, Vault, blob_id_of, generation, hash_bytes, publication_state};
 

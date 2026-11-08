@@ -188,6 +188,7 @@ fn reserved(path: &Path, ignored: &[PathBuf]) -> bool {
 }
 fn walk(root: &Path, ignored: Vec<PathBuf>, report: &mut SyncReport) -> BTreeMap<String, Stamp> {
     let root_owned = root.to_path_buf();
+    let exclude = exclude_matcher(root);
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -201,6 +202,10 @@ fn walk(root: &Path, ignored: Vec<PathBuf>, report: &mut SyncReport) -> BTreeMap
                 .path()
                 .strip_prefix(&root_owned)
                 .is_ok_and(|rel| !reserved(rel, &ignored))
+                && !exclude.as_ref().is_some_and(|m| {
+                    m.matched(entry.path(), entry.file_type().is_some_and(|t| t.is_dir()))
+                        .is_ignore()
+                })
         });
     let mut files = BTreeMap::new();
     for entry in builder.build() {
@@ -244,6 +249,47 @@ fn allowed(root: &Path, path: &Path, ignored: &[PathBuf]) -> Result<bool> {
         return Err(errors.swap_remove(0).into());
     }
     Ok(!excluded)
+}
+
+/// Extra exclude files (a folder-mode vault's `<gitdir>/info/exclude`),
+/// keyed by canonical vault root. The vault registers its file on open.
+static EXCLUDES: std::sync::Mutex<BTreeMap<PathBuf, PathBuf>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// Register (or clear) the git exclude file whose rules apply to the vault
+/// at `root` below its `.ignore` and `.gitignore` files. A git-mode vault
+/// keeps its rules in `.gitignore` and registers nothing.
+pub fn set_exclude_file(root: &Path, file: Option<&Path>) {
+    let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut map = EXCLUDES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match file {
+        Some(file) => {
+            map.insert(key, file.to_path_buf());
+        }
+        None => {
+            map.remove(&key);
+        }
+    }
+}
+
+/// The matcher of the exclude file registered for `root`, rooted at `root`.
+pub fn exclude_matcher(root: &Path) -> Option<ignore::gitignore::Gitignore> {
+    let file = {
+        let map = EXCLUDES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        map.get(root)
+            .or_else(|| root.canonicalize().ok().and_then(|c| map.get(&c)))
+            .cloned()?
+    };
+    if !file.is_file() {
+        return None;
+    }
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+    builder.add(file);
+    builder.build().ok()
 }
 
 /// Whether the `.ignore` and `.gitignore` files of `root` and of the
@@ -293,6 +339,7 @@ fn ignored_kind(root: &Path, rel: &Path, dir: bool) -> (bool, Vec<ignore::Error>
         }
     };
     let parts: Vec<_> = rel.components().collect();
+    let exclude = exclude_matcher(root);
     // Matchers of the directories from the root down, by file kind.
     let mut dot_ignore: Vec<Gitignore> = Vec::new();
     let mut git_ignore: Vec<Gitignore> = Vec::new();
@@ -311,7 +358,11 @@ fn ignored_kind(root: &Path, rel: &Path, dir: bool) -> (bool, Vec<ignore::Error>
                     found => Some(found.is_ignore()),
                 })
         };
-        if decide(&dot_ignore).or_else(|| decide(&git_ignore)) == Some(true) {
+        if decide(&dot_ignore)
+            .or_else(|| decide(&git_ignore))
+            .or_else(|| decide(exclude.as_slice()))
+            == Some(true)
+        {
             return (true, errors);
         }
     }

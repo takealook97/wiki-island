@@ -29,6 +29,10 @@ pub enum HistoryError {
     Injected(&'static str),
     #[error("{0} is not a git repository with a working tree")]
     NotARepository(PathBuf),
+    #[error(
+        "the history of this notes folder belongs to the copy at {other}; give this copy its own vault_id or remove the other copy"
+    )]
+    BoundElsewhere { other: PathBuf },
     #[error("HEAD is detached; the engine commits only to a branch")]
     DetachedHead,
     #[error("invalid vault path {path:?}: {reason}")]
