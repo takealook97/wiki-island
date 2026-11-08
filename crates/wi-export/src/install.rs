@@ -558,7 +558,7 @@ pub fn plan_remove_at(host: HostId, path: &Path, vault: &Path) -> Result<Option<
     };
     Ok(Some(Plan {
         path,
-        diff: "Remove this vault's Wiki Island connection.\n".into(),
+        diff: "Remove this vault's wiki-island connection.\n".into(),
         changed: before != after,
         warnings: vec![],
         permissions,

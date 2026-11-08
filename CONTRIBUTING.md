@@ -1,6 +1,6 @@
 # Contributing
 
-Wiki Island is a Rust workspace of ten crates; the [design](docs/DESIGN.md) has the crate map. Read the [repository contract](AGENTS.md) first.
+wiki-island is a Rust workspace of ten crates; the [design](docs/DESIGN.md) has the crate map. Read the [repository contract](AGENTS.md) first.
 
 ## Setup and checks
 

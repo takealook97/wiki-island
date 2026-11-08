@@ -1,10 +1,10 @@
 # Integrations
 
-How Wiki Island connects to AI hosts and editors. Support is claimed only for a host with a recorded test run ([VALIDATION](VALIDATION.md#host-and-client-checks)).
+How wiki-island connects to AI hosts and editors. Support is claimed only for a host with a recorded test run ([VALIDATION](VALIDATION.md#host-and-client-checks)).
 
 ## Setup and uninstall
 
-`wi setup [--vault <dir>]` is one zero-question, idempotent command (default vault `~/WikiIsland`). `scripts/install.sh` installs the Rust toolchain if missing, builds and installs `wi`, then runs it. `scripts/uninstall.sh` runs `wi uninstall`. `wi setup` first preflights every step, including the service binary, and writes nothing if one fails; the failure is one plain sentence. It:
+`wi setup [--vault <dir>]` is one zero-question, idempotent command (default vault `~/wiki-island`). `scripts/install.sh` installs the Rust toolchain if missing, builds and installs `wi`, then runs it. `scripts/uninstall.sh` runs `wi uninstall`. `wi setup` first preflights every step, including the service binary, and writes nothing if one fails; the failure is one plain sentence. It:
 
 1. initializes the vault if missing;
 2. installs the background service (macOS launchd; [OPERATIONS](OPERATIONS.md#service));
@@ -12,11 +12,11 @@ How Wiki Island connects to AI hosts and editors. Support is claimed only for a 
 4. runs the first maintenance pass;
 5. prints a three-line plain-language summary.
 
-`wi uninstall` reverses everything Wiki Island owns: the service, the host MCP entries and the exported skills, including files and empty containers it created itself (for example a VS Code `mcp.json`). Log and LaunchAgents folders are left only if they existed before. It never deletes notes, removes the disposable device cache and prints one sentence saying the notes were kept. After setup the owner only talks to their AI; maintenance, repair and skill upkeep are silent unless something needs a human, in which case the maintenance procedure tells the owner in one plain sentence.
+`wi uninstall` reverses everything wiki-island owns: the service, the host MCP entries and the exported skills, including files and empty containers it created itself (for example a VS Code `mcp.json`). Log and LaunchAgents folders are left only if they existed before. It never deletes notes, removes the disposable device cache and prints one sentence saying the notes were kept. After setup the owner only talks to their AI; maintenance, repair and skill upkeep are silent unless something needs a human, in which case the maintenance procedure tells the owner in one plain sentence.
 
 ## Host table
 
-MCP registration is data-driven over a host table in `crates/wi-export` (`hosts` module, `detect(home)`). A host is configured only if its config file or directory already exists: Wiki Island detects, and never creates, a host's application directories. Each entry names its detection path, config path, format (a JSON key path or a TOML table), backup and edit strategy.
+MCP registration is data-driven over a host table in `crates/wi-export` (`hosts` module, `detect(home)`). A host is configured only if its config file or directory already exists: wiki-island detects, and never creates, a host's application directories. Each entry names its detection path, config path, format (a JSON key path or a TOML table), backup and edit strategy.
 
 | Host | Config format |
 | --- | --- |
@@ -36,7 +36,7 @@ wi mcp install --host claude|codex|agy --vault <dir> --yes    # apply
 wi mcp --vault <dir>                                          # raw stdio server
 ```
 
-`wi setup` does this for every detected host. Without `--yes` only a diff is shown. Applying edits only the Wiki Island entry, preserves every other key, server, comment and the original bytes and file mode outside that entry, writes a timestamped backup of the original (including a 0-byte file) under `backups/` of the per-device local directory (`<vault>/.wiki-island/local/` in git mode, the data directory in folder mode), never beside the host's files, and is idempotent: an unchanged re-run writes nothing and creates no backup. An existing HTTP transport entry for Wiki Island is replaced by stdio fields. The installed command uses the running binary's absolute path. The installer neither launches the host nor verifies its authentication. Use an absolute binary path if a host does not inherit your shell `PATH`.
+`wi setup` does this for every detected host. Without `--yes` only a diff is shown. Applying edits only the wiki-island entry, preserves every other key, server, comment and the original bytes and file mode outside that entry, writes a timestamped backup of the original (including a 0-byte file) under `backups/` of the per-device local directory (`<vault>/.wiki-island/local/` in git mode, the data directory in folder mode), never beside the host's files, and is idempotent: an unchanged re-run writes nothing and creates no backup. An existing HTTP transport entry for wiki-island is replaced by stdio fields. The installed command uses the running binary's absolute path. The installer neither launches the host nor verifies its authentication. Use an absolute binary path if a host does not inherit your shell `PATH`.
 
 MCP-created notes get `origin.kind=agent`. Delivered text is evidence, not instruction. No provider-specific memory store is overwritten, and a host without tool access can still read the Markdown files. Tools, schemas and caps: [PROTOCOL](PROTOCOL.md).
 
@@ -61,7 +61,7 @@ Run `wi export rules --host claude|codex|gemini|all --json` (default all). The J
 ## Obsidian and other editors
 
 - Notes are plain Markdown, so an Obsidian vault works as is: wikilinks, frontmatter, tags and attachments are read like any note. There is no plugin and no special property schema.
-- The `.obsidian/` and `.trash/` folders are ignored and never read, indexed or modified. Wiki Island treats an Obsidian save as an ordinary external edit.
+- The `.obsidian/` and `.trash/` folders are ignored and never read, indexed or modified. wiki-island treats an Obsidian save as an ordinary external edit.
 - Unsupported link or syntax forms are reported, never rewritten.
 - Whether `![[embed]]` is indexed as a link is not established.
 

@@ -107,7 +107,7 @@ fn skills_status_previews_sync_installs_and_all_read_modes_keep_working() {
 fn help_frontmatter_and_import_errors_use_plain_actionable_text() {
     let env = Env::new();
     let help = String::from_utf8(env.run(&["--help"]).stdout).unwrap();
-    assert!(help.contains("~/WikiIsland"));
+    assert!(help.contains("~/wiki-island"));
     for internal in ["stat-walk", "sidecars", "manifest", "branch tip"] {
         assert!(!help.contains(internal), "{help}");
     }

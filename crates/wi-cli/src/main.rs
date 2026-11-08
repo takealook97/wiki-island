@@ -30,9 +30,9 @@ use wi_store::{
 const SNIPPET_CHARS: usize = 120;
 
 #[derive(Parser)]
-#[command(name = "wi", version, about = "Wiki Island personal knowledge engine")]
+#[command(name = "wi", version, about = "wiki-island personal knowledge engine")]
 struct Cli {
-    /// Notes folder (default: $WI_VAULT, else ~/WikiIsland; uses the current folder when it is a vault).
+    /// Notes folder (default: $WI_VAULT, else ~/wiki-island; uses the current folder when it is a vault).
     #[arg(long, global = true, env = "WI_VAULT")]
     vault: Option<PathBuf>,
     /// Machine-readable output.
@@ -146,7 +146,7 @@ enum Command {
         #[command(subcommand)]
         command: publish_cmd::PublishCommand,
     },
-    /// Remove Wiki Island connections and background care; keep your notes.
+    /// Remove wiki-island connections and background care; keep your notes.
     Uninstall,
     /// Keep AI app skills up to date with your procedures.
     Skills {
@@ -522,7 +522,7 @@ fn vault_root(cli_vault: &Option<PathBuf>) -> PathBuf {
         if !std::path::Path::new(".wiki-island/config.toml").is_file()
             && let Some(home) = std::env::var_os("HOME")
         {
-            let default = PathBuf::from(home).join("WikiIsland");
+            let default = PathBuf::from(home).join("wiki-island");
             if default.join(".wiki-island/config.toml").is_file() {
                 return default;
             }

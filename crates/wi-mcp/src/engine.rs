@@ -1295,7 +1295,7 @@ fn message(code: &str) -> &'static str {
         }
         "terminal-note" => "This note is kept as history. Save the corrected claim as a new note.",
         "lifecycle-unavailable" => {
-            "Memory upkeep is unavailable in this connection. Reconnect to Wiki Island."
+            "Memory upkeep is unavailable in this connection. Reconnect to wiki-island."
         }
         "lifecycle-revert-requires-fork" => {
             "Copy the earlier claim into a new note so its history is kept."

@@ -4,7 +4,7 @@
 
 ## Product
 
-- Wiki Island is a personal knowledge and memory engine for one owner, used across that owner's devices and AI tools.
+- wiki-island is a personal knowledge and memory engine for one owner, used across that owner's devices and AI tools.
 - It ships as one Rust program installed under two binary names, `wi` and `wiki-island`, with a CLI and an MCP stdio server ([PROTOCOL](PROTOCOL.md)).
 - There is no UI, dashboard, web app or mobile app. Notes are plain files, so Obsidian or any editor is optional and works as is ([INTEGRATIONS](INTEGRATIONS.md#obsidian-and-other-editors)).
 - Private, personal use.

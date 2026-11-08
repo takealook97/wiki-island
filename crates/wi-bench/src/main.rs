@@ -7,7 +7,7 @@ use wi_bench::{check, generate, measure, median_report, read_report, write_repor
 mod quality;
 
 #[derive(Parser)]
-#[command(about = "Opt-in reproducible Wiki Island measurement")]
+#[command(about = "Opt-in reproducible wiki-island measurement")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

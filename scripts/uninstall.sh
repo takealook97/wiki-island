@@ -1,10 +1,10 @@
 #!/bin/sh
-# Removes what Wiki Island added to this Mac. Your notes are kept.
+# Removes what wiki-island added to this Mac. Your notes are kept.
 set -eu
 
 WI=$(command -v wi || true)
 [ -n "$WI" ] || WI="$HOME/.cargo/bin/wi"
-[ -x "$WI" ] || { printf '%s\n' "Wiki Island is not installed (no wi program found)."; exit 0; }
+[ -x "$WI" ] || { printf '%s\n' "wiki-island is not installed (no wi program found)."; exit 0; }
 
 "$WI" uninstall
 printf '%s\n' ""

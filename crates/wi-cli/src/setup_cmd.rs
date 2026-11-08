@@ -33,7 +33,7 @@ pub(crate) fn home() -> Result<PathBuf> {
         .context("Your home directory could not be located.")
 }
 pub(crate) fn root(root: &Option<PathBuf>, home: &Path) -> PathBuf {
-    root.clone().unwrap_or_else(|| home.join("WikiIsland"))
+    root.clone().unwrap_or_else(|| home.join("wiki-island"))
 }
 
 /// First maintenance pass: take in existing files, then run the shared maintenance pass.
@@ -60,7 +60,7 @@ pub(crate) fn setup(
         launchctl,
         wi_store::OpenOptions::default(),
         primary,
-    ).map_err(|_| anyhow::anyhow!("Setup could not finish; check that Wiki Island is installed in its permanent location and your AI app settings are readable and writable, then run wi setup again."))
+    ).map_err(|_| anyhow::anyhow!("Setup could not finish; check that wiki-island is installed in its permanent location and your AI app settings are readable and writable, then run wi setup again."))
 }
 fn setup_with_options(
     root: &Path,
@@ -223,7 +223,7 @@ pub(crate) fn uninstall(
     )?)?;
     let vault_id = config
         .vault_id()
-        .context("Your notes folder has no Wiki Island identity.")?;
+        .context("Your notes folder has no wiki-island identity.")?;
     let root = std::fs::canonicalize(root)?;
     let state = wi_export::local::Targets::load(&root)?;
     let Some(state) = state else {
@@ -247,7 +247,7 @@ pub(crate) fn uninstall(
     install::cleanup_created_dirs(&root)?;
     remove_cache(&state.cache_root, vault_id)?;
     Ok(Output {
-        human: "Wiki Island is disconnected and background care is removed.".into(),
+        human: "wiki-island is disconnected and background care is removed.".into(),
         json: json!({"removed":true,"hosts":removed,"skills":skills,"notes_kept":true}),
     })
 }
@@ -332,7 +332,7 @@ mod tests {
         for host in hosts::HOSTS {
             std::fs::create_dir_all(home.join(host.detect_path)).unwrap();
         }
-        let root = home.join("WikiIsland");
+        let root = home.join("wiki-island");
         let binary = temp.path().join("bin/wi");
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(&binary, "fake installed executable").unwrap();

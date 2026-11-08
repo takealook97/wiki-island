@@ -1,9 +1,9 @@
 #!/bin/sh
-# Wiki Island installer for macOS. Safe to run again. Needs no administrator rights.
+# wiki-island installer for macOS. Safe to run again. Needs no administrator rights.
 set -eu
 
 say() { printf '%s\n' "$*"; }
-fail() { say "Wiki Island could not be installed: $*"; exit 1; }
+fail() { say "wiki-island could not be installed: $*"; exit 1; }
 
 [ "$(uname -s)" = "Darwin" ] || fail "this installer supports macOS only."
 
@@ -33,7 +33,7 @@ fi
 # 3. Build and install `wi` from this repository.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 [ -f "$ROOT/crates/wi-cli/Cargo.toml" ] || fail "run this script from a full copy of the repository."
-say "Building Wiki Island. The first build takes a few minutes..."
+say "Building wiki-island. The first build takes a few minutes..."
 cd "$ROOT"
 cargo install --path crates/wi-cli --locked \
   || fail "the build did not finish. Run the installer again; it continues where it can."
