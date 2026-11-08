@@ -166,6 +166,7 @@ fn conflict_markers_get_flag_and_work_item_and_the_engine_refuses_to_write() {
     let _ = first;
 }
 
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 #[test]
 fn editor_save_between_check_and_swap_is_kept_as_a_conflict_copy() {
     const {
