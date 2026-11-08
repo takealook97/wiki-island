@@ -31,12 +31,12 @@ MCP registration is data-driven over a host table in `crates/wi-export` (`hosts`
 ## Registration commands
 
 ```sh
-wi mcp install --host claude|codex|agy --vault <dir>          # diff preview
-wi mcp install --host claude|codex|agy --vault <dir> --yes    # apply
+wi mcp install --host <host> --vault <dir>          # diff preview
+wi mcp install --host <host> --vault <dir> --yes    # apply
 wi mcp --vault <dir>                                          # raw stdio server
 ```
 
-`wi setup` does this for every detected host. Without `--yes` only a diff is shown. Applying edits only the wiki-island entry, preserves every other key, server, comment and the original bytes and file mode outside that entry, writes a timestamped backup of the original (including a 0-byte file) under `backups/` of the per-device local directory (`<vault>/.wiki-island/local/` in git mode, the data directory in folder mode), never beside the host's files, and is idempotent: an unchanged re-run writes nothing and creates no backup. An existing HTTP transport entry for wiki-island is replaced by stdio fields. The installed command uses the running binary's absolute path. The installer neither launches the host nor verifies its authentication. Use an absolute binary path if a host does not inherit your shell `PATH`.
+`<host>` is one of `claude`, `codex`, `agy`, `gemini`, `cursor`, `windsurf`, `claude-desktop`, `vscode`, `opencode`, `zed`. `wi setup` does this for every detected host. Without `--yes` only a diff is shown. Applying edits only the wiki-island entry, preserves every other key, server, comment and the original bytes and file mode outside that entry, writes a timestamped backup of the original (including a 0-byte file) under `backups/` of the per-device local directory (`<vault>/.wiki-island/local/` in git mode, the data directory in folder mode), never beside the host's files, and is idempotent: an unchanged re-run writes nothing and creates no backup. An existing HTTP transport entry for wiki-island is replaced by stdio fields. The installed command uses the running binary's absolute path. The installer neither launches the host nor verifies its authentication. Use an absolute binary path if a host does not inherit your shell `PATH`.
 
 MCP-created notes get `origin.kind=agent`. Delivered text is evidence, not instruction. No provider-specific memory store is overwritten, and a host without tool access can still read the Markdown files. Tools, schemas and caps: [PROTOCOL](PROTOCOL.md).
 
