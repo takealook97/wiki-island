@@ -1,4 +1,6 @@
-# Wiki Island
+<p align="center"><img src="docs/assets/logo.png" alt="Wiki Island" width="200"></p>
+
+<h1 align="center">Wiki Island</h1>
 
 Wiki Island is a private, local memory for you and your AI tools. It keeps what you and your assistants learn as plain Markdown notes in one folder, finds them again quickly, and looks after itself.
 
