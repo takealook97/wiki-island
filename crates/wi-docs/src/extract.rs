@@ -107,7 +107,7 @@ fn run_tool(cmd: &mut Command, timeout: Duration, max_stdout: usize) -> Result<O
         // A wrapper may have forked children that inherited the output handles.
         // Kill the group before reaping its leader, then fall back to direct kill.
         let _ = Command::new("/bin/kill")
-            .args(["-KILL", &format!("-{}", child.id())])
+            .args(["-KILL", "--", &format!("-{}", child.id())])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1244,6 +1244,32 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(500));
         assert_eq!(output.stdout, b"done");
         assert!(output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_tool_failure_leaves_unrelated_process_groups_alive() {
+        use std::os::unix::process::CommandExt;
+
+        let mut unrelated = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let result = run_tool(
+            Command::new("/bin/sleep").arg("30"),
+            Duration::from_millis(100),
+            1024,
+        );
+        let survived = unrelated.try_wait().unwrap().is_none();
+        let _ = unrelated.kill();
+        let _ = unrelated.wait();
+
+        assert!(result.unwrap_err().to_string().contains("tool-timeout"));
+        assert!(
+            survived,
+            "tool termination reached an unrelated process group"
+        );
     }
 
     #[cfg(unix)]
