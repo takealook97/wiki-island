@@ -21,12 +21,12 @@ const CLOUD_MARKERS: &[(&str, &str)] = &[
     ("/pCloud Drive/", "pCloud"),
 ];
 
-/// The sync service whose folder `path` appears to be in, if any. A path
-/// that does not exist yet is judged by its nearest existing ancestor with
-/// symlinks resolved, so a new vault reached through an alias of a synced
-/// folder is still detected.
+/// The sync service whose folder `path` appears to be in, if any. `path` is
+/// resolved physically first ([`resolve_path`]), so a new vault reached
+/// through an alias of a synced folder, or through `..` after a symlink, is
+/// still detected.
 pub fn cloud_service(path: &Path) -> Option<&'static str> {
-    let resolved = resolve_existing(path);
+    let resolved = resolve_path(path);
     let text = format!("{}/", resolved.to_string_lossy().replace('\\', "/"));
     CLOUD_MARKERS
         .iter()
@@ -34,46 +34,53 @@ pub fn cloud_service(path: &Path) -> Option<&'static str> {
         .map(|(_, service)| *service)
 }
 
-/// `path` with its nearest existing ancestor canonicalized and the missing
-/// components applied lexically (`.` dropped, `..` removes the previous
-/// component), so `alias/missing/../vault` resolves through `alias`;
-/// `path` itself when no ancestor resolves. Every component after the
-/// nearest existing ancestor is missing, so lexical `..` is exact there.
-fn resolve_existing(path: &Path) -> PathBuf {
+/// `path` resolved physically, like `realpath`: components are walked left
+/// to right against a resolved prefix. `.` is skipped; `..` takes the parent
+/// of the resolved prefix (so `link/..` is the parent of the link target);
+/// a name that exists is joined and canonicalized, following symlinks. Once
+/// a name does not exist it and the rest form a missing tail in which `..`
+/// pops lexically; popping the whole tail resumes physical resolution. A
+/// relative `path` starts from the canonical working directory.
+pub fn resolve_path(path: &Path) -> PathBuf {
     use std::path::Component;
-    let mut missing = Vec::new();
-    let mut current = path;
-    loop {
-        if let Ok(resolved) = current.canonicalize() {
-            let mut out = resolved;
-            let mut popped = false;
-            for part in missing.iter().rev() {
-                match part {
-                    Component::CurDir => {}
-                    Component::ParentDir => {
-                        out.pop();
-                        popped = true;
-                    }
-                    other => out.push(other.as_os_str()),
-                }
-            }
-            // A `..` can climb back to an existing ancestor whose children
-            // (perhaps symlinks) were never resolved; resolve the lexical
-            // result once more. It holds no `..`, so this ends.
-            return if popped { resolve_existing(&out) } else { out };
-        }
-        match (current.parent(), current.components().next_back()) {
-            (Some(parent), Some(last)) => {
-                missing.push(last);
-                current = if parent.as_os_str().is_empty() {
-                    Path::new(".")
-                } else {
-                    parent
-                };
-            }
-            _ => return path.to_path_buf(),
+    let mut resolved = PathBuf::new();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut components = path.components().peekable();
+    if !matches!(
+        components.peek(),
+        Some(Component::Prefix(_) | Component::RootDir)
+    ) {
+        match std::env::current_dir().and_then(|d| d.canonicalize()) {
+            Ok(cwd) => resolved = cwd,
+            Err(_) => return path.to_path_buf(),
         }
     }
+    for component in components {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                resolved.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if tail.pop().is_none() {
+                    resolved.pop();
+                }
+            }
+            Component::Normal(name) => {
+                if !tail.is_empty() {
+                    tail.push(name.to_os_string());
+                    continue;
+                }
+                let joined = resolved.join(name);
+                match joined.canonicalize() {
+                    Ok(real) => resolved = real,
+                    Err(_) => tail.push(name.to_os_string()),
+                }
+            }
+        }
+    }
+    resolved.extend(tail);
+    resolved
 }
 
 /// Return a warning when the git directory `git_dir` looks like it is inside
@@ -118,7 +125,7 @@ mod tests {
         let path = tmp.join("alias-two/missing/./deeper/../../vault");
         assert_eq!(cloud_service(&path), Some("Dropbox"));
         assert_eq!(
-            resolve_existing(&path),
+            resolve_path(&path),
             tmp.join("Dropbox").canonicalize().unwrap().join("vault")
         );
         std::fs::remove_dir_all(&tmp).unwrap();
@@ -134,9 +141,60 @@ mod tests {
         let path = tmp.join("plain/missing/../hop/vault");
         assert_eq!(cloud_service(&path), Some("Dropbox"));
         assert_eq!(
-            resolve_existing(&path),
+            resolve_path(&path),
             tmp.join("Dropbox").canonicalize().unwrap().join("vault")
         );
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn missing_parent_then_symlink_then_parent_still_detects_cloud() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t.path().join("Dropbox/child")).unwrap();
+        std::fs::create_dir_all(t.path().join("plain")).unwrap();
+        std::os::unix::fs::symlink(t.path().join("Dropbox/child"), t.path().join("plain/hop"))
+            .unwrap();
+        let path = t.path().join("plain/missing/../hop/../vault");
+        assert_eq!(cloud_service(&path), Some("Dropbox"), "{}", path.display());
+        assert_eq!(
+            resolve_path(&path),
+            t.path()
+                .join("Dropbox")
+                .canonicalize()
+                .unwrap()
+                .join("vault")
+        );
+    }
+
+    #[test]
+    fn path_forms_resolve_physically() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().canonicalize().unwrap();
+        std::fs::create_dir_all(base.join("Dropbox/child")).unwrap();
+        std::fs::create_dir_all(base.join("plain/sub")).unwrap();
+        std::os::unix::fs::symlink(base.join("Dropbox/child"), base.join("plain/hop")).unwrap();
+        std::os::unix::fs::symlink(base.join("plain/hop"), base.join("chain")).unwrap();
+        let dropbox = base.join("Dropbox");
+        let cases: &[(&str, PathBuf)] = &[
+            ("plain", base.join("plain")),
+            ("plain/./sub/.", base.join("plain/sub")),
+            ("plain/sub/..", base.join("plain")),
+            ("plain/hop", dropbox.join("child")),
+            ("plain/hop/..", dropbox.clone()),
+            ("plain/hop/../vault", dropbox.join("vault")),
+            ("chain/../vault", dropbox.join("vault")),
+            ("plain/missing", base.join("plain/missing")),
+            ("plain/missing/deeper/..", base.join("plain/missing")),
+            ("plain/missing/../hop/vault", dropbox.join("child/vault")),
+            ("plain/missing/../hop/../vault", dropbox.join("vault")),
+            ("plain/a/b/../../hop/../x/./y", dropbox.join("x/y")),
+            ("plain/sub/../hop/missing/../../v", dropbox.join("v")),
+            ("missing/../../", base.parent().unwrap().to_path_buf()),
+        ];
+        for (form, expected) in cases {
+            assert_eq!(&resolve_path(&base.join(form)), expected, "{form}");
+        }
+        assert_eq!(resolve_path(Path::new("/")), PathBuf::from("/"));
+        assert_eq!(resolve_path(Path::new("/..")), PathBuf::from("/"));
     }
 }

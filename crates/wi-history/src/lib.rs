@@ -29,7 +29,7 @@ mod vault;
 mod barrier_tests;
 
 pub use changes::{PublicationMark, changed_paths_since, publication_mark};
-pub use cloud::{cloud_service, cloud_sync_warning};
+pub use cloud::{cloud_service, cloud_sync_warning, resolve_path};
 pub use durable::Durability;
 pub use error::{HistoryError, Result};
 pub use flush::{CommitSummary, FlushBlock, FlushReport, Flusher};

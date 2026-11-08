@@ -377,3 +377,26 @@ fn init_through_a_missing_parent_dotdot_and_then_a_symlink_into_cloud_chooses_fo
     assert_eq!(vault.storage_mode(), StorageMode::Folder);
     assert!(!cloud.join("vault/.git").exists());
 }
+
+#[test]
+fn init_through_a_missing_parent_a_symlink_and_its_parent_into_cloud_chooses_folder_mode() {
+    let tmp = TempDir::new().unwrap();
+    let cloud = tmp.path().join("Dropbox");
+    std::fs::create_dir_all(cloud.join("child")).unwrap();
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    std::os::unix::fs::symlink(cloud.join("child"), plain.join("hop")).unwrap();
+    let (vault, _) = Vault::init_placed(
+        plain.join("missing/../hop/../vault"),
+        OpenOptions {
+            index_path: Some(tmp.path().join("index.sqlite3")),
+        },
+        Placement {
+            data_root: Some(tmp.path().join("data")),
+            storage: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(vault.storage_mode(), StorageMode::Folder);
+    assert!(!cloud.join("vault/.git").exists());
+}
