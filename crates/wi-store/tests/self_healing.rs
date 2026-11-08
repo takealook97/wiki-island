@@ -218,6 +218,7 @@ fn maintenance_closes_a_gate_item_whose_note_was_deleted() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_running_handle_finds_notes_after_another_process_replaced_the_index() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("vault");
@@ -235,6 +236,48 @@ fn a_running_handle_finds_notes_after_another_process_replaced_the_index() {
     // Another process deletes the cache and rebuilds it, then writes.
     for suffix in ["", "-wal", "-shm"] {
         let _ = fs::remove_file(format!("{}{suffix}", index.display()));
+    }
+    let other = Vault::open_with(&root, options).unwrap();
+    other.reindex().unwrap();
+    write(&other, "external.md", "externalnewneedle\n", Ingress::Cli);
+    other.flush().unwrap();
+    drop(other);
+
+    assert!(running.index_reopened_since(mark));
+    assert_eq!(hits(&running, "externalnewneedle"), ["external.md"]);
+    assert_eq!(hits(&running, "originalneedle"), ["before.md"]);
+}
+
+#[test]
+#[cfg(windows)]
+fn an_open_index_blocks_deletion_and_reopens_after_a_rebuild() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("vault");
+    let index = tmp.path().join("cache/index.sqlite3");
+    let options = OpenOptions {
+        index_path: Some(index.clone()),
+    };
+    let (running, _) = Vault::init_with(&root, options.clone()).unwrap();
+    write(&running, "before.md", "originalneedle\n", Ingress::Cli);
+    running.flush().unwrap();
+    assert_eq!(hits(&running, "originalneedle"), ["before.md"]);
+    let mark = running.index_epoch();
+
+    // SQLite's Windows VFS does not share deletion of its open database.
+    let error = fs::remove_file(&index).unwrap_err();
+    assert!(matches!(error.raw_os_error(), Some(5 | 32 | 33)), "{error}");
+    assert!(!running.index_reopened_since(mark));
+    assert_eq!(hits(&running, "originalneedle"), ["before.md"]);
+
+    running.close_index();
+    fs::remove_file(&index).unwrap();
+    for suffix in ["-wal", "-shm"] {
+        let path = format!("{}{suffix}", index.display());
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("{error}"),
+        }
     }
     let other = Vault::open_with(&root, options).unwrap();
     other.reindex().unwrap();
