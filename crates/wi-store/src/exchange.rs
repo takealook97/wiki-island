@@ -170,9 +170,13 @@ pub(crate) fn place(dir: &Dir, tmp: &str, name: &str, expected: Option<&str>) ->
                     .or_else(|| Some("unreadable".to_owned()));
                 Err(stale(current))
             }
-            Err(e) => Err(StoreError::io(&target, e)),
+            Err(e) => Err(crate::contained::map_io(&target, e)),
         };
     };
+    // Bind every attempt to the temp file written for this placement.
+    let source = dir
+        .identity(tmp)
+        .map_err(|e| StoreError::io(dir.path().join(tmp), e))?;
     let mut delay = std::time::Duration::from_millis(20);
     let mut attempt = 0;
     loop {
@@ -180,14 +184,14 @@ pub(crate) fn place(dir: &Dir, tmp: &str, name: &str, expected: Option<&str>) ->
         if now.as_deref() != Some(expected) {
             return Err(stale(now));
         }
-        match dir.sys().rename(tmp, dir.sys(), name, true) {
+        match dir.sys().rename_if(tmp, dir.sys(), name, true, source) {
             Ok(()) => return Ok(Placed::Renamed),
             Err(e) if attempt < 4 && wi_sys::fs::is_sharing_violation(&e) => {
                 attempt += 1;
                 std::thread::sleep(delay);
                 delay *= 2;
             }
-            Err(e) => return Err(StoreError::io(&target, e)),
+            Err(e) => return Err(crate::contained::map_io(&target, e)),
         }
     }
 }
@@ -199,7 +203,7 @@ pub(crate) fn rename_no_replace(dir: &Dir, from: &str, to: &str) -> Result<bool>
     match dir.rename_raw(from, dir, to, false) {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(StoreError::io(dir.path().join(to), e)),
+        Err(e) => Err(crate::contained::map_io(&dir.path().join(to), e)),
     }
 }
 

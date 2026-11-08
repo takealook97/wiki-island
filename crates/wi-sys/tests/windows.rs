@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use wi_sys::fs::{Dir, Kind, is_reparse_refusal, is_sharing_violation};
+use wi_sys::fs::{Dir, Kind, is_identity_change, is_reparse_refusal, is_sharing_violation};
 use wi_sys::process::{Liveness, liveness, spawn_in_job};
 
 /// Environment variable that turns `helper_process` into a helper role.
@@ -237,6 +237,14 @@ fn handle_relative_creation_reaches_beyond_max_path() {
     let deepest = chain.last().unwrap();
     let final_path = deepest.final_path().unwrap();
     assert!(final_path.as_os_str().len() > 300, "{final_path:?}");
+    // Vault roots are stored without the verbatim prefix. Reopening must
+    // work without requiring OS policy or an application manifest opt-in.
+    let text = final_path.to_str().unwrap();
+    let plain = Path::new(text.strip_prefix(r"\\?\").unwrap());
+    let reopened = Dir::open_root(plain).expect("reopen a long canonical vault root");
+    write_new(&reopened, "reopened.md", "reopened");
+    reopened.unlink("reopened.md").unwrap();
+    drop(reopened);
     write_new(deepest, "note.md", "deep");
     assert_eq!(read_all(deepest, "note.md"), "deep");
     deepest.unlink("note.md").unwrap();
@@ -508,4 +516,30 @@ fn echo_off_refuses_a_non_console_stdin() {
         .status()
         .unwrap();
     assert_eq!(status.code(), Some(0));
+}
+
+#[test]
+fn identity_checked_unlink_and_rename_refuse_a_replaced_entry() {
+    let t = tempfile::tempdir().unwrap();
+    let dir = Dir::open_root(t.path()).unwrap();
+    write_new(&dir, "a.tmp", "original");
+    let original = dir.stat("a.tmp").unwrap().unwrap().identity();
+    dir.rename("a.tmp", &dir, "moved.tmp", false).unwrap();
+    write_new(&dir, "a.tmp", "replacement");
+
+    let e = dir.unlink_if("a.tmp", original).unwrap_err();
+    assert!(is_identity_change(&e), "{e:?}");
+    let e = dir
+        .rename_if("a.tmp", &dir, "published.md", false, original)
+        .unwrap_err();
+    assert!(is_identity_change(&e), "{e:?}");
+    assert_eq!(read_all(&dir, "a.tmp"), "replacement");
+    assert!(dir.stat("published.md").unwrap().is_none());
+
+    // The original object is still accepted under its new name.
+    dir.rename_if("moved.tmp", &dir, "published.md", false, original)
+        .unwrap();
+    dir.unlink_if("published.md", original).unwrap();
+    dir.unlink("a.tmp").unwrap();
+    assert!(dir.list().unwrap().is_empty());
 }

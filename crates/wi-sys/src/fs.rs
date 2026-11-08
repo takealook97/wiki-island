@@ -87,6 +87,63 @@ pub struct Stat {
     pub readonly: bool,
 }
 
+/// Volume serial number and file identifier: which object an entry is,
+/// independent of its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    /// Serial number of the volume holding the entry.
+    pub volume_serial: u64,
+    /// File identifier, unique on its volume.
+    pub file_id: u128,
+}
+
+impl Stat {
+    /// The object identity of the entry this metadata describes.
+    pub fn identity(&self) -> Identity {
+        Identity {
+            volume_serial: self.volume_serial,
+            file_id: self.file_id,
+        }
+    }
+}
+
+/// Marker payload of the error returned when a name no longer refers to
+/// the expected object; see [`is_identity_change`].
+#[derive(Debug)]
+struct IdentityChanged;
+
+impl std::fmt::Display for IdentityChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the entry was replaced by a different file")
+    }
+}
+
+impl std::error::Error for IdentityChanged {}
+
+/// Whether `e` is the error [`Dir::unlink_if`] or [`Dir::rename_if`]
+/// returns because the name now refers to a different object.
+pub fn is_identity_change(e: &io::Error) -> bool {
+    e.get_ref()
+        .is_some_and(|inner| inner.is::<IdentityChanged>())
+}
+
+/// The error for which [`is_identity_change`] holds, for callers that
+/// detect a changed binding themselves.
+pub fn identity_changed() -> io::Error {
+    io::Error::other(IdentityChanged)
+}
+
+/// Refuse unless the open `handle` is the object `expected` names.
+fn expect_identity(handle: &OwnedHandle, expected: Option<Identity>) -> io::Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    if stamp_handle(handle.as_handle())?.identity() != expected {
+        return Err(identity_changed());
+    }
+    Ok(())
+}
+
 /// Marker payload of the error returned when a component is a reparse
 /// point; see [`is_reparse_refusal`].
 #[derive(Debug)]
@@ -147,7 +204,9 @@ impl Dir {
     /// reparse point or not a directory. Ancestors of `path` are resolved
     /// normally.
     pub fn open_root(path: &Path) -> io::Result<Dir> {
-        let wide = crate::wide_nul(path.as_os_str())?;
+        // The extended form lifts the MAX_PATH limit without requiring an
+        // OS policy or manifest opt-in.
+        let wide = crate::wide_nul(&extended_path(path))?;
         // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives
         // the call; the security attributes and template handle are null,
         // which CreateFileW accepts.
@@ -232,6 +291,17 @@ impl Dir {
     /// reparse points and directories. The read-only attribute is ignored
     /// where the system supports that, as `unlink` does on Unix.
     pub fn unlink(&self, name: &str) -> io::Result<()> {
+        self.unlink_checked(name, None)
+    }
+
+    /// [`Dir::unlink`], refused with an error for which
+    /// [`is_identity_change`] holds when `name` no longer refers to the
+    /// object `expected` (for example after a retry reopened the name).
+    pub fn unlink_if(&self, name: &str, expected: Identity) -> io::Result<()> {
+        self.unlink_checked(name, Some(expected))
+    }
+
+    fn unlink_checked(&self, name: &str, expected: Option<Identity>) -> io::Result<()> {
         let handle = self.nt_open(
             name,
             DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
@@ -239,6 +309,7 @@ impl Dir {
             0,
         )?;
         expect_file(&handle)?;
+        expect_identity(&handle, expected)?;
         delete_handle(&handle, true)
     }
 
@@ -261,6 +332,31 @@ impl Dir {
     /// `ErrorKind::AlreadyExists` and is left untouched. Refuses when
     /// `from` is a reparse point.
     pub fn rename(&self, from: &str, to_dir: &Dir, to: &str, replace: bool) -> io::Result<()> {
+        self.rename_checked(from, to_dir, to, replace, None)
+    }
+
+    /// [`Dir::rename`], refused with an error for which
+    /// [`is_identity_change`] holds when `from` no longer refers to the
+    /// object `expected` (for example after a retry reopened the name).
+    pub fn rename_if(
+        &self,
+        from: &str,
+        to_dir: &Dir,
+        to: &str,
+        replace: bool,
+        expected: Identity,
+    ) -> io::Result<()> {
+        self.rename_checked(from, to_dir, to, replace, Some(expected))
+    }
+
+    fn rename_checked(
+        &self,
+        from: &str,
+        to_dir: &Dir,
+        to: &str,
+        replace: bool,
+        expected: Option<Identity>,
+    ) -> io::Result<()> {
         let target = component(to)?;
         let handle = self.nt_open(
             from,
@@ -271,6 +367,7 @@ impl Dir {
         if tag_info(handle.as_handle())?.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(reparse_refused());
         }
+        expect_identity(&handle, expected)?;
         let mut flags = FILE_RENAME_POSIX_SEMANTICS;
         if replace {
             flags |= FILE_RENAME_REPLACE_IF_EXISTS;
@@ -499,6 +596,50 @@ pub fn flush_path(path: &Path) -> io::Result<bool> {
         }
         Err(e) => Err(e),
     }
+}
+
+/// The extended (`\\?\`) form of an absolute drive or UNC path, so that
+/// CreateFileW accepts it beyond MAX_PATH. Paths that are already verbatim
+/// or device paths, relative, or contain `..` are returned unchanged.
+fn extended_path(path: &Path) -> OsString {
+    use std::path::{Component, Prefix};
+    let plain = || path.as_os_str().to_owned();
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return plain();
+    };
+    let mut out = match prefix.kind() {
+        Prefix::Disk(letter) => OsString::from(format!(r"\\?\{}:", char::from(letter))),
+        Prefix::UNC(server, share) => {
+            let mut out = OsString::from(r"\\?\UNC\");
+            out.push(server);
+            out.push(r"\");
+            out.push(share);
+            out
+        }
+        _ => return plain(),
+    };
+    if components.next() != Some(Component::RootDir) {
+        return plain();
+    }
+    let mut named = false;
+    for component in components {
+        match component {
+            Component::Normal(name) => {
+                out.push(r"\");
+                out.push(name);
+                named = true;
+            }
+            Component::CurDir => {}
+            _ => return plain(),
+        }
+    }
+    if !named {
+        // `\\?\C:` names the volume device; the root directory needs the
+        // trailing separator.
+        out.push(r"\");
+    }
+    out
 }
 
 /// Validate a single component and encode it as UTF-16 (no terminator).
@@ -865,5 +1006,33 @@ fn parse_dir_entries(buf: &[u64], bytes: usize, out: &mut Vec<(String, Kind)>) -
             return Ok(());
         }
         at += next;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extended_path;
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    #[test]
+    fn extended_path_prefixes_absolute_drive_and_unc_paths() {
+        let cases = [
+            (r"C:\vault\notes", r"\\?\C:\vault\notes"),
+            (r"C:/vault/notes", r"\\?\C:\vault\notes"),
+            (r"C:\", r"\\?\C:\"),
+            (r"\\server\share\vault", r"\\?\UNC\server\share\vault"),
+            (r"\\?\C:\vault", r"\\?\C:\vault"),
+            (r"C:vault", r"C:vault"),
+            (r"vault\notes", r"vault\notes"),
+            (r"C:\vault\..\other", r"C:\vault\..\other"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                extended_path(Path::new(input)),
+                OsString::from(expected),
+                "{input}"
+            );
+        }
     }
 }

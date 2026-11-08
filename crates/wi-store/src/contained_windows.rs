@@ -50,6 +50,8 @@ pub(crate) fn retry_shared<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std
     for _ in 0..4 {
         match op() {
             Err(e) if sys::is_sharing_violation(&e) => {
+                #[cfg(test)]
+                retry_tests::after_failure();
                 std::thread::sleep(delay);
                 delay *= 2;
             }
@@ -57,6 +59,19 @@ pub(crate) fn retry_shared<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std
         }
     }
     op()
+}
+
+/// The error a retried mutation returns when its source name now refers to
+/// a different file than the one first opened: the caller's view is stale.
+pub(crate) fn map_io(path: &Path, e: std::io::Error) -> StoreError {
+    if sys::is_identity_change(&e) {
+        return StoreError::Stale {
+            path: path.display().to_string(),
+            expected: "the file first opened".to_owned(),
+            current: Some("a different file".to_owned()),
+        };
+    }
+    StoreError::io(path, e)
 }
 
 /// `last_write` (FILETIME) as nanoseconds since the Unix epoch, in the
@@ -274,7 +289,53 @@ impl Dir {
     pub(crate) fn remove(&self, name: &str) -> Result<()> {
         let path = self.path.join(name);
         self.check_alias(name, &path.display().to_string())?;
-        retry_shared(|| self.dir.unlink(name)).map_err(|e| StoreError::io(&path, e))
+        self.retry_same(name, |id| self.dir.unlink_if(name, id))
+            .map_err(|e| map_io(&path, e))
+    }
+
+    /// Run the destructive `op` on the source `name` with the sharing
+    /// retry (D10b), bound to the object `name` refers to now: its identity
+    /// is captured from a metadata-only handle before the first attempt
+    /// that can read it, and `op` must refuse a different object, so a retry never reopens a
+    /// file swapped in under the same name. A retry also re-checks that
+    /// `name` is still the entry's long name.
+    pub(crate) fn retry_same<T>(
+        &self,
+        name: &str,
+        mut op: impl FnMut(sys::Identity) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        let mut id = None;
+        let mut first = true;
+        retry_shared(|| {
+            if !std::mem::take(&mut first) {
+                self.recheck_alias(name)?;
+            }
+            let id = match id {
+                Some(id) => id,
+                // Captured once, on the first attempt that can read it.
+                None => *id.insert(self.identity(name)?),
+            };
+            op(id)
+        })
+    }
+
+    /// The identity of the entry `name` without following it.
+    pub(crate) fn identity(&self, name: &str) -> std::io::Result<sys::Identity> {
+        self.dir
+            .stat(name)?
+            .map(|stat| stat.identity())
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+    }
+
+    /// [`Dir::check_alias`] for a retry: a name that became a short alias
+    /// no longer refers to the entry that was checked.
+    fn recheck_alias(&self, name: &str) -> std::io::Result<()> {
+        match self.dir.long_name(name) {
+            Ok(long) if long.to_lowercase() == name.to_lowercase() => Ok(()),
+            Ok(_) => Err(sys::identity_changed()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Rename `from` in this directory to `to` in `dest`, replacing an
@@ -302,7 +363,7 @@ impl Dir {
                 path: self.path.join(from).display().to_string(),
                 reason: "symlink",
             }),
-            Err(e) => Err(StoreError::io(&target, e)),
+            Err(e) => Err(map_io(&target, e)),
         }
     }
 
@@ -314,7 +375,9 @@ impl Dir {
         to: &str,
         replace: bool,
     ) -> std::io::Result<()> {
-        retry_shared(|| self.dir.rename(from, &dest.dir, to, replace))
+        self.retry_same(from, |id| {
+            self.dir.rename_if(from, &dest.dir, to, replace, id)
+        })
     }
 
     /// Names of the entries in this directory. Names that are not valid
@@ -387,5 +450,98 @@ pub(crate) fn read_rel(root: &Path, rel: &str) -> Result<Option<Vec<u8>>> {
     match Dir::open_parent(root, rel)? {
         Some((dir, name)) => dir.read_regular(&name),
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    type RetryHook = Box<dyn FnOnce()>;
+    thread_local! {
+        static AFTER_FAILURE: RefCell<Option<RetryHook>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn after_failure() {
+        let hook = AFTER_FAILURE.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    fn replace_source_after_first_failure(root: &Path) {
+        // Refuse the first DELETE open while allowing metadata reads.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(root.join("busy.tmp"))
+            .unwrap();
+        let root = root.to_path_buf();
+        AFTER_FAILURE.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                drop(held);
+                std::fs::rename(root.join("busy.tmp"), root.join("original.tmp")).unwrap();
+                std::fs::write(root.join("busy.tmp"), b"unrecorded editor bytes").unwrap();
+            }));
+        });
+    }
+
+    #[test]
+    fn remove_does_not_retry_on_a_different_file() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        std::fs::write(root.join("busy.tmp"), b"known staging bytes").unwrap();
+        let dir = Dir::open_root(root).unwrap();
+        replace_source_after_first_failure(root);
+        let result = dir.remove("busy.tmp");
+        assert!(
+            matches!(result, Err(StoreError::Stale { .. })),
+            "a different file must not be deleted: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("busy.tmp")).unwrap(),
+            b"unrecorded editor bytes"
+        );
+        assert_eq!(
+            std::fs::read(root.join("original.tmp")).unwrap(),
+            b"known staging bytes"
+        );
+    }
+
+    #[test]
+    fn rename_does_not_retry_on_a_different_file() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        std::fs::write(root.join("busy.tmp"), b"known staging bytes").unwrap();
+        let dir = Dir::open_root(root).unwrap();
+        replace_source_after_first_failure(root);
+        let result = dir.rename_raw("busy.tmp", &dir, "published.md", false);
+        assert!(
+            result.as_ref().is_err_and(sys::is_identity_change),
+            "a different source must not be published: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("busy.tmp")).unwrap(),
+            b"unrecorded editor bytes"
+        );
+        assert!(!root.join("published.md").exists());
+    }
+
+    #[test]
+    fn retried_remove_still_deletes_the_same_file() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        std::fs::write(root.join("busy.tmp"), b"known staging bytes").unwrap();
+        let dir = Dir::open_root(root).unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(root.join("busy.tmp"))
+            .unwrap();
+        AFTER_FAILURE.with(|slot| *slot.borrow_mut() = Some(Box::new(move || drop(held))));
+        dir.remove("busy.tmp").unwrap();
+        assert!(!root.join("busy.tmp").exists());
     }
 }
