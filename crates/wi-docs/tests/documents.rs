@@ -1148,3 +1148,15 @@ fn import_commit_subject_counts_changed_files_not_records() {
         "{subject} vs {changed} changed files"
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn native_separators_import_the_same_document_and_keep_portable_sidecar_paths() {
+    let (_temp, vault) = setup();
+    fs::create_dir_all(vault.root().join("docs")).unwrap();
+    fs::write(vault.root().join("docs/table.csv"), "a,b\n").unwrap();
+    let first = import(&vault, r"docs\table.csv", options()).unwrap();
+    assert_eq!(first.sidecar_path, "docs/table.csv.md");
+    let again = import(&vault, "docs/table.csv", options()).unwrap();
+    assert!(again.unchanged);
+}

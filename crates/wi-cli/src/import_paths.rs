@@ -103,17 +103,28 @@ fn walk(root: &Path, rel: &Path, result: &mut Expansion) {
             }
         };
         if kind.is_dir() {
-            let rel = path.to_string_lossy();
+            let rel = relative_string(&path);
             if wi_docs::notion::is_export(root, &rel) {
-                result.paths.push(rel.into_owned());
+                result.paths.push(rel);
             } else {
                 // `walk` prunes a directory its ignore rules exclude.
                 walk(root, &path, result);
             }
         } else if kind.is_file() && supported(&path) {
             // Each component was checked above; rel starts from a UTF-8 argument.
-            result.paths.push(path.to_string_lossy().into_owned());
+            result.paths.push(relative_string(&path));
         }
+    }
+}
+
+fn relative_string(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        path.to_string_lossy().replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().into_owned()
     }
 }
 
@@ -137,4 +148,27 @@ fn supported(path: &Path) -> bool {
                     | "webp"
             )
         })
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    #[test]
+    fn nested_directory_expansion_uses_portable_paths_and_prunes_junctions() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("docs/nested")).unwrap();
+        std::fs::write(temp.path().join("docs/nested/a.csv"), "a,b\n").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.csv"), "private\n").unwrap();
+        let output = std::process::Command::new("cmd")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(temp.path().join("docs/link"))
+            .arg(outside.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let expanded = expand(temp.path(), &["docs".into()]);
+        assert!(expanded.failures.is_empty());
+        assert_eq!(expanded.paths, ["docs/nested/a.csv"]);
+    }
 }
