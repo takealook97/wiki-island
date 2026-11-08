@@ -7,6 +7,28 @@ struct Fixture {
     _temp: TempDir,
     vault: Vault,
 }
+
+#[test]
+fn explicit_folder_placement_keeps_export_state_outside_the_vault() {
+    let tmp = TempDir::new().unwrap();
+    let (vault, _) = Vault::init_placed(
+        tmp.path().join("vault"),
+        OpenOptions {
+            index_path: Some(tmp.path().join("index.db")),
+        },
+        wi_store::Placement {
+            data_root: Some(tmp.path().join("explicit-data")),
+            storage: Some(wi_store::StorageMode::Folder),
+        },
+    )
+    .unwrap();
+    Regenerator::default().refresh(&vault).unwrap();
+    assert!(
+        !vault.root().join(".wiki-island/local").exists(),
+        "per-device state created in canonical synced folder"
+    );
+    assert!(vault.local_dir().join("rules-digest").is_file());
+}
 impl Fixture {
     fn new() -> Self {
         let temp = TempDir::new().unwrap();

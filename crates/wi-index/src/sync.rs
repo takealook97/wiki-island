@@ -203,8 +203,12 @@ fn walk(root: &Path, ignored: Vec<PathBuf>, report: &mut SyncReport) -> BTreeMap
                 .strip_prefix(&root_owned)
                 .is_ok_and(|rel| !reserved(rel, &ignored))
                 && !exclude.as_ref().is_some_and(|m| {
-                    m.matched(entry.path(), entry.file_type().is_some_and(|t| t.is_dir()))
-                        .is_ignore()
+                    walk_excluded(
+                        &root_owned,
+                        m,
+                        entry.path(),
+                        entry.file_type().is_some_and(|t| t.is_dir()),
+                    )
                 })
         });
     let mut files = BTreeMap::new();
@@ -319,6 +323,34 @@ pub fn ignored_with_errors(root: &Path, rel: &Path) -> (bool, Vec<ignore::Error>
 /// The shared rule; `dir` says whether the last component of `rel` is a
 /// directory (every earlier component is one).
 fn ignored_kind(root: &Path, rel: &Path, dir: bool) -> (bool, Vec<ignore::Error>) {
+    ignored_with(root, rel, dir, exclude_matcher(root).as_ref())
+}
+
+/// Whether a vault walk of `root` skips `path` (below `root`) for the
+/// registered exclude file `exclude`. The exclude file has the lowest
+/// priority, so a `.ignore` or `.gitignore` rule that re-includes the path
+/// wins, as in [`ignored`]. Every vault walker uses this one decision.
+pub fn walk_excluded(
+    root: &Path,
+    exclude: &ignore::gitignore::Gitignore,
+    path: &Path,
+    is_dir: bool,
+) -> bool {
+    if !exclude.matched(path, is_dir).is_ignore() {
+        return false;
+    }
+    let Ok(rel) = path.strip_prefix(root) else {
+        return false;
+    };
+    ignored_with(root, rel, is_dir, Some(exclude)).0
+}
+
+fn ignored_with(
+    root: &Path,
+    rel: &Path,
+    dir: bool,
+    exclude: Option<&ignore::gitignore::Gitignore>,
+) -> (bool, Vec<ignore::Error>) {
     use ignore::{Match, gitignore::Gitignore};
     let mut errors = Vec::new();
     let mut load = |dir: &Path, name: &str| -> Option<Gitignore> {
@@ -339,7 +371,6 @@ fn ignored_kind(root: &Path, rel: &Path, dir: bool) -> (bool, Vec<ignore::Error>
         }
     };
     let parts: Vec<_> = rel.components().collect();
-    let exclude = exclude_matcher(root);
     // Matchers of the directories from the root down, by file kind.
     let mut dot_ignore: Vec<Gitignore> = Vec::new();
     let mut git_ignore: Vec<Gitignore> = Vec::new();
@@ -360,7 +391,7 @@ fn ignored_kind(root: &Path, rel: &Path, dir: bool) -> (bool, Vec<ignore::Error>
         };
         if decide(&dot_ignore)
             .or_else(|| decide(&git_ignore))
-            .or_else(|| decide(exclude.as_slice()))
+            .or_else(|| decide(exclude.map_or(&[], std::slice::from_ref)))
             == Some(true)
         {
             return (true, errors);

@@ -22,7 +22,7 @@ use thiserror::Error;
 pub use operations::OperationRow;
 pub use sync::{
     IndexDiagnostic, SyncReport, exclude_matcher, ignored, ignored_dir, ignored_with_errors,
-    literal_search, set_exclude_file,
+    literal_search, set_exclude_file, walk_excluded,
 };
 pub type RelPath = PathBuf;
 pub type Result<T> = std::result::Result<T, Error>;

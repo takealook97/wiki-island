@@ -168,6 +168,7 @@ impl Vault {
         let repo = gix::open(&git_dir).map_err(HistoryError::git)?;
         let mut vault = Self::from_repo(root, git_dir, repo, StorageMode::Folder)?;
         vault.data_root = data_root.map(Path::to_path_buf);
+        storage::register_local_dir(&vault.root, &vault.local_dir());
         let marker = vault.wi_dir().join(REBOUND_MARKER);
         vault.rebound_from = match rebound_from {
             Some(old) => Some(old),

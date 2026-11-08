@@ -119,3 +119,41 @@ fn rules_export_takes_only_user_origin_after_file_edits() {
         "an agent rule edited by file ingress is not a user rule"
     );
 }
+
+const NOTED_RULE: &str = "---\ntitle: Agent suggestion\nnoted_by: agent\ntype: memory\nkind: rule\nstatus: candidate\nsummary: Use tabs\n---\nUse tabs.\n";
+
+#[test]
+fn retained_noted_by_agent_label_is_not_upgraded_on_file_ingress() {
+    let (_fx, vault) = Fixture::new();
+    seed_agent(
+        &vault,
+        "r.md",
+        "---\ntitle: Agent suggestion\nnoted_by: agent\n---\nUse tabs.\n",
+    );
+    // The editor adds lifecycle metadata but retains the agent label.
+    std::fs::write(vault.root().join("r.md"), NOTED_RULE).unwrap();
+    vault.ingest_path("r.md").unwrap();
+    let now = text(&vault, "r.md");
+    assert!(!now.contains("kind: user"), "{now}");
+    assert!(now.contains("noted_by: agent"), "{now}");
+    let rules = vault.current_rules().unwrap();
+    assert!(
+        !rules.rules.iter().any(|r| r.path == "r.md"),
+        "{:?}",
+        rules.rules
+    );
+}
+
+#[test]
+fn removing_noted_by_in_an_editor_adopts_the_note() {
+    let (_fx, vault) = Fixture::new();
+    seed_agent(&vault, "r.md", NOTED_RULE);
+    std::fs::write(
+        vault.root().join("r.md"),
+        NOTED_RULE.replace("noted_by: agent\n", ""),
+    )
+    .unwrap();
+    vault.ingest_path("r.md").unwrap();
+    let now = text(&vault, "r.md");
+    assert!(now.contains("kind: user"), "{now}");
+}

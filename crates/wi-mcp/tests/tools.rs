@@ -32,7 +32,11 @@ fn good(e: &Engine, name: &str, a: Value) -> Value {
 fn bad(e: &Engine, name: &str, a: Value, code: &str) {
     let result = e.call(name, a);
     assert_eq!(result.is_error, Some(true), "{result:?}");
-    assert_eq!(result.text_value().unwrap()["error"]["code"], code);
+    assert_eq!(
+        result.text_value().unwrap()["error"]["code"],
+        code,
+        "{result:?}"
+    );
 }
 fn write(e: &Engine, path: &str, content: &str) -> Value {
     good(e, "wi_write", json!({"identifier":path,"content":content}))
@@ -47,6 +51,47 @@ fn engine_write(e: &Engine, path: &str, content: &str) {
             ingress: Ingress::Engine,
         })
         .unwrap();
+}
+
+const NOTED: &str = "---\ntitle: Agent suggestion\nnoted_by: agent\n---\nUse tabs.\n";
+
+#[test]
+fn mcp_cannot_remove_the_agent_label() {
+    let (_temp, e) = fixture(Arc::new(wi_mcp::provider::VaultLifecycle));
+    engine_write(&e, "rules/r.md", NOTED);
+    let checksum = e.vault().read("rules/r.md").unwrap().checksum;
+    for edit in [
+        json!({"remove":["noted_by"]}),
+        json!({"metadata":{"noted_by":"owner"}}),
+    ] {
+        let mut args = json!({"identifier":"rules/r.md", "command":"set_metadata", "expected_checksum":checksum});
+        args.as_object_mut()
+            .unwrap()
+            .extend(edit.as_object().unwrap().clone());
+        bad(&e, "wi_edit", args, "engine-owned-field");
+    }
+    bad(
+        &e,
+        "wi_write",
+        json!({"identifier":"rules/r.md","content":NOTED.replace("noted_by: agent", "noted_by: owner"),"expected_checksum":checksum}),
+        "engine-owned-field",
+    );
+    assert_eq!(e.vault().read("rules/r.md").unwrap().checksum, checksum);
+}
+
+#[test]
+fn mcp_rewrite_keeps_the_agent_label() {
+    let (_temp, e) = fixture(Arc::new(wi_mcp::provider::VaultLifecycle));
+    engine_write(&e, "rules/r.md", NOTED);
+    let checksum = e.vault().read("rules/r.md").unwrap().checksum;
+    good(
+        &e,
+        "wi_write",
+        json!({"identifier":"rules/r.md","content":"---\ntitle: Agent suggestion\n---\nUse spaces.\n","expected_checksum":checksum}),
+    );
+    let now = String::from_utf8(e.vault().read("rules/r.md").unwrap().bytes).unwrap();
+    assert!(now.contains("noted_by: agent"), "{now}");
+    assert!(now.contains("Use spaces."), "{now}");
 }
 
 #[derive(Default)]

@@ -367,16 +367,13 @@ impl Vault {
             });
         }
         let created = previous.is_none();
-        let previous_origin = previous.as_ref().and_then(|old| {
-            old.frontmatter()
-                .and_then(|f| f.get("origin"))
-                .and_then(|o| o.get("kind").and_then(|k| k.as_str().map(str::to_owned)))
-        });
+        let labelled = agent_labelled(&note);
         // The owner removed (or rewrote) the agent label: adoption.
-        let adopted =
-            previous_origin.as_deref() == Some("agent") && origin_kind.as_deref() != Some("agent");
+        let adopted = previous.as_ref().is_some_and(agent_labelled) && !labelled;
         let mut set = Vec::new();
-        if origin_kind.is_none() && (created || claim_changed || adopted) {
+        // A retained agent label (`origin.kind: agent` or `noted_by: agent`)
+        // keeps the note agent content; only its removal adopts it.
+        if origin_kind.is_none() && !labelled && (created || claim_changed || adopted) {
             let origin = json!({
                 "kind": "user",
                 "locator": "file",
@@ -657,7 +654,8 @@ pub(crate) fn walk_files_parallel<T: Send>(
 fn walker(root: &Path, directory: &Path) -> ignore::WalkBuilder {
     let owned = root.to_path_buf();
     let directory = directory.to_path_buf();
-    // Folder mode: the `.gitignore` rules live in `<gitdir>/info/exclude`.
+    // Folder mode: the `.gitignore` rules live in `<gitdir>/info/exclude`,
+    // below the vault's own ignore files.
     let exclude = wi_index::exclude_matcher(root);
     let mut builder = ignore::WalkBuilder::new(root);
     builder
@@ -680,8 +678,12 @@ fn walker(root: &Path, directory: &Path) -> ignore::WalkBuilder {
                 })
                 .unwrap_or(false)
                 && !exclude.as_ref().is_some_and(|m| {
-                    m.matched(entry.path(), entry.file_type().is_some_and(|t| t.is_dir()))
-                        .is_ignore()
+                    wi_index::walk_excluded(
+                        &owned,
+                        m,
+                        entry.path(),
+                        entry.file_type().is_some_and(|t| t.is_dir()),
+                    )
                 })
         });
     builder
@@ -693,6 +695,24 @@ fn walked_file(root: &Path, entry: &ignore::DirEntry) -> Option<String> {
         return None;
     }
     Some(entry.path().strip_prefix(root).ok()?.to_str()?.to_owned())
+}
+
+/// Whether a note carries an agent label in either supported form:
+/// `origin.kind: agent` or `noted_by: agent` (AUTHORITY).
+fn agent_labelled(note: &Note) -> bool {
+    let Some(f) = note.frontmatter() else {
+        return false;
+    };
+    let origin_agent = f
+        .get("origin")
+        .and_then(|o| o.get("kind").and_then(|k| k.as_str().map(str::to_owned)))
+        .as_deref()
+        == Some("agent");
+    origin_agent
+        || f.get("noted_by")
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .as_deref()
+            == Some("agent")
 }
 
 #[cfg(test)]

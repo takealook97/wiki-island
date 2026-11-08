@@ -203,3 +203,57 @@ fn init_inside_a_file_synced_folder_chooses_folder_mode() {
             .is_dir()
     );
 }
+
+#[test]
+fn gitignore_reinclusion_beats_external_exclude_in_reconcile() {
+    let f = Folder::new();
+    let vault = f.init();
+    let exclude = vault.history_vault().exclude_file();
+    let mut rules = std::fs::read_to_string(&exclude).unwrap();
+    rules.push_str("*.md\n");
+    std::fs::write(exclude, rules).unwrap();
+    std::fs::write(f.root.join(".gitignore"), "!kept.md\n").unwrap();
+    std::fs::write(f.root.join("kept.md"), "kept\n").unwrap();
+    assert!(!wi_store::ignored(vault.root(), Path::new("kept.md")));
+    let report = vault.reconcile().unwrap();
+    assert!(
+        report.ingested.iter().any(|r| r.path == "kept.md"),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn gitignore_reinclusion_beats_external_exclude_in_index() {
+    let f = Folder::new();
+    let vault = f.init();
+    let exclude = vault.history_vault().exclude_file();
+    let mut rules = std::fs::read_to_string(&exclude).unwrap();
+    rules.push_str("*.md\n");
+    std::fs::write(exclude, rules).unwrap();
+    std::fs::write(f.root.join(".gitignore"), "!kept.md\n").unwrap();
+    std::fs::write(f.root.join("kept.md"), "kept\n").unwrap();
+    let report = vault.catch_up().unwrap();
+    assert_eq!(report.discovered, 1, "{report:?}");
+}
+
+#[test]
+fn init_through_a_symlink_to_a_synced_folder_chooses_folder_mode() {
+    let tmp = TempDir::new().unwrap();
+    let cloud = tmp.path().join("Dropbox");
+    std::fs::create_dir(&cloud).unwrap();
+    let alias = tmp.path().join("alias");
+    std::os::unix::fs::symlink(&cloud, &alias).unwrap();
+    let (vault, _) = Vault::init_placed(
+        alias.join("new-vault"),
+        OpenOptions {
+            index_path: Some(tmp.path().join("index.db")),
+        },
+        Placement {
+            data_root: Some(tmp.path().join("data")),
+            storage: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(vault.storage_mode(), StorageMode::Folder);
+    assert!(!cloud.join("new-vault/.git").exists());
+}

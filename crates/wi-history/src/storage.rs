@@ -128,9 +128,41 @@ pub fn storage_mode(root: &Path, data_root: Option<&Path>) -> Result<Option<Stor
     Ok(external_git_dir(root, data_root)?.map(|_| StorageMode::Folder))
 }
 
+/// Per-device state directories of the folder-mode vaults this process has
+/// opened, keyed by canonical root. A vault opened with an explicit data
+/// directory keeps its state there for every later default lookup.
+static OPENED_LOCAL: std::sync::Mutex<std::collections::BTreeMap<PathBuf, PathBuf>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Record the per-device state directory of the opened folder-mode vault at
+/// the canonical `root`.
+pub(crate) fn register_local_dir(root: &Path, local: &Path) {
+    OPENED_LOCAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(root.to_path_buf(), local.to_path_buf());
+}
+
+fn opened_local_dir(root: &Path) -> Option<PathBuf> {
+    let map = OPENED_LOCAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.get(root)
+        .or_else(|| root.canonicalize().ok().and_then(|c| map.get(&c)))
+        .cloned()
+}
+
 /// Directory for per-device state of the vault at `root`: `.wiki-island/local`
 /// in git mode (gitignored), `<data>/vaults/<vault_id>/local` in folder mode.
+/// Without an explicit `data_root`, a folder-mode vault this process opened
+/// answers with the directory it was opened with.
 pub fn local_state_dir(root: &Path, data_root: Option<&Path>) -> Result<PathBuf> {
+    if data_root.is_none()
+        && !root.join(".git").is_dir()
+        && let Some(local) = opened_local_dir(root)
+    {
+        return Ok(local);
+    }
     if storage_mode(root, data_root)? == Some(StorageMode::Folder)
         && let Some(id) = read_vault_id(root)?
     {

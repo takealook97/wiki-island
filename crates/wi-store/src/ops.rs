@@ -125,8 +125,23 @@ fn refuse_work_type(old: Option<&Note>, new: &Note, ingress: Ingress) -> Result<
     Ok(())
 }
 
+/// The agent label of a noted rule or preference. Its removal means owner
+/// adoption (AUTHORITY), so an agent may not remove or change it, and an
+/// ordinary rewrite that omits it keeps it. The owner removes it in a file
+/// editor or with `wi adopt`.
+const AGENT_LABEL: &str = "noted_by";
+
+/// Fields a non-engine write may not change: the engine-owned fields, and
+/// for MCP also the agent label.
+fn protected_fields(ingress: Ingress) -> impl Iterator<Item = &'static str> {
+    ENGINE_OWNED_FIELDS
+        .iter()
+        .copied()
+        .chain((ingress == Ingress::Mcp).then_some(AGENT_LABEL))
+}
+
 fn refuse_engine_owned(key: &str, ingress: Ingress) -> Result<()> {
-    if ingress != Ingress::Engine && ENGINE_OWNED_FIELDS.contains(&key) {
+    if ingress != Ingress::Engine && protected_fields(ingress).any(|k| k == key) {
         return Err(StoreError::EngineOwnedField {
             field: key.to_owned(),
             ingress: ingress.actor(),
@@ -397,7 +412,7 @@ impl Vault {
         if ingress == Ingress::Engine {
             return Ok(());
         }
-        for key in ENGINE_OWNED_FIELDS {
+        for key in protected_fields(ingress) {
             if field(old, key) != field(new, key) {
                 refuse_engine_owned(key, ingress)?;
             }
@@ -812,15 +827,15 @@ fn origin_value(ingress: Ingress, kind: &str, verb: &str) -> Value {
     })
 }
 
-/// A replace that omits an engine-owned key keeps its current value, so a
-/// tool can rewrite a note without restating `origin`; a different value is
-/// still refused by `check_replace`.
+/// A replace that omits an engine-owned key or the agent label keeps its
+/// current value, so a tool can rewrite a note without restating `origin`;
+/// a different value is still refused by `check_replace`.
 fn carry_engine_fields(old: &Note, new: &Note, ingress: Ingress) -> Result<Note> {
     if ingress == Ingress::Engine {
         return Ok(new.clone());
     }
     let mut next = new.clone();
-    for key in ENGINE_OWNED_FIELDS {
+    for key in ENGINE_OWNED_FIELDS.iter().chain(&[AGENT_LABEL]) {
         if let (Some(value), None) = (field(old, key), field(new, key)) {
             next = set_key(&next, key, &value)
                 .map_err(|e| StoreError::Edit(format!("cannot keep engine-owned {key}: {e}")))?;

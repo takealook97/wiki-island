@@ -1,6 +1,6 @@
 //! Best-effort warning for vaults inside cloud-synced folders.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Path fragments of common sync clients. Matching is heuristic: a synced
 /// folder can live anywhere, so absence of a warning proves nothing.
@@ -21,14 +21,39 @@ const CLOUD_MARKERS: &[(&str, &str)] = &[
     ("/pCloud Drive/", "pCloud"),
 ];
 
-/// The sync service whose folder `path` appears to be in, if any.
+/// The sync service whose folder `path` appears to be in, if any. A path
+/// that does not exist yet is judged by its nearest existing ancestor with
+/// symlinks resolved, so a new vault reached through an alias of a synced
+/// folder is still detected.
 pub fn cloud_service(path: &Path) -> Option<&'static str> {
-    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let resolved = resolve_existing(path);
     let text = format!("{}/", resolved.to_string_lossy().replace('\\', "/"));
     CLOUD_MARKERS
         .iter()
         .find(|(marker, _)| text.contains(marker))
         .map(|(_, service)| *service)
+}
+
+/// `path` with its nearest existing ancestor canonicalized and the missing
+/// components appended; `path` itself when no ancestor resolves.
+fn resolve_existing(path: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(resolved) = current.canonicalize() {
+            return missing
+                .iter()
+                .rev()
+                .fold(resolved, |acc: PathBuf, part| acc.join(part));
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_owned());
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 /// Return a warning when the git directory `git_dir` looks like it is inside
