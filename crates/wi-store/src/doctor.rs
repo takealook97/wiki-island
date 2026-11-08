@@ -157,7 +157,25 @@ impl Vault {
                 Some("maintenance turns them into work items for your agent"),
             )
         });
-        let orphans = unannounced_conflict_copies(self.root(), &work);
+        let (shared, orphans): (Vec<String>, Vec<String>) =
+            unannounced_conflict_copies(self.root(), &work)
+                .into_iter()
+                .partition(|rel| self.committed_sync_copy(rel));
+        if !shared.is_empty() {
+            // Sync copies are committed and reach every device; the work
+            // request lives on the device that merged, and its work item
+            // is listed read-only here once that device converts it.
+            checks.push(check(
+                "sync-conflict-copies",
+                "ok",
+                format!(
+                    "{} sync conflict cop(ies) kept by another device (read-only here): {}",
+                    shared.len(),
+                    shared.join(", ")
+                ),
+                None,
+            ));
+        }
         if !orphans.is_empty() {
             checks.push(check(
                 "conflict-copies",
@@ -316,6 +334,25 @@ pub(crate) fn moved_asides(root: &std::path::Path) -> Vec<String> {
         .into_iter()
         .map(|(rel, _)| rel)
         .collect()
+}
+
+impl Vault {
+    /// Whether `rel` is a sync conflict copy (`.<name>.wi-conflict-sync-<12
+    /// hex>`) committed at the branch tip: sync wrote it on some device.
+    fn committed_sync_copy(&self, rel: &str) -> bool {
+        let name = rel.rsplit('/').next().unwrap_or(rel);
+        let is_sync = name
+            .rsplit_once(".wi-conflict-sync-")
+            .is_some_and(|(_, hex)| {
+                hex.len() == 12 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+            });
+        is_sync
+            && History::head(&self.history)
+                .ok()
+                .flatten()
+                .and_then(|head| History::blob_at(&self.history, &head, rel).ok().flatten())
+                .is_some()
+    }
 }
 
 /// Conflict copies (`.<name>.wi-conflict-<seq>[-<n>]`) that no

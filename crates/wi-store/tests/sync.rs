@@ -745,3 +745,50 @@ fn a_remote_file_name_this_device_cannot_create_is_skipped_and_sync_continues() 
         "later\n"
     );
 }
+
+#[test]
+fn a_peer_lists_a_sync_conflict_copy_read_only_without_a_doctor_warning() {
+    let p = Pair::new();
+    let a = p.a.open();
+    let b = p.b.open();
+    write(&a, "base.md", "remote\n");
+    write(&b, "base.md", "local\n");
+    a.sync().unwrap();
+    let report = b.sync().unwrap();
+    let copy = report.conflicts[0].clone();
+    a.sync().unwrap();
+    let doctor = a.doctor().unwrap();
+    assert!(
+        doctor
+            .checks
+            .iter()
+            .all(|c| c.name != "conflict-copies"),
+        "{:?}",
+        doctor.checks
+    );
+    let listed = doctor
+        .checks
+        .iter()
+        .find(|c| c.name == "sync-conflict-copies")
+        .expect("read-only listing");
+    assert_eq!(listed.status, "ok");
+    assert!(listed.detail.contains(&copy), "{}", listed.detail);
+    // The merging device owns the request and its item.
+    assert!(b.doctor().unwrap().checks.iter().all(|c| c.name != "conflict-copies"));
+    b.convert_work_requests().unwrap();
+    b.flush().unwrap();
+    b.sync().unwrap();
+    a.sync().unwrap();
+    let items = a.work_list().unwrap();
+    let foreign = items
+        .iter()
+        .find(|i| i.target.as_deref() == Some("base.md"))
+        .expect("item reaches the peer");
+    assert!(!foreign.actionable);
+    assert!(
+        b.work_list()
+            .unwrap()
+            .iter()
+            .any(|i| i.target.as_deref() == Some("base.md") && i.actionable)
+    );
+}
