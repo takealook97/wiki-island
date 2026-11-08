@@ -116,6 +116,13 @@ impl Vault {
         if is_engine_internal(rel) {
             return Some("engine-internal path".into());
         }
+        match self.sync_exclude_oversize(rel) {
+            Ok(true) => return Some("larger than 50 MB; kept locally outside remote sync".into()),
+            Err(_) => {
+                return Some("large-file exclusion is waiting to be saved; it will retry".into());
+            }
+            Ok(false) => {}
+        }
         if wi_index::ignored(self.root(), Path::new(rel)) {
             return Some("ignored by .gitignore or .ignore".into());
         }
@@ -225,11 +232,17 @@ impl Vault {
         rel: &str,
         ingress: Ingress,
     ) -> Result<(IngestOutcome, Option<Vec<u8>>, Option<Vec<u8>>)> {
+        self.recover_sync()?;
         for attempt in 0..2 {
             if let Some(hook) = &self.hooks.before_ingest_lock {
                 hook(&self.root().join(rel));
             }
             let guard = PublisherLock::acquire(&self.history)?;
+            if self.history.wi_dir().join("sync-intent.json").exists() {
+                return Err(StoreError::Invalid(
+                    "Sync recovery is finishing; retry this save.".into(),
+                ));
+            }
             let snap = Manifest::snapshot(&self.history, &guard)?;
             match self.admit(&snap, &[rel], attempt == 0) {
                 Ok(()) => {}
@@ -321,6 +334,10 @@ impl Vault {
         previous: Option<&[u8]>,
         seq: u64,
     ) -> Result<Option<WriteResult>> {
+        if crate::paths::is_under(rel, self.config.work_dir()) && !self.owns_work_path(rel) {
+            return Ok(None);
+        }
+
         let Ok(note) = Note::parse(bytes) else {
             return Ok(None);
         };

@@ -338,12 +338,29 @@ pub(crate) fn tree_blobs(vault: &Vault, commit: ObjectId) -> Result<Vec<(String,
 /// `git commit` drop engine files). Stat data is empty, so git re-hashes on
 /// the next `git status`. Fails without waiting if `index.lock` is held.
 pub(crate) fn sync_git_index(vault: &Vault, commit: ObjectId) -> Result<()> {
-    let tree = tree_of(vault, Some(commit))?;
-    let mut index = vault
-        .repo()
-        .index_from_tree(&tree)
-        .map_err(HistoryError::git)?;
-    index
-        .write(gix::index::write::Options::default())
-        .map_err(HistoryError::git)
+    let pending = vault.wi_dir().join("git-index-pending");
+    let result: Result<()> = (|| {
+        let tree = tree_of(vault, Some(commit))?;
+        let mut index = vault
+            .repo()
+            .index_from_tree(&tree)
+            .map_err(HistoryError::git)?;
+        index
+            .write(gix::index::write::Options::default())
+            .map_err(HistoryError::git)
+    })();
+    if result.is_err() {
+        durable::write_atomic(
+            &pending,
+            b"refresh the staging index from the current branch\n",
+            vault.durability(),
+        )?;
+    } else {
+        match std::fs::remove_file(&pending) {
+            Ok(()) => durable::barrier_dir(&vault.wi_dir(), vault.durability())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(HistoryError::io(&pending, error)),
+        }
+    }
+    result
 }

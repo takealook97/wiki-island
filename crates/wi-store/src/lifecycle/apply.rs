@@ -100,7 +100,7 @@ impl Vault {
     /// maintenance closed because its cause was gone is opened again with
     /// the new reason. Returns its path.
     pub(crate) fn write_work(&self, item: &WorkItem) -> Result<String> {
-        let path = item.path(self.config.work_dir());
+        let path = item.path(&self.device_work_dir()?);
         let existing = read_rel(self.root(), &path)?;
         let resolved = existing
             .as_deref()
@@ -126,6 +126,12 @@ impl Vault {
 
     /// Replace an existing work note with a refreshed rendering.
     pub(crate) fn refresh_work(&self, path: &str, item: &WorkItem) -> Result<bool> {
+        if !self.owns_work_path(path) {
+            return Err(StoreError::LifecycleRefused {
+                code: "foreign-device-work",
+                message: "This work item belongs to another device.".into(),
+            });
+        }
         let Some(bytes) = read_rel(self.root(), path)? else {
             self.write_work(item)?;
             return Ok(true);

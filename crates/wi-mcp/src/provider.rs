@@ -255,10 +255,11 @@ fn next_work(vault: &Vault, args: &Value) -> Result<Value> {
         .work_list()?
         .into_iter()
         .filter(|item| {
-            matches!(
-                item.state.as_deref(),
-                Some("ready" | "investigating" | "checkpointed" | "open")
-            )
+            item.actionable
+                && matches!(
+                    item.state.as_deref(),
+                    Some("ready" | "investigating" | "checkpointed" | "open")
+                )
         })
         .collect::<Vec<_>>();
     open.sort_by(|a, b| {

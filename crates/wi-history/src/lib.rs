@@ -22,6 +22,7 @@ mod missing;
 mod pin;
 mod recovery;
 mod storage;
+mod sync;
 mod vault;
 
 #[cfg(test)]
@@ -48,6 +49,7 @@ pub use storage::{
     DATA_DIR_ENV, StorageMode, VAULT_LOCAL_DIR, data_root, device_id, external_git_dir,
     local_state_dir, read_vault_id, storage_mode, vault_state_dir,
 };
+pub use sync::{SyncRepo, SyncTree};
 pub use vault::{Blob, BlobId, Vault, blob_id_of, generation, hash_bytes, publication_state};
 
 /// Trailer naming the internal manifest sequence id: `Wi-Seq: <seq> <manifest-id>`.

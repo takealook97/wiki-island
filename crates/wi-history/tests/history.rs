@@ -707,3 +707,62 @@ fn owner_deletions_are_one_commit_and_skip_paths_that_came_back() {
     );
     fsck(vault.root());
 }
+
+#[test]
+fn merged_history_keeps_operations_and_losses_from_every_parent_once() {
+    let (_dir, vault) = new_vault();
+    let mut base = intent(&vault, "base.md", b"base\n", "engine", Some("base"));
+    base.losses.push(serde_json::json!({"event":"base"}));
+    save_record(&vault, base, b"base\n");
+    Flusher::flush(&vault).unwrap();
+    let root = History::head(&vault).unwrap().unwrap();
+    let branch = git(vault.root(), &["symbolic-ref", "--short", "HEAD"])
+        .trim()
+        .to_owned();
+    git(vault.root(), &["branch", "other", &root]);
+    let mut first = intent(&vault, "first.md", b"first\n", "engine", Some("first"));
+    first.losses.push(serde_json::json!({"event":"first"}));
+    save_record(&vault, first, b"first\n");
+    Flusher::flush(&vault).unwrap();
+    git(vault.root(), &["checkout", "other"]);
+    let mut second = intent(&vault, "second.md", b"second\n", "engine", Some("second"));
+    second.losses.push(serde_json::json!({"event":"second"}));
+    save_record(&vault, second, b"second\n");
+    Flusher::flush(&vault).unwrap();
+    git(vault.root(), &["checkout", &branch]);
+    git(
+        vault.root(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@localhost",
+            "-c",
+            "commit.gpgSign=false",
+            "merge",
+            "--no-ff",
+            "other",
+            "-m",
+            "merge notes",
+        ],
+    );
+    for op in ["base", "first", "second"] {
+        assert!(History::find_operation(&vault, op).unwrap().is_some());
+    }
+    let scan = History::operations_since(&vault, Some(&root)).unwrap();
+    assert!(
+        !scan.reached_stop,
+        "a new merge requests a complete disposable-map rebuild"
+    );
+    for op in ["base", "first", "second"] {
+        assert_eq!(scan.operations.iter().filter(|t| t.op_id == op).count(), 1);
+    }
+    let mut losses = History::losses_since(&vault, 0).unwrap();
+    losses.sort();
+    assert_eq!(
+        losses,
+        ["base", "first", "second"].map(|event| serde_json::json!({"event":event}).to_string())
+    );
+}

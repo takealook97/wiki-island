@@ -145,7 +145,10 @@ fn old_capture_folder_stays_and_old_work_folder_migrates_once() {
     let r = maintain(&v);
     assert_eq!(r.migrated, 1, "only the engine work note moves");
     assert!(root.join("inbox/evidence.md").is_file());
-    assert!(root.join(work.path(".wiki-island/work")).is_file());
+    assert!(
+        root.join(work.path(&v.device_work_dir().unwrap()))
+            .is_file()
+    );
     let context = v.context("inbox/evidence", 1).unwrap();
     assert!(
         serde_json::to_string(&context)

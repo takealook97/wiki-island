@@ -9,7 +9,7 @@
 - There is no UI, dashboard, web app or mobile app. Notes are plain files, so Obsidian or any editor is optional and works as is ([INTEGRATIONS](INTEGRATIONS.md#obsidian-and-other-editors)).
 - Private, personal use.
 - On top of notes and index the engine adds the lifecycle in [KNOWLEDGE](KNOWLEDGE.md): status, freshness, applicability, source pins, adoption gates and work items, with no human approval step.
-- The engine never calls a model or the network. It maintains itself ([KNOWLEDGE](KNOWLEDGE.md#self-maintenance)) and a non-developer installs it with one command ([INTEGRATIONS](INTEGRATIONS.md#setup-and-uninstall)).
+- The engine never calls a model. Capture, search, reads, maintenance and every MCP tool are offline; only explicit remote commands and the separate background sync thread use the network. It maintains itself ([KNOWLEDGE](KNOWLEDGE.md#self-maintenance)) and a non-developer installs it with one command ([INTEGRATIONS](INTEGRATIONS.md#setup-and-uninstall)).
 
 ## Scope
 
@@ -21,8 +21,9 @@ In scope:
 - context traversal, list and find
 - document import with sidecars and page maps ([FORMAT](FORMAT.md#document-sidecars)) and Notion export import
 - procedures exported as host skills and served over MCP ([SKILLS](SKILLS.md))
+- optional git remote synchronization in git mode ([OPERATIONS](OPERATIONS.md#git-history-and-sync))
 
-Out of scope: cloud or hosted adapters, live cloud sync, an HTTP API, and embeddings. Embeddings may return later as an opt-in feature, never on the capture or search path.
+Out of scope: cloud or hosted adapters beyond git remote transport, an HTTP API, and embeddings. Embeddings may return later as an opt-in feature, never on the capture or search path.
 
 Structure:
 
@@ -39,10 +40,11 @@ Structure:
 - On open, `<vault>/.git` means git mode; otherwise an external git directory registered for the vault's `vault_id` means folder mode. `wi init` and `wi setup` choose folder mode inside a known file-synced folder and git mode elsewhere. A folder-mode vault moved on the same device is re-bound under a lock and reported by `wi doctor`; a second copy with the same `vault_id` is refused, never silently taken over.
 - The current state is the durable working-tree file, identified by its content hash. Git holds coalesced history: engine writes are flushed in batches, one commit per acknowledged operation; the watcher commits external editor changes after a debounce; `wi commit` commits by hand. A revert is a new commit ([OPERATIONS](OPERATIONS.md#git-history-and-sync)).
 - Until its commit, every acknowledged engine save is kept as a git blob named in a fsynced pending manifest. Intermediate external-editor saves the engine never saw are not preserved.
-- Git is embedded (pure Rust); no git binary is needed. Local commits need no daemon and no network.
-- Sync is an optional git remote, used through push and pull. Merge conflicts are never resolved automatically.
+- Local git history is embedded (pure Rust) and needs no git binary, daemon or network. Optional remote transport uses the system git.
+- Git-mode remote sync flushes, fetches, applies fast-forwards or a per-path three-way merge, and pushes without force. Conflicts keep the local path and preserve remote bytes in a committed conflict copy with a work request; no conflict markers are written. Folder mode leaves transport to the file-sync service.
 - **Never put a git directory inside an iCloud Drive or Google Drive sync folder.** Those services sync files one by one and can deliver git's objects and refs partly or out of order; the likely result is a corrupt repository. Folder mode keeps history out of the synced folder; `wi doctor` warns when the history folder itself looks synced (detection is heuristic).
 - In folder mode only the primary device (`primary_device` in `.wiki-island/config.toml`, a random per-device id kept in the data directory) runs lifecycle-mutating maintenance; the first setup records it and `wi setup --primary` takes over. Other devices still index, search, serve MCP, capture, ingest owner edits and keep their own history.
+- Work notes live under `.wiki-island/work/<device_id>/`; listings mark other devices' items read-only. Flat engine work notes move through the crash-safe write path on open.
 - Originals stay in the repository by default; `wi doctor` advises considering Git LFS above an unmeasured 20 MiB threshold. No automatic LFS setup ([OPERATIONS](OPERATIONS.md#attachments)).
 
 ## Write path

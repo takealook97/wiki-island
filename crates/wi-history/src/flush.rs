@@ -450,6 +450,11 @@ impl Flusher {
     /// appended after the snapshot stay in the manifest for the next flush.
     pub fn flush(vault: &Vault) -> Result<FlushReport> {
         let lock = FlushLock::acquire(vault)?;
+        if vault.wi_dir().join("sync-intent.json").exists() {
+            return Err(HistoryError::Git(
+                "sync recovery is finishing; retry the flush".into(),
+            ));
+        }
         Self::flush_locked(vault, &lock)
     }
 
@@ -494,6 +499,14 @@ impl Flusher {
             report.index_warning = gitops::sync_git_index(vault, new)
                 .err()
                 .map(|e| e.to_string());
+        }
+        if report.index_warning.is_none()
+            && vault.wi_dir().join("git-index-pending").exists()
+            && let Some(tip) = parent
+        {
+            report.index_warning = gitops::sync_git_index(vault, tip)
+                .err()
+                .map(|error| error.to_string());
         }
         if !plan.already.is_empty() {
             // Found committed by an earlier flush that may have died (or

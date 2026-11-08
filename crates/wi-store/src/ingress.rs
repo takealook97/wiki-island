@@ -412,6 +412,9 @@ impl Vault {
         before: StatKey,
         survey: &mut Survey,
     ) -> Result<()> {
+        if self.sync_exclude_oversize(&rel)? {
+            return Ok(());
+        }
         let bytes = match read_rel(self.root(), &rel) {
             Ok(Some(bytes)) => bytes,
             // Gone since the walk, or no longer a regular file.

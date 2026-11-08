@@ -23,6 +23,8 @@ pub struct WorkEntry {
     pub reason: Option<String>,
     pub next_action: Option<String>,
     pub deferred: bool,
+    /// Only this device may act on the item.
+    pub actionable: bool,
 }
 
 /// A close request: outcome, limits and the reopen trigger.
@@ -80,6 +82,73 @@ fn work_item(note: &Note) -> Option<WorkItem> {
 }
 
 impl Vault {
+    /// Directory this device alone writes.
+    pub fn device_work_dir(&self) -> Result<String> {
+        Ok(format!("{}/{}", self.config.work_dir(), self.device_id()?))
+    }
+
+    pub(crate) fn owns_work_path(&self, path: &str) -> bool {
+        self.device_work_dir()
+            .is_ok_and(|dir| path.starts_with(&format!("{dir}/")))
+    }
+
+    /// Move flat engine work notes through the existing crash-safe move path.
+    pub(crate) fn migrate_device_work(&self) -> Result<()> {
+        let dir = self.config.work_dir();
+        let Some((parent, _)) =
+            crate::contained::Dir::open_parent(self.root(), &format!("{dir}/item"))?
+        else {
+            return Ok(());
+        };
+        for name in parent.names()? {
+            if !name.ends_with(".md") {
+                continue;
+            }
+            let from = format!("{dir}/{name}");
+            let Some(bytes) = read_rel(self.root(), &from)? else {
+                continue;
+            };
+            let Ok(note) = Note::parse(&bytes) else {
+                continue;
+            };
+            let Some(item) = work_item(&note) else {
+                continue;
+            };
+            if item.path(dir) != from
+                || wi_lifecycle::work::work_id(item.kind, &item.target, &item.related) != item.id
+            {
+                continue;
+            }
+            let to = format!("{}/{name}", self.device_work_dir()?);
+            // An interrupted move is replayed before this method runs. A
+            // pre-existing destination with other bytes is never replaced.
+            if read_rel(self.root(), &to)?.is_some() {
+                continue;
+            }
+            let target = crate::paths::Target {
+                abs: self.root().join(&to),
+                rel: to.clone(),
+            };
+            let source = crate::paths::Target {
+                abs: self.root().join(&from),
+                rel: from,
+            };
+            self.mark_index_pending(&[&source.rel, &target.rel])?;
+            self.publish(crate::publish::Change {
+                target,
+                bytes: bytes.clone(),
+                expect: crate::publish::Expect::Absent,
+                moved_from: Some((source, wi_history::hash_bytes(&bytes))),
+                op_id: None,
+                digest: wi_history::hash_bytes(to.as_bytes()),
+                ingress: crate::Ingress::Engine,
+                revert_of: None,
+                charge: None,
+            })?;
+        }
+        Ok(())
+    }
+
     /// Every work note, sorted by path.
     pub fn work_list(&self) -> Result<Vec<WorkEntry>> {
         let notes = self.lifecycle_notes()?;
@@ -103,6 +172,7 @@ impl Vault {
                     reason: work.and_then(|w| w.reason.clone()),
                     next_action: work.and_then(|w| w.next_action.clone()),
                     deferred: n.deferred.is_some(),
+                    actionable: self.owns_work_path(&n.path),
                 }
             })
             .map(|entry| {
@@ -123,6 +193,12 @@ impl Vault {
     /// `narrowed` and `alternative` need limits and a reopen trigger.
     pub fn work_close(&self, request: &WorkClose) -> Result<String> {
         let rel = crate::paths::normalize(self.root(), &request.path)?;
+        if crate::paths::is_under(&rel, self.config.work_dir()) && !self.owns_work_path(&rel) {
+            return Err(StoreError::LifecycleRefused {
+                code: "foreign-device-work",
+                message: "This work item belongs to another device and is read-only here.".into(),
+            });
+        }
         let bytes = read_rel(self.root(), &rel)?
             .ok_or_else(|| StoreError::NotFound { path: rel.clone() })?;
         let note = Note::parse(&bytes)?;
@@ -152,7 +228,7 @@ impl Vault {
     pub(crate) fn engine_work_item(&self, rel: &str, note: &Note) -> Option<WorkItem> {
         let item = work_item(note)?;
         let id = wi_lifecycle::work::work_id(item.kind, &item.target, &item.related);
-        (id == item.id && item.path(self.config.work_dir()) == rel).then_some(item)
+        (id == item.id && item.path(&self.device_work_dir().ok()?) == rel).then_some(item)
     }
 
     /// Refresh the work note at `path` with a freshly computed item while
@@ -216,6 +292,9 @@ impl Vault {
         refused: Option<&str>,
     ) -> Result<()> {
         let holder = snapshot.notes().iter().find(|n| {
+            if !self.owns_work_path(&n.path) {
+                return false;
+            }
             n.deferred
                 .as_ref()
                 .and_then(|d| d.get("id"))
@@ -292,7 +371,7 @@ impl Vault {
             let Some(item) = self.request_item(&request) else {
                 continue;
             };
-            let path = item.path(self.config.work_dir());
+            let path = item.path(&self.device_work_dir()?);
             if read_rel(self.root(), &path)?.is_none() {
                 out.push(self.write_work(&item)?);
             }
@@ -310,7 +389,7 @@ impl Vault {
         let Some(item) = self.request_item(request) else {
             return Ok(());
         };
-        let path = item.path(self.config.work_dir());
+        let path = item.path(&self.device_work_dir()?);
         if read_rel(self.root(), &path)?.is_some() {
             // `write_work` reopens a resolved note and keeps any other one.
             self.write_work(&item)?;

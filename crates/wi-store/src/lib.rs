@@ -28,6 +28,7 @@ mod ops;
 mod paths;
 mod publish;
 mod read;
+mod sync;
 mod vault;
 mod watch;
 mod work;
@@ -48,6 +49,7 @@ pub use paths::{EXPORT_PATHS_KEY, EXPORTS_DIR, IMPORTS_DIR, Target, is_scratch_n
 pub use read::{
     GENERATION_CHANGED, NameStat, ReadResult, SearchOptions, SearchResponse, VERIFY_LIMIT, Withheld,
 };
+pub use sync::{SyncHandle, SyncReport, SyncStatus};
 pub use vault::{
     CACHE_DIR_ENV, Hooks, IndexState, Ingress, InitReport, OpenOptions, OpenReport,
     PRIMARY_DEVICE_KEY, Placement, Vault, WriteResult,

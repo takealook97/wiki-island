@@ -15,7 +15,7 @@ A vault is one directory of notes with git history, either in `<vault>/.git` (gi
   .wiki-island/exports/     generated rules fragments (hidden, still synced; no wall-clock field)
   .wiki-island/
     config.toml             vault config, tracked (`vault_id`, `primary_device`, ...)
-    work/                   work items (engine-owned)
+    work/<device_id>/       work items (engine-owned; only the named device acts on them)
     captures/               capture notes
     procedures/             built-in maintenance procedure (engine-owned)
     local/                  per-device state, gitignored (git mode only)
@@ -27,7 +27,11 @@ A vault is one directory of notes with git history, either in `<vault>/.git` (gi
   vaults/<vault_id>/local/  folder-mode per-device state (what git mode keeps in .wiki-island/local)
 ```
 
-In folder mode the engine writes no `.gitignore` into the vault; its ignore lines go to `<git dir>/info/exclude`, which ingest, the watcher and the index walk honour after `.ignore` and `.gitignore` files.
+Existing flat engine work notes migrate into the opening device's work folder through durable move intents. Their bytes and work identifiers stay unchanged. Other devices' folders remain visible and read-only; an index rebuild recovers them all from Markdown. The new layout does not change frontmatter or the index schema.
+
+Remote configuration, retry state and the replayable sync intent are per-device JSON files in `<git dir>/wi/` (`sync-config.json`, `sync-state.json`, `sync-intent.json`); none is synchronized. A sync intent names the expected and target commit, a reserved publication sequence, old/new blobs for each changed path and conflict-copy requests. Completed sync uses the existing manifest checkpoint format to advance the generation. Older notes and checkpoints remain readable. A local `git-index-pending` flag requests a retry of a disposable staging-index refresh; ordinary flush/recovery clears it after refreshing from the current branch.
+
+In folder mode the engine writes no `.gitignore` into the vault; its ignore lines go to `<git dir>/info/exclude`, which ingest, the watcher and the index walk honour after `.ignore` and `.gitignore` files. Git mode also honours `info/exclude`, including managed large-file exclusions.
 
 The SQLite index is not in this tree: it lives in the platform cache, one per device. Folder names carry no permission. Any folder of Markdown notes, including an Obsidian vault, is a valid vault; its `.obsidian/` and `.trash/` folders are treated as engine-internal by ingest, the index walk and `wi doctor`.
 

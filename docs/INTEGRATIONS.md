@@ -71,8 +71,9 @@ Export the workspace as Markdown & CSV (zip or folder) and run `wi import <expor
 
 ## Git remote sync
 
-- Sync is an optional git remote, such as a private repository, through push and pull ([OPERATIONS](OPERATIONS.md#git-history-and-sync)).
-- Merge conflicts are never resolved automatically. Each device builds its own index.
+- `wi sync setup <url>` connects an existing private git remote. `wi sync` makes one attempt and accepts `--json`; `wi sync status` reports local status without network access. Transport is available in git mode only ([OPERATIONS](OPERATIONS.md#git-history-and-sync)).
+- `wi setup --github` uses an installed, authenticated `gh` to create or reuse the private `<login>/wiki-island-notes` repository and connects it. A public repository is refused. If the CLI or authentication is unavailable, setup prints the command for connecting an existing remote.
+- Background care runs sync separately from maintenance, including when a remote is connected after service startup. Each device builds its own index. Conflicting note bytes are retained in a committed copy and a work request; local files receive no conflict markers.
 - Never place a git directory in an iCloud Drive or Google Drive folder. A vault inside such a folder uses folder mode, which keeps history in the per-device data directory ([DESIGN](DESIGN.md#storage-and-history)).
 
 ## Not integrated

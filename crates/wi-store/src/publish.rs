@@ -203,6 +203,11 @@ impl Vault {
             return Ok(None);
         };
         let guard = PublisherLock::acquire(&self.history)?;
+        if self.history.wi_dir().join("sync-intent.json").exists() {
+            return Err(StoreError::Invalid(
+                "Sync recovery is finishing; retry this save.".into(),
+            ));
+        }
         let snap = Manifest::snapshot(&self.history, &guard)?;
         self.lookup_operation(&guard, &snap, op_id, digest)
     }
@@ -246,6 +251,25 @@ impl Vault {
 
     /// Publish one change through the write path.
     pub(crate) fn publish(&self, change: Change) -> Result<WriteResult> {
+        self.recover_sync()?;
+        if crate::paths::is_under(&change.target.rel, self.config.work_dir())
+            && !self.owns_work_path(&change.target.rel)
+        {
+            return Err(StoreError::LifecycleRefused {
+                code: "foreign-device-work",
+                message: "This work item belongs to another device and is read-only here.".into(),
+            });
+        }
+        if let Some((source, _)) = &change.moved_from
+            && crate::paths::is_under(&source.rel, self.config.work_dir())
+            && !self.owns_work_path(&source.rel)
+            && source.rel.rsplit_once('/').map(|(dir, _)| dir) != Some(self.config.work_dir())
+        {
+            return Err(StoreError::LifecycleRefused {
+                code: "foreign-device-work",
+                message: "This work item belongs to another device and is read-only here.".into(),
+            });
+        }
         for attempt in 0..2 {
             match self.publish_once(&change, attempt == 0) {
                 Err(StoreError::History(HistoryError::OpenIntent { .. })) if attempt == 0 => {
@@ -286,6 +310,11 @@ impl Vault {
         let new_blob = Blob::write_durable(&self.history, &change.bytes)?;
 
         let guard = PublisherLock::acquire(&self.history)?;
+        if self.history.wi_dir().join("sync-intent.json").exists() {
+            return Err(StoreError::Invalid(
+                "Sync recovery is finishing; retry this save.".into(),
+            ));
+        }
         let snap = Manifest::snapshot(&self.history, &guard)?;
         let paths: Vec<&str> = std::iter::once(target.rel.as_str())
             .chain(change.moved_from.as_ref().map(|(s, _)| s.rel.as_str()))

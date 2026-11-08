@@ -240,10 +240,15 @@ pub(crate) fn work(vault: &Session, command: WorkCommand) -> Result<Output> {
                 .iter()
                 .map(|i| {
                     format!(
-                        "{}  {}  {}",
+                        "{}  {}  {}{}",
                         i.path,
                         i.state.as_deref().unwrap_or("?"),
-                        i.reason.as_deref().unwrap_or_default()
+                        i.reason.as_deref().unwrap_or_default(),
+                        if i.actionable {
+                            ""
+                        } else {
+                            " (another device; read-only)"
+                        }
                     )
                 })
                 .collect::<Vec<_>>()

@@ -470,5 +470,10 @@ pub fn generation(vault: &Vault) -> Result<u64> {
 /// publication.
 pub fn publication_state(vault: &Vault) -> Result<(u64, Option<u64>)> {
     let snap = Manifest::snapshot_unlocked(vault)?;
-    Ok((snap.generation, snap.open_intent().map(|e| e.seq)))
+    let open = if vault.wi_dir().join("sync-intent.json").exists() {
+        Some(u64::MAX)
+    } else {
+        snap.open_intent().map(|e| e.seq)
+    };
+    Ok((snap.generation, open))
 }

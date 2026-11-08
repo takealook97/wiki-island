@@ -134,7 +134,11 @@ fn an_old_layout_moves_under_the_engine_folder_once() {
     let report = maintain(&vault);
     assert_eq!(report.migrated, 1, "{report:?}");
     let name = work_rel.trim_start_matches("work/");
-    assert!(root.join(".wiki-island/work").join(name).is_file());
+    assert!(
+        root.join(vault.device_work_dir().unwrap())
+            .join(name)
+            .is_file()
+    );
     assert!(!root.join(&work_rel).exists());
     // Captures, other notes and pinned snapshots stay where they are.
     assert!(root.join("captures/c1.md").is_file());
@@ -548,14 +552,21 @@ fn note_targeted_duplicate_items_close_when_only_a_heading_matches() {
         chrono::Utc::now(),
     )
     .with_condition("duplicate: shared heading");
-    put(&vault, &item.path(".wiki-island/work"), &item.render());
+    put(
+        &vault,
+        &item.path(&vault.device_work_dir().unwrap()),
+        &item.render(),
+    );
     ingest(&vault);
     let report = maintain(&vault);
     assert_eq!(report.work_created, 0, "{report:?}");
     assert_eq!(report.work_closed, 1, "{report:?}");
     assert_eq!(
         work_paths(&vault, "duplicate"),
-        vec![(item.path(".wiki-island/work"), Some("closed".into()))]
+        vec![(
+            item.path(&vault.device_work_dir().unwrap()),
+            Some("closed".into())
+        )]
     );
     let tip = head(&vault);
     assert!(quiet(&maintain(&vault)));

@@ -39,7 +39,11 @@ impl PublicationMark {
 pub fn publication_mark(vault: &Vault) -> Result<PublicationMark> {
     let snap = Manifest::snapshot_unlocked(vault)?;
     Ok(PublicationMark {
-        open: snap.open_intent().map(|e| e.seq),
+        open: if vault.wi_dir().join("sync-intent.json").exists() {
+            Some(u64::MAX)
+        } else {
+            snap.open_intent().map(|e| e.seq)
+        },
         manifest_id: snap.manifest_id,
         generation: snap.generation,
         next_seq: snap.next_seq,
@@ -54,6 +58,9 @@ pub fn changed_paths_since(
     mark: &PublicationMark,
 ) -> Result<Option<BTreeSet<String>>> {
     let snap = Manifest::snapshot_unlocked(vault)?;
+    if mark.open == Some(u64::MAX) || vault.wi_dir().join("sync-intent.json").exists() {
+        return Ok(None);
+    }
     if snap.manifest_id != mark.manifest_id {
         return Ok(None);
     }

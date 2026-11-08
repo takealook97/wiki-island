@@ -11,6 +11,7 @@ mod lifecycle_cmd;
 mod service_cmd;
 #[path = "setup_cmd.rs"]
 mod setup_cmd;
+mod sync_cmd;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -130,6 +131,14 @@ enum Command {
         /// notes folder shared by a file-sync service.
         #[arg(long)]
         primary: bool,
+        /// Connect a private remote repository using the authenticated GitHub CLI.
+        #[arg(long)]
+        github: bool,
+    },
+    /// Synchronize notes with your configured git remote.
+    Sync {
+        #[command(subcommand)]
+        command: Option<sync_cmd::SyncCommand>,
     },
     /// Remove Wiki Island connections and background care; keep your notes.
     Uninstall,
@@ -713,7 +722,10 @@ fn run(cli: Cli) -> Result<Output> {
     // `wi commit` ingests on its own. `wi import` commits the originals it names together with
     // their sidecars in one bulk commit, then takes in other editor changes before the closing
     // flush. Every other command takes in editor changes first.
-    let ingest = !matches!(command, Command::Commit | Command::Import { .. });
+    let ingest = !matches!(
+        command,
+        Command::Commit | Command::Import { .. } | Command::Sync { .. }
+    );
     let session = Session::open(&root, ingest)?;
     let reports_commits = reports_commits(&command);
     let result = run_in_vault(&session, command);
@@ -792,15 +804,21 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
             let home = setup_cmd::home()?;
             let root = setup_cmd::root(&root, &home);
             let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
-            if let Command::Setup { primary } = command {
-                setup_cmd::setup(
+            if let Command::Setup { primary, github } = command {
+                let mut output = setup_cmd::setup(
                     &root,
                     &home,
                     &setup_cmd::executable()?,
                     codex_home.as_deref(),
                     &wi_export::service::SystemLaunchctl,
                     primary,
-                )
+                )?;
+                if github {
+                    let message = sync_cmd::github(&root)?;
+                    output.human.push_str(&format!("\n{message}"));
+                    output.json["sync"] = json!(message);
+                }
+                Ok(output)
             } else {
                 setup_cmd::uninstall(
                     &root,
@@ -906,6 +924,7 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
             };
             // Start the watcher first so edits made during the catch-up queue.
             let handle = vault.watch_with_hooks(wi_store::WatchTuning::default(), hooks)?;
+            let mut sync = vault.start_sync()?;
             eprintln!(
                 "watching {} (debounce {:?})",
                 vault.root().display(),
@@ -946,6 +965,9 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 }
+                if sync.is_none() && vault.sync_status().is_ok_and(|status| status.configured) {
+                    sync = vault.start_sync()?;
+                }
                 if cfg!(target_os = "macos")
                     && let Some(home) = &log_home
                     && wi_export::service::rotate_log(home, vault.vault_id()).is_err()
@@ -961,6 +983,9 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
                 }
             }
             handle.stop();
+            if let Some(sync) = sync {
+                sync.stop();
+            }
             let report = vault.flush()?;
             Ok(Output {
                 json: json!({"events": seen, "commits": report.commits.len(), "warnings": warnings}),
@@ -973,6 +998,7 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
 
 fn run_in_vault(vault: &Session, command: Command) -> Result<Output> {
     match command {
+        Command::Sync { command } => sync_cmd::run(vault, command),
         Command::Export {
             command: ExportCommand::Rules { host },
         } => {
@@ -1278,7 +1304,7 @@ fn run_in_vault(vault: &Session, command: Command) -> Result<Output> {
             let tasks = vault
                 .work_list()?
                 .iter()
-                .filter(|w| w.state.as_deref() == Some("ready"))
+                .filter(|w| w.actionable && w.state.as_deref() == Some("ready"))
                 .count();
             let mut human = if report.procedures_changed
                 || report.repaired > 0
@@ -1390,7 +1416,7 @@ fn run_in_vault(vault: &Session, command: Command) -> Result<Output> {
             let tasks = vault
                 .work_list()?
                 .iter()
-                .filter(|w| w.state.as_deref() == Some("ready"))
+                .filter(|w| w.actionable && w.state.as_deref() == Some("ready"))
                 .count();
             report.checks.push(wi_store::Check {
                 name: "work",

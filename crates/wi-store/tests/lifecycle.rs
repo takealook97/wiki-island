@@ -292,7 +292,7 @@ fn active_conflict_flags_both_with_work_and_wi_work_opens_slotless_pairs() {
         .work_open_conflict("memory/c.md", "memory/d.md", "regions disagree")
         .unwrap();
     assert!(
-        opened.starts_with(".wiki-island/work/conflict-"),
+        opened.starts_with(&format!("{}/conflict-", vault.device_work_dir().unwrap())),
         "{opened}"
     );
     assert_eq!(work_notes(&vault, "conflict").len(), 2);
@@ -325,7 +325,10 @@ fn changed_source_withholds_opens_recheck_and_sweep_keeps_status() {
     let before = status(&vault, "memory/port.md");
     let summary = vault.sweep().unwrap();
     assert_eq!(summary.work_created.len(), 1, "{summary:?}");
-    assert!(summary.work_created[0].starts_with(".wiki-island/work/recheck-"));
+    assert!(
+        summary.work_created[0]
+            .starts_with(&format!("{}/recheck-", vault.device_work_dir().unwrap()))
+    );
     assert_eq!(status(&vault, "memory/port.md"), before);
     // A second sweep refreshes nothing new and still changes no status.
     let again = vault.sweep().unwrap();
@@ -401,10 +404,9 @@ fn two_agent_losses_then_budget_exhausted_queued_and_resumed() {
     };
     assert_eq!(*spent, 2);
     assert!(retry_at.is_some());
-    assert!(
-        work.as_deref()
-            .is_some_and(|w| w.starts_with(".wiki-island/work/deferred-"))
-    );
+    assert!(work.as_deref().is_some_and(|w| {
+        w.starts_with(&format!("{}/deferred-", vault.device_work_dir().unwrap()))
+    }));
     let by_move = vault
         .lifecycle_move(MoveRequest {
             from: "memory/p3.md".into(),

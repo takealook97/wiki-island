@@ -57,7 +57,7 @@ pub struct Charge {
 pub(crate) fn actor_of(ingress: Ingress) -> Actor {
     match ingress {
         Ingress::Mcp => Actor::Agent,
-        Ingress::Engine => Actor::Engine,
+        Ingress::Engine | Ingress::Sync => Actor::Engine,
         Ingress::Cli | Ingress::Watcher | Ingress::Import => Actor::User,
     }
 }

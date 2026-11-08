@@ -644,6 +644,30 @@ impl Manifest {
             .map_or(Ok(()), |e| Err(HistoryError::OpenIntent { seq: e.seq }))
     }
 
+    /// Publish a synchronized tree after its ref is durable. Sync owns the
+    /// flush and publisher locks and starts only with an empty manifest.
+    /// Reusing the checkpoint format keeps older vaults readable; the
+    /// reserved sequence invalidates reads even though no note save ran.
+    pub fn publish_sync(vault: &Vault, guard: &PublisherGuard, seq: Seq) -> Result<()> {
+        let snap = Self::snapshot(vault, guard)?;
+        if snap.generation >= seq {
+            return Ok(());
+        }
+        if !snap.entries.is_empty() || snap.next_seq != seq {
+            return Err(HistoryError::Git(
+                "sync publication sequence changed".into(),
+            ));
+        }
+        let mut out = MAGIC.to_vec();
+        out.extend(encode_frame(&Record::Checkpoint {
+            manifest_id: snap.manifest_id,
+            next_seq: seq + 1,
+            generation: seq,
+            retired_upto: seq,
+        })?);
+        durable::write_atomic(&Self::path(vault), &out, vault.durability())
+    }
+
     /// Append an `intent` record and fsync. Refused while an earlier intent
     /// on one of its paths is open (a crashed write): run
     /// `Recovery::replay` first. An open intent on other paths (one that

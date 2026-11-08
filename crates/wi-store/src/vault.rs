@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use wi_history::{
     FlushReport, Flusher, HistoryError, Manifest, OpRecord, PublisherLock, Recovery,
     RecoveryReport, Vault as HistoryVault, WorkingTree, durable, hash_bytes,
@@ -30,7 +30,7 @@ const INDEX_PENDING_CLAIM: &str = "index-pending.claim-";
 
 /// Who sent a request. The actor goes to the manifest and the `Wi-Actor`
 /// trailer; it is separate from a note's `origin` (AUTHORITY).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Ingress {
     /// The `wi` command line, used as a tool by the owner.
@@ -43,6 +43,8 @@ pub enum Ingress {
     Import,
     /// The engine itself (lifecycle bookkeeping); may set engine-owned fields.
     Engine,
+    /// Git remote synchronization; note provenance stays in its bytes.
+    Sync,
 }
 
 impl Ingress {
@@ -54,6 +56,7 @@ impl Ingress {
             Self::Watcher => "watcher",
             Self::Import => "import",
             Self::Engine => "engine",
+            Self::Sync => "sync",
         }
     }
 
@@ -63,7 +66,7 @@ impl Ingress {
             Self::Cli | Self::Watcher => Some("user"),
             Self::Mcp => Some("agent"),
             Self::Import => Some("file"),
-            Self::Engine => None,
+            Self::Engine | Self::Sync => None,
         }
     }
 }
@@ -201,6 +204,7 @@ pub struct Vault {
     pub(crate) history: HistoryVault,
     pub(crate) config: VaultConfig,
     pub(crate) vault_id: String,
+    device_id_cache: RefCell<Option<String>>,
     pub(crate) options: OpenOptions,
     pub(crate) placement: Placement,
     pub(crate) index: RefCell<Option<Index>>,
@@ -429,12 +433,7 @@ impl Vault {
                 HistoryError::NotARepository(path) => StoreError::NotInitialised(path),
                 other => other.into(),
             })?;
-        wi_index::set_exclude_file(
-            history.root(),
-            (history.storage_mode() == wi_history::StorageMode::Folder)
-                .then(|| history.exclude_file())
-                .as_deref(),
-        );
+        wi_index::set_exclude_file(history.root(), Some(&history.exclude_file()));
         let config_path = history.root().join(VAULT_CONFIG_PATH);
         let text = std::fs::read_to_string(&config_path)
             .map_err(|_| StoreError::NotInitialised(history.root().to_path_buf()))?;
@@ -447,6 +446,7 @@ impl Vault {
             history,
             config,
             vault_id,
+            device_id_cache: RefCell::new(None),
             options,
             placement,
             index: RefCell::new(None),
@@ -469,6 +469,8 @@ impl Vault {
         };
         vault.former_archive_dirs = vault.record_archive_dir();
         vault.open_report = vault.recover()?;
+        vault.cleanup_sync_scratch()?;
+        vault.migrate_device_work()?;
         Ok(vault)
     }
 
@@ -503,7 +505,12 @@ impl Vault {
 
     /// This device's id (created on first use in the data directory).
     pub fn device_id(&self) -> Result<String> {
-        Ok(wi_history::device_id(self.placement.data_root.as_deref())?)
+        if let Some(id) = self.device_id_cache.borrow().as_ref() {
+            return Ok(id.clone());
+        }
+        let id = wi_history::device_id(self.placement.data_root.as_deref())?;
+        *self.device_id_cache.borrow_mut() = Some(id.clone());
+        Ok(id)
     }
 
     /// The `primary_device` recorded in the vault config, if any. Read
@@ -644,6 +651,7 @@ impl Vault {
 
     /// Commit pending manifest records (one commit per operation).
     pub fn flush(&self) -> Result<FlushReport> {
+        self.recover_sync()?;
         if crate::fault::fail_flush_once() {
             return Err(StoreError::Invalid("injected flush failure".into()));
         }
@@ -666,6 +674,7 @@ impl Vault {
     /// retries it. Only writes to that intent's paths wait for it
     /// (`recovery-held`); writes to other paths, flushes and commits go on.
     pub fn recover(&self) -> Result<OpenReport> {
+        self.recover_sync()?;
         let prepared = self.prepare_open_intent()?;
         let mut report = OpenReport {
             temp_cleanup: prepared.notes,
@@ -1129,7 +1138,7 @@ impl Vault {
         Ok(handle)
     }
 
-    fn mark_index_pending(&self, paths: &[&str]) -> Result<()> {
+    pub(crate) fn mark_index_pending(&self, paths: &[&str]) -> Result<()> {
         use std::io::Write;
         let _lock = self.pending_lock()?;
         let file = self.pending_path();

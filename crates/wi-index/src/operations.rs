@@ -53,9 +53,9 @@ impl Index {
             .optional()?)
     }
 
-    /// Add scanned operations (newest first; an id keeps its newest commit)
-    /// and move the scan tip, in one transaction. `reset` clears the map
-    /// first (the old tip is no longer an ancestor of the branch).
+    /// Add scanned operations in precedence order (an id keeps its first
+    /// row) and move the scan tip in one transaction. `reset` requests a
+    /// complete rebuild, including after new merge ancestry is discovered.
     pub fn record_operations(
         &mut self,
         reset: bool,

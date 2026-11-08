@@ -298,6 +298,10 @@ impl Vault {
         let notes = listed
             .into_iter()
             .filter(|n| !fresh.iter().any(|f| f.path == n.path))
+            .filter(|n| {
+                n.lifecycle.lifecycle_type != wi_note::LifecycleType::Work
+                    || self.owns_work_path(&n.path)
+            })
             .chain(fresh.iter().cloned())
             .collect();
         Ok(Snapshot::new(notes, Default::default()))

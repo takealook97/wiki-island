@@ -312,7 +312,7 @@ impl Vault {
                 Stage::Conflicts if lifecycle => {
                     self.propagate_conflicts()?;
                 }
-                Stage::Requests if lifecycle => {
+                Stage::Requests if self.lifecycle_on() => {
                     report.work_created += self.convert_work_requests()?.len();
                 }
                 Stage::Sweep if lifecycle => {
@@ -450,7 +450,7 @@ impl Vault {
     ) -> Result<bool> {
         let moves = [(
             self.config.legacy_work_dir(),
-            self.config.work_dir(),
+            &self.device_work_dir()?,
             "work",
         )];
         for (legacy, current, kind) in moves {
@@ -964,7 +964,7 @@ mod tests {
         .unwrap();
         let mark = vault.publication_mark().unwrap();
         assert!(!vault.input_stale(&mark).unwrap());
-        let work = format!("{}/item.md", vault.config.work_dir());
+        let work = format!("{}/item.md", vault.device_work_dir().unwrap());
         write(
             &vault,
             &work,

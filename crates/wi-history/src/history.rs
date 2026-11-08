@@ -64,10 +64,10 @@ pub struct OperationTrailer {
 pub struct OperationScan {
     /// Branch tip when the scan started (`None` when unborn).
     pub tip: Option<String>,
-    /// Trailers, newest commit first.
+    /// Trailers in local-first parent precedence.
     pub operations: Vec<OperationTrailer>,
-    /// Whether the walk met the stop commit (`false`: it walked to the root,
-    /// so the stop commit is not a first-parent ancestor of the tip).
+    /// Whether the previous map can be retained. A merge in the new
+    /// prefix triggers a full ancestry rebuild and returns false.
     pub reached_stop: bool,
 }
 
@@ -317,26 +317,40 @@ impl History {
             .collect())
     }
 
-    /// The first-parent commit whose `Wi-Operation` trailer names `op_id`,
-    /// newest first. Engine commits hold one operation each, so the subject
-    /// `wi: <actor> <path>` names the path.
+    /// Find an operation in reachable history, preferring the local
+    /// first-parent lineage before other merge parents.
     pub fn find_operation(vault: &Vault, op_id: &str) -> Result<Option<OperationHit>> {
-        let Some(mut next) = gitops::branch_tip(vault)?.1 else {
-            return Ok(None);
-        };
-        loop {
-            let (message, parents) = gitops::commit_message(vault, next)?;
-            if let Some(found) = commit_operations(next, &message)
+        let mut stack: Vec<_> = gitops::branch_tip(vault)?.1.into_iter().collect();
+        let mut seen = HashSet::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let (message, parents) = gitops::commit_message(vault, id)?;
+            if let Some(found) = commit_operations(id, &message)
                 .into_iter()
                 .find(|t| t.op_id == op_id)
             {
                 return Ok(Some(Self::operation_hit(vault, found)?));
             }
-            match parents.first() {
-                Some(parent) => next = *parent,
-                None => return Ok(None),
-            }
+            stack.extend(parents.into_iter().rev());
         }
+        Ok(None)
+    }
+
+    fn all_operations(vault: &Vault, tip: ObjectId) -> Result<Vec<OperationTrailer>> {
+        let mut stack = vec![tip];
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let (message, parents) = gitops::commit_message(vault, id)?;
+            out.extend(commit_operations(id, &message));
+            stack.extend(parents.into_iter().rev());
+        }
+        Ok(out)
     }
 
     /// Resolve a trailer to a hit with the blob of its path in its commit.
@@ -357,9 +371,9 @@ impl History {
         })
     }
 
-    /// Every `Wi-Operation` trailer on the first-parent chain from the
-    /// branch tip back to (excluding) `stop`. A disposable op-id map uses it
-    /// to scan only the commits added since its last scan.
+    /// Scan the new first-parent prefix incrementally. A newly encountered
+    /// merge rebuilds the disposable map from all reachable parents, so
+    /// synchronized operations remain idempotent after index deletion.
     pub fn operations_since(vault: &Vault, stop: Option<&str>) -> Result<OperationScan> {
         let Some(tip) = gitops::branch_tip(vault)?.1 else {
             return Ok(OperationScan {
@@ -379,6 +393,10 @@ impl History {
                 return Ok(scan);
             }
             let (message, parents) = gitops::commit_message(vault, next)?;
+            if parents.len() > 1 {
+                scan.operations = Self::all_operations(vault, tip)?;
+                return Ok(scan);
+            }
             scan.operations.extend(commit_operations(next, &message));
             match parents.first() {
                 Some(parent) => next = *parent,
@@ -387,31 +405,27 @@ impl History {
         }
     }
 
-    /// `Wi-Loss` trailer values of first-parent commits authored at or after
-    /// `since` (unix seconds), newest first. A commit time later than the
-    /// event it records, so the walk stops at the first older commit. A
-    /// commit stamped in the future (a clock moved backward) is included.
+    /// Loss trailers from every merge parent, once per reachable commit.
+    /// Each ancestry branch is pruned at its first older commit; future
+    /// timestamps remain included as in the single-branch window rule.
     pub fn losses_since(vault: &Vault, since: i64) -> Result<Vec<String>> {
-        let Some(mut next) = gitops::branch_tip(vault)?.1 else {
-            return Ok(Vec::new());
-        };
+        let mut stack: Vec<_> = gitops::branch_tip(vault)?.1.into_iter().collect();
+        let mut seen = HashSet::new();
         let mut out = Vec::new();
-        loop {
-            if gitops::commit_time(vault, next)? < since {
-                return Ok(out);
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) || gitops::commit_time(vault, id)? < since {
+                continue;
             }
-            let (message, parents) = gitops::commit_message(vault, next)?;
+            let (message, parents) = gitops::commit_message(vault, id)?;
             out.extend(
                 gitops::trailers(&message)
                     .into_iter()
-                    .filter(|(k, _)| k == crate::TRAILER_LOSS)
-                    .map(|(_, v)| v),
+                    .filter(|(key, _)| key == crate::TRAILER_LOSS)
+                    .map(|(_, value)| value),
             );
-            match parents.first() {
-                Some(parent) => next = *parent,
-                None => return Ok(out),
-            }
+            stack.extend(parents.into_iter().rev());
         }
+        Ok(out)
     }
 
     /// Author time (unix seconds) of `commit`.

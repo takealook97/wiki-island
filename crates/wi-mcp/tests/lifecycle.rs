@@ -243,7 +243,7 @@ fn lifecycle_tools_capture_adopt_lint_work_and_claim_edit_through_mcp() {
 #[test]
 fn next_work_selects_open_tasks_by_priority_and_bounds_the_compact_payload() {
     let (_temp, e) = fixture();
-    let folder = e.vault().root().join(e.vault().config().work_dir());
+    let folder = e.vault().root().join(e.vault().device_work_dir().unwrap());
     std::fs::create_dir_all(&folder).unwrap();
     for (name, kind, state, reason) in [
         ("a-deferred", "deferred", "ready", "Try the change later"),
@@ -331,7 +331,7 @@ fn all_read_mode_and_legacy_mode_names_deliver_the_same_labelled_evidence() {
 #[test]
 fn oversized_first_work_item_is_delivered_compactly_without_starvation() {
     let (_temp, e) = fixture();
-    let folder = e.vault().root().join(e.vault().config().work_dir());
+    let folder = e.vault().root().join(e.vault().device_work_dir().unwrap());
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("large.md"), format!("---\ntype: work\nwork_id: task-large\nwork_kind: conflict\ncreated_at: 2026-11-01T00:00:00Z\nwork: {}\n---\nTask details.\n", json!({"state":"ready","target":"claim.md","reason":"reason ".repeat(2000),"next_action":"Read note"}))).unwrap();
     e.vault().catch_up().unwrap();
@@ -408,4 +408,23 @@ fn memory_and_two_plain_hits_deliver_metadata_and_pins_once_with_fewer_bytes() {
             assert!(!hit["content"].as_str().unwrap().contains("source_hash"));
         }
     }
+}
+
+#[test]
+fn work_next_excludes_foreign_device_items_and_list_marks_them_read_only() {
+    let (_temp, e) = fixture();
+    let foreign = e.vault().root().join(".wiki-island/work/another-device");
+    std::fs::create_dir_all(&foreign).unwrap();
+    std::fs::write(foreign.join("task.md"), "---\ntype: work\nwork_id: foreign-task\nwork_kind: conflict\ncreated_at: 2026-01-01T00:00:00Z\nwork: {state: ready, target: claim.md, reason: check, next_action: read}\n---\nForeign work.\n").unwrap();
+    e.vault().catch_up().unwrap();
+    let listed = good(&e, "wi_work", json!({"action":"list"}));
+    let row = listed["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["work_id"] == "foreign-task")
+        .unwrap();
+    assert_eq!(row["actionable"], false);
+    let next = good(&e, "wi_work", json!({"action":"next"}));
+    assert!(next["data"]["items"].as_array().unwrap().is_empty());
 }

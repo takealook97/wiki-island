@@ -1316,6 +1316,7 @@ fn message(code: &str) -> &'static str {
         }
         "revert-refused" => "The earlier claim could not be restored as a new note.",
         "rule-retirement" => "Only a user can retire this rule.",
+        "foreign-device-work" => "This work item belongs to another device and is read-only here.",
         "work-close-refused" => {
             "The work item needs an outcome, limits and a supported reopen trigger."
         }
