@@ -2,6 +2,15 @@
 
 Versions are manifest ranges; `Cargo.lock` records exact resolved versions. Capture, search, reads and MCP use local runtime code only. Only `wi sync`, `wi publish` and their background threads use the network, outside engine locks; crate downloads are build-time only. Each crate declares its own dependencies. A new dependency needs a written reason here: what it does, what it costs, what the alternative was. Release builds use thin LTO, one codegen unit and symbol stripping; panic behavior stays Rust's default because a workspace-wide abort would also affect libraries.
 
+## wi-sys
+
+Windows only; the crate is empty on other platforms. It holds all `unsafe` code of the workspace. `wi-store`, `wi-history`, `wi-docs`, `wi-cli` and `wi-notion` depend on it under `[target.'cfg(windows)'.dependencies]`.
+
+| Crate | Range | Reason and alternative |
+| --- | --- | --- |
+| `windows-sys` | 0.61 (Windows only; features for NT file calls, file system, job objects, thread snapshot, credentials, console, security) | Raw bindings for calls std does not expose: `NtCreateFile` and `NtSetInformationFile` for handle-relative open and rename, POSIX delete and rename semantics, job objects, Credential Manager and console mode. Bindings only, with no runtime and no extra cost; it was already in `Cargo.lock` through other crates. The `windows` crate is heavier, and std has no handle-relative APIs. |
+| `tempfile` (dev, Windows only) | 3 | Isolated directories for the Windows tests. |
+
 ## wi-note
 
 | Crate | Range | Reason and alternative |
@@ -23,7 +32,7 @@ Versions are manifest ranges; `Cargo.lock` records exact resolved versions. Capt
 | --- | --- | --- |
 | `gix` | 0.90 (no default features; `sha1`, `index`) | Pure-Rust git: blob writes, tree editing, commits, compare-and-swap ref edits, revision walks and index writes, with no network or C toolchain. `git2` and shelling out to git were the alternatives. |
 | `sha2` | 0.10 | `sha256:` content hashes and manifest frame checksums. |
-| `rustix` | 1 (`fs`) | fsync and `F_FULLFSYNC` barriers for the durability modes; std `sync_all` always issues `F_FULLFSYNC` on macOS. |
+| `rustix` | 1 (`fs`; Unix only) | fsync and `F_FULLFSYNC` barriers for the durability modes; std `sync_all` always issues `F_FULLFSYNC` on macOS. |
 | `toml_edit` | 0.23 | Read the config key `durability` without depending on `wi-note`. |
 | `serde`, `serde_json`, `thiserror` | 1, 1, 2 | JSON manifest records and typed errors. A binary codec would be harder to inspect and quarantine by hand. |
 | `tempfile` (dev) | 3 | Isolated temporary vaults. |
@@ -52,7 +61,7 @@ Reuses `wi-note`, `wi-history`, `wi-index`, `wi-lifecycle`, `serde`, `serde_json
 
 | Crate | Range | Reason and alternative |
 | --- | --- | --- |
-| `rustix` | 1 (`fs`, `process`) | Atomic exchange and no-replace renames (`renameat_with`) and descriptor-relative `openat`/`renameat`/`unlinkat` without `unsafe`; `process` checks whether a crashed writer's pid is gone. A raw `libc` call would need an `unsafe` module. |
+| `rustix` | 1 (`fs`, `process`; Unix only) | Atomic exchange and no-replace renames (`renameat_with`) and descriptor-relative `openat`/`renameat`/`unlinkat` without `unsafe`; `process` checks whether a crashed writer's pid is gone. A raw `libc` call would need an `unsafe` module. |
 | `notify-debouncer-mini` | 0.7 (re-exports `notify` 8) | File events (FSEvents, inotify) with debouncing; polling would cost a stat walk per interval. |
 | `uuid` | 1 (`v4`) | The config `vault_id`. |
 | `unicode-normalization` | 0.1 | NFC folding for path identity. |

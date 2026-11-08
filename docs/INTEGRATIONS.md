@@ -7,7 +7,7 @@ How wiki-island connects to AI hosts and editors. Support is claimed only for a 
 `wi setup [--vault <dir>]` is one zero-question, idempotent command (default vault `~/wiki-island`). `scripts/install.sh` installs the Rust toolchain if missing, builds and installs `wi`, then runs it. `scripts/uninstall.sh` runs `wi uninstall`. `wi setup` first preflights every step, including the service binary, and writes nothing if one fails; the failure is one plain sentence. It:
 
 1. initializes the vault if missing;
-2. installs the background service (macOS launchd; [OPERATIONS](OPERATIONS.md#service));
+2. installs the background service (macOS launchd; [OPERATIONS](OPERATIONS.md#service)); on Linux and Windows it skips this step and the owner runs `wi watch`;
 3. detects every installed AI host and registers the MCP server and skills sync for each;
 4. runs the first maintenance pass;
 5. prints a three-line plain-language summary.
@@ -25,6 +25,14 @@ MCP registration is data-driven over a host table in `crates/wi-export` (`hosts`
 | Antigravity CLI `agy` (`~/.gemini/config/mcp_config.json`) | JSON `mcpServers` with `command`, `args`, `disabled: false` |
 | Gemini CLI (`~/.gemini/settings.json`) | JSON `mcpServers` |
 | Cursor, Windsurf, Claude Desktop, VS Code, OpenCode, Zed | per the host table |
+
+On Windows the home-relative hosts (Claude Code, Codex with `$CODEX_HOME` kept, Antigravity, Gemini CLI, Cursor, Windsurf, OpenCode) use the same paths under `%USERPROFILE%`. Three hosts have their own location under `%APPDATA%`:
+
+| Host | Windows config |
+| --- | --- |
+| Claude Desktop | `%APPDATA%\Claude\claude_desktop_config.json` |
+| VS Code | `%APPDATA%\Code\User\mcp.json` |
+| Zed | `%APPDATA%\Zed\settings.json` |
 
 `--host gemini` is an alias for `--host agy`. The same table decides which hosts get skills ([Skills export](#skills-export)).
 
@@ -72,7 +80,7 @@ Export the workspace as Markdown & CSV (zip or folder) and run `wi import <expor
 ## Notion view
 
 - One-way and read-only: committed notes (the branch tip, never unsaved files) become pages under one parent page. Each page says it is a read-only view; edits made in Notion are never imported.
-- `wi publish notion setup --parent <page link or id>` reads an integration token from standard input or a hidden prompt (if terminal echo cannot be turned off, the prompt refuses and asks for the token on standard input) and stores it in the macOS keychain (service `wiki-island.notion`, account = vault id) through `/usr/bin/security`. The token never reaches the vault, the data directory, logs or output. Setup does not contact Notion.
+- `wi publish notion setup --parent <page link or id>` reads an integration token from standard input or a hidden prompt (if terminal echo cannot be turned off, the prompt refuses and asks for the token on standard input) and stores it in the macOS keychain (service `wiki-island.notion`, account = vault id) through `/usr/bin/security`, or on Windows as a generic Credential Manager entry named `wiki-island.notion/<vault id>`. Linux has no token store, so setup is unavailable there. The token never reaches the vault, the data directory, logs or output. Setup does not contact Notion.
 - `wi publish notion [--json]` publishes once; `wi publish notion status` reads local state only.
 - The parent, the permalink-to-page map with content hashes, and retry state live in this device's data directory (`<data_dir>/wiki-island/vaults/<vault_id>/notion/`). Only the device where publishing was set up publishes. Setup refuses to run while a publish holds the device lock, so the parent cannot change under a publish in progress. Unchanged notes make no requests; archived or deleted notes archive their page.
 - Background care runs a publish thread beside the sync thread: after the committed state has been still for a minute, and every five minutes. Failures back off from one minute to one hour; after a day of continuous failure one plain health line is logged. Markdown mapping, API limits and the non-atomic create caveat are in [wi-notion](../crates/wi-notion/README.md).
@@ -86,4 +94,4 @@ Export the workspace as Markdown & CSV (zip or folder) and run `wi import <expor
 
 ## Not integrated
 
-No UI, web app, mobile app or hosted service. No provider-specific memory silo. No Linux background service.
+No UI, web app, mobile app or hosted service. No provider-specific memory silo. No Linux or Windows background service.

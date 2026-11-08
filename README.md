@@ -23,7 +23,7 @@ The installer checks for Apple's command line tools (if missing it prints the on
 
 Requirements: macOS on Apple silicon is the tested platform. The background service and Notion token storage (macOS keychain) are available here.
 
-### Linux and other systems
+### Linux
 
 There is no install script. Build from source with [rustup](https://rustup.rs) (the repository pins the Rust version), then run setup:
 
@@ -36,13 +36,30 @@ wi setup
 
 `wi setup` creates the notes folder, connects the AI apps it finds and runs the first maintenance pass. It does not start a background service off macOS. To keep editor changes ingested, committed and indexed, run `wi watch` yourself under your own supervisor (systemd user unit, tmux, and so on). Saving and searching through your AI never depend on it.
 
-Requirements: only a Linux arm64 container has passed the test suite; bare-metal Linux is untested. Windows is not supported (the vault code fails closed on non-Unix systems). Off macOS there is no background service and no Notion token storage, so `wi publish notion setup` is unavailable. Git remote sync (`wi sync`) uses the `git` program on your path.
+Requirements: only a Linux arm64 container has passed the test suite; bare-metal Linux is untested. Off macOS there is no background service and no Notion token storage, so `wi publish notion setup` is unavailable. Git remote sync (`wi sync`) uses the `git` program on your path.
+
+### Windows
+
+There is no install script. Install [rustup](https://rustup.rs) with the MSVC toolchain, which needs the Visual Studio Build Tools "Desktop development with C++" workload, then build from source in a terminal (the repository pins the Rust version):
+
+```powershell
+git clone https://github.com/takealook97/wiki-island.git
+cd wiki-island
+cargo install --path crates/wi-cli --locked
+wi setup
+```
+
+`wi setup` creates your notes folder (`%USERPROFILE%\wiki-island`), connects the AI apps it finds and runs the first maintenance pass. The per-device data (history for synced folders, index state, backups) is in `%LOCALAPPDATA%\wiki-island`. There is no background service on Windows. To keep editor changes ingested, committed and indexed, run `wi watch` yourself, for example from Task Scheduler at logon. Saving and searching through your AI never depend on it.
+
+The Notion token is kept in Windows Credential Manager. Git remote sync (`wi sync`) uses the `git` program on your path.
+
+Requirements: Windows 10 version 1709 or later on x86_64 with an NTFS volume. The test suite runs on GitHub Actions `windows-latest` (NTFS). ARM64 Windows and volumes other than NTFS (ReFS, FAT, network shares) are untested. Some behaviors are weaker than on macOS and Linux, for example there is no atomic swap for an editor save that lands during a write and a directory flush after power loss is not measured; the list is in [operations](docs/OPERATIONS.md#windows).
 
 ## Connect your AI
 
 wiki-island is a local MCP server. Your AI app starts it on demand over standard input/output; there is no network port and no account.
 
-**Automatic.** `wi setup` registers wiki-island with every supported app it detects: Claude Code, Codex, Gemini CLI, Antigravity (`agy`), Cursor, Windsurf, Claude Desktop, VS Code, OpenCode and Zed. An app is detected only when its settings folder or file already exists, so install and open the app once first, then run `wi setup` again (it is safe to repeat). Claude Desktop and VS Code are looked for at their macOS locations (`~/Library/Application Support/...`). To connect one app yourself and see the change first:
+**Automatic.** `wi setup` registers wiki-island with every supported app it detects: Claude Code, Codex, Gemini CLI, Antigravity (`agy`), Cursor, Windsurf, Claude Desktop, VS Code, OpenCode and Zed. An app is detected only when its settings folder or file already exists, so install and open the app once first, then run `wi setup` again (it is safe to repeat). Claude Desktop and VS Code are looked for at their macOS locations (`~/Library/Application Support/...`) or, on Windows, under `%APPDATA%` (`Claude\claude_desktop_config.json` and `Code\User\mcp.json`); Zed is under `%APPDATA%\Zed` there. To connect one app yourself and see the change first:
 
 ```sh
 wi mcp install --host claude          # preview the change only
@@ -82,7 +99,7 @@ Details and arguments: [protocol](docs/PROTOCOL.md).
 
 Nothing. Open your AI app and talk as usual: it can save and look up notes through wiki-island. Maintenance, repair and skill upkeep run silently. If something needs you, your AI tells you in one plain sentence. Tell your AI what you prefer and it remembers. A preference or rule your AI records is kept as a plainly labelled note ("noted by your AI"), separate from the ones you wrote yourself. If you delete or rename a note in Obsidian or any editor, that is saved automatically. Every change to a note is kept in its history, so earlier versions can be brought back.
 
-You can also open the notes folder (`~/wiki-island`) in [Obsidian](https://obsidian.md) or any editor. wiki-island reads ordinary Markdown, `[[links]]`, note properties and attachments as they are, and never touches Obsidian's `.obsidian/` folder.
+You can also open the notes folder (`~/wiki-island`, on Windows `%USERPROFILE%\wiki-island`) in [Obsidian](https://obsidian.md) or any editor. wiki-island reads ordinary Markdown, `[[links]]`, note properties and attachments as they are, and never touches Obsidian's `.obsidian/` folder.
 
 ## Bring your notes
 
@@ -94,7 +111,7 @@ You can also open the notes folder (`~/wiki-island`) in [Obsidian](https://obsid
 
 - **One folder, synced by Obsidian or a file-sync service.** Put the notes folder in Obsidian Sync, iCloud Drive or Dropbox. The folder is the original; each device keeps its own history outside it, and one device (`wi setup --primary`) runs note maintenance.
 - **A private git repository, with Obsidian as a view.** Keep the notes folder out of synced folders and connect a private remote with `wi sync setup <url>` (or `wi setup --github` when the GitHub CLI is signed in). Background care syncs every few minutes; `wi sync` syncs now. Obsidian can open the same folder.
-- **Notion as a read-only view.** On one device, run `wi publish notion setup --parent <page link>` and paste a Notion integration token; it is kept in the macOS keychain (macOS only). Background care then copies committed notes under that page; `wi publish notion` publishes now and `wi publish notion status` shows the state. Edits made in Notion are not brought back.
+- **Notion as a read-only view.** On one device, run `wi publish notion setup --parent <page link>` and paste a Notion integration token; it is kept in the macOS keychain or Windows Credential Manager (not available on Linux). Background care then copies committed notes under that page; `wi publish notion` publishes now and `wi publish notion status` shows the state. Edits made in Notion are not brought back.
 
 ## Uninstall
 
@@ -106,8 +123,8 @@ This removes the background service and every AI-app connection and skill that w
 
 ## Where your data lives
 
-- **Notes:** `~/wiki-island` (or the folder you chose). Plain Markdown files you can open with anything.
-- **Settings and backups:** the hidden `.wiki-island` folder inside the notes folder, which also holds the files generated for AI apps. Copies of AI-app settings files taken before any change are in `.wiki-island/local/backups/` (for notes in iCloud Drive or a similar synced folder: in the per-device data directory, `~/Library/Application Support/wiki-island/vaults/<id>/local/backups/` on macOS). Hidden folders can be shown with Cmd+Shift+. in Finder.
+- **Notes:** `~/wiki-island`, on Windows `%USERPROFILE%\wiki-island` (or the folder you chose). Plain Markdown files you can open with anything.
+- **Settings and backups:** the hidden `.wiki-island` folder inside the notes folder, which also holds the files generated for AI apps. Copies of AI-app settings files taken before any change are in `.wiki-island/local/backups/` (for notes in iCloud Drive or a similar synced folder: in the per-device data directory, `~/Library/Application Support/wiki-island/vaults/<id>/local/backups/` on macOS). On Windows the per-device data directory is `%LOCALAPPDATA%\wiki-island`. Hidden folders can be shown with Cmd+Shift+. in Finder.
 - **Search index:** a disposable cache outside the notes folder, one per device. Deleting it loses nothing.
 
 ## Privacy

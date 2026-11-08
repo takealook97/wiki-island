@@ -1,6 +1,6 @@
 # Contributing
 
-wiki-island is a Rust workspace of ten crates; the [design](docs/DESIGN.md) has the crate map. Read the [repository contract](AGENTS.md) first.
+wiki-island is a Rust workspace of twelve crates; the [design](docs/DESIGN.md) has the crate map. Read the [repository contract](AGENTS.md) first.
 
 ## Setup and checks
 
@@ -14,9 +14,9 @@ cargo run --bin wi -- --version
 cargo run --bin wi -- init /tmp/wi-demo && cargo run --bin wi -- --vault /tmp/wi-demo write a.md --content 'hello'
 ```
 
-The first line is the mechanical gate and the bar for every commit. `rust-toolchain.toml` selects the toolchain; dependency versions are in `Cargo.lock`. macOS arm64 (APFS) is the tested platform.
+The first line is the mechanical gate and the bar for every commit. `rust-toolchain.toml` selects the toolchain; dependency versions are in `Cargo.lock`. macOS arm64 (APFS) is the primary platform; Windows x86_64 (NTFS) runs on GitHub Actions ([VALIDATION](docs/VALIDATION.md#platform)).
 
-Tests that open an index use a temporary cache (`WI_CACHE_DIR` or `OpenOptions::index_path`) and a temporary `HOME`, never the real ones. Crash tests set `WI_FAULT` on a child `wi` process only. Subprocess tests that need a fixed clock set `WI_NOW`. Tests never touch real host configs or the real `~/Library/LaunchAgents`.
+Tests that open an index use a temporary cache (`WI_CACHE_DIR` or `OpenOptions::index_path`) and a temporary `HOME` (with `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` on Windows), never the real ones. Crash tests set `WI_FAULT` on a child `wi` process only. Subprocess tests that need a fixed clock set `WI_NOW`. Tests never touch real host configs or the real `~/Library/LaunchAgents`.
 
 ### Linux container
 
@@ -33,7 +33,16 @@ docker run --rm -e RUSTUP_TOOLCHAIN=1.99.1 \
   cargo test --workspace'
 ```
 
-Windows is a type-check target only: vault functions return `unsupported-platform` on non-Unix. `cargo check --workspace --target x86_64-pc-windows-gnullvm` needs a Windows cross C toolchain for bundled SQLite.
+### Windows
+
+Windows code lives under `#[cfg(windows)]`; Unix code and tests stay as they are. On a Mac or Linux machine with mingw-w64 and the `x86_64-pc-windows-gnu` target, check that everything compiles before pushing:
+
+```sh
+cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+cargo build --tests --workspace --target x86_64-pc-windows-gnu
+```
+
+Clippy alone does not evaluate `const` assertions; the test build does. This does not run any test. Runtime tests run on GitHub Actions `windows-latest` (and Ubuntu and macOS) through `.github/workflows/ci.yml`.
 
 ### Benchmarks
 
@@ -41,7 +50,7 @@ Measurement is opt-in and macOS only. Scratch paths must be new and outside the 
 
 ## Code rules
 
-- Libraries forbid unsafe code and use typed errors. No `unwrap()` or `expect()` outside tests.
+- Libraries forbid unsafe code, except `wi-sys`, which holds all Windows FFI; every unsafe block there has a `SAFETY` comment. Libraries use typed errors. No `unwrap()` or `expect()` outside tests.
 - Keep `wi-note` pure. Every vault write goes through `wi-store`; every fsync through `wi_history::durable` (the workspace `clippy.toml` refuses `File::sync_all` and `sync_data`).
 - Each crate declares its own dependencies. Add one only with a written reason in [DEPENDENCIES](docs/DEPENDENCIES.md): what it does, what it costs, the alternative.
 - Never add a model call. Network requests belong only to remote sync and view publishing (`wi sync`, `wi publish` and their background threads), outside engine locks; never on capture, search, read or MCP paths.
