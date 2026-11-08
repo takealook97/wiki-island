@@ -162,7 +162,7 @@ mod tests {
         std::fs::write(outside.path().join("secret.csv"), "private\n").unwrap();
         let output = std::process::Command::new("cmd")
             .args(["/D", "/C", "mklink", "/J"])
-            .arg(temp.path().join("docs/link"))
+            .arg(temp.path().join("docs").join("link"))
             .arg(outside.path())
             .output()
             .unwrap();

@@ -189,7 +189,11 @@ fn directory_import_never_follows_a_symlink_outside_the_vault() {
     env.write("docs/a.csv", "a,b\n");
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("outside.csv"), "private\n").unwrap();
-    std::os::unix::fs::symlink(outside.path(), env.0.path().join("vault/docs/link")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.path(),
+        env.0.path().join("vault").join("docs").join("link"),
+    )
+    .unwrap();
     let out = env.run(&["import", "docs", "--ocr", "off", "--json"]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(json(&out)["imports"].as_array().unwrap().len(), 1);
@@ -361,7 +365,7 @@ fn directory_import_never_follows_a_junction_outside_the_vault() {
     std::fs::write(outside.path().join("outside.csv"), "private\n").unwrap();
     let output = Command::new("cmd")
         .args(["/D", "/C", "mklink", "/J"])
-        .arg(env.0.path().join("vault/docs/link"))
+        .arg(env.0.path().join("vault").join("docs").join("link"))
         .arg(outside.path())
         .output()
         .unwrap();
