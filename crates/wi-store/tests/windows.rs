@@ -311,4 +311,18 @@ fn a_short_name_alias_is_refused() {
     );
     assert!(!long.join("b.md").exists());
     assert!(vault.read(&format!("{short}/a.md")).is_err());
+
+    // A short name explicitly assigned on NTFS need not contain `~`.
+    // Check the same containment rule for that spelling as well.
+    let output = Command::new("fsutil")
+        .args(["file", "setshortname"])
+        .arg(&long)
+        .arg("ALIAS")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(vault.write(request("ALIAS/b.md", "# b\n", None)).is_err());
+    assert!(vault.read("ALIAS/a.md").is_err());
+    assert!(!long.join("b.md").exists());
+    assert_eq!(vault.read("Long Folder Name/a.md").unwrap().bytes, b"# a\n");
 }

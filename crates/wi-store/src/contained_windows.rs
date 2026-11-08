@@ -145,12 +145,9 @@ impl Dir {
     }
 
     /// Refuse `name` when it names an existing entry whose on-disk name is
-    /// different, i.e. `name` is a short (8.3) alias (D7b). Short names
-    /// always contain `~`, so other names are not looked up.
+    /// different, i.e. `name` is a short (8.3) alias (D7b). Check every
+    /// existing name, including explicitly assigned aliases without `~`.
     fn check_alias(&self, name: &str, rel: &str) -> Result<()> {
-        if !name.contains('~') {
-            return Ok(());
-        }
         match self.dir.long_name(name) {
             Ok(long) if long.to_lowercase() == name.to_lowercase() => Ok(()),
             Ok(_) => Err(alias_component(rel)),
