@@ -2,7 +2,7 @@
 
 Wiki Island is a private, local memory for you and your AI tools. It keeps what you and your assistants learn as plain Markdown notes in one folder, finds them again quickly, and looks after itself.
 
-It never calls a model or the network. After a one-time setup you only talk to your AI; Wiki Island saves, indexes, repairs and tidies in the background. There is nothing else to do.
+It never calls a model, and saving, searching and reading never use the network. After a one-time setup you only talk to your AI; Wiki Island saves, indexes, repairs and tidies in the background. There is nothing else to do.
 
 ## Install
 
@@ -29,6 +29,12 @@ You can also open the notes folder (`~/WikiIsland`) in [Obsidian](https://obsidi
 - **Notion:** in Notion, choose Export, pick Markdown & CSV, and save the file to your Downloads folder. Then run `wi import ~/Downloads/<name of the export>.zip`. Your export is only read; Wiki Island writes a cleaned copy into `Notion/<export name>/` in your notes folder, with Notion's id codes removed from names, links fixed and databases turned into notes.
 - **PDF, Word, PowerPoint, CSV and images:** put them in the notes folder and run `wi import <file-or-folder>`. Text is extracted on your Mac into a companion note; originals stay untouched.
 
+## Three ways to keep your notes
+
+- **One folder, synced by Obsidian or a file-sync service.** Put the notes folder in Obsidian Sync, iCloud Drive or Dropbox. The folder is the original; each device keeps its own history outside it, and one device (`wi setup --primary`) runs note maintenance.
+- **A private git repository, with Obsidian as a view.** Keep the notes folder out of synced folders and connect a private remote with `wi sync setup <url>` (or `wi setup --github` when the GitHub CLI is signed in). Background care syncs every few minutes; `wi sync` syncs now. Obsidian can open the same folder.
+- **Notion as a read-only view.** On one device, run `wi publish notion setup --parent <page link>` and paste a Notion integration token; it is kept in the macOS keychain. Background care then copies committed notes under that page; `wi publish notion` publishes now and `wi publish notion status` shows the state. Edits made in Notion are not brought back.
+
 ## Uninstall
 
 ```sh
@@ -45,7 +51,7 @@ This removes the background service and every AI-app connection and skill that W
 
 ## Privacy
 
-Everything stays on your computer. Wiki Island makes no network request and calls no AI model. Your AI apps read notes only through the local connection `wi setup` registered.
+Your notes stay on your computer unless you connect a remote or a Notion view. Saving, searching, reading and every AI-app tool work offline; only `wi sync`, `wi publish` and the background care you set up for them use the network. Wiki Island calls no AI model. Your AI apps read notes only through the local connection `wi setup` registered.
 
 ## Everyday commands
 
@@ -61,7 +67,7 @@ wi maintain                 # run one maintenance pass now
 
 ## Advanced
 
-- **Sync between devices** is optional: the notes folder is a git repository, so you can add a private remote and push. A notes folder inside iCloud Drive or a similar synced folder works too: `wi setup` then keeps its history on each device, outside the synced folder, and one device (`wi setup --primary`) runs note maintenance. Details: [operations](docs/OPERATIONS.md#git-history-and-sync).
+- **Sync and publishing** details: [operations](docs/OPERATIONS.md#git-history-and-sync) and [integrations](docs/INTEGRATIONS.md#notion-view). Files larger than 50 MB stay in the folder but out of history and sync.
 - **Settings** are in `.wiki-island/config.toml` inside the notes folder ([format](docs/FORMAT.md)).
 - **Manual install:** with [rustup](https://rustup.rs) available, run `cargo install --path crates/wi-cli --locked` and then `wi setup`.
 

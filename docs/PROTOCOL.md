@@ -6,7 +6,7 @@ The local MCP stdio surface, implemented in `wi-mcp`. Exact executable input sch
 
 `wi mcp [--vault PATH]` (also `wiki-island mcp`) serves MCP stdio using the official Rust SDK `rmcp`. `WI_VAULT` supplies the default vault; otherwise the current directory is used. Diagnostics go to stderr. `--json` adds no CLI output to the MCP stream. `wi setup` registers this command with every detected host ([INTEGRATIONS](INTEGRATIONS.md)).
 
-The server advertises baseline [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports). It supports initialize, `notifications/initialized`, `tools/list`, `tools/call`, `resources/list`, `resources/read` and EOF shutdown. Resource URI templates and subscriptions are absent. There is no HTTP transport, delete tool, embedding runtime or remote query.
+The server advertises baseline [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports). It supports initialize, `notifications/initialized`, `tools/list`, `tools/call`, `resources/list`, `resources/read` and EOF shutdown. Resource URI templates and subscriptions are absent. There is no HTTP transport, delete tool, embedding runtime or remote query. No tool uses the network; sync and Notion publishing are CLI and background-only ([OPERATIONS](OPERATIONS.md#git-history-and-sync)).
 
 The server opens and replays the vault without a full scan, then accepts requests. A background thread registers the watcher, reconciles ingress, catches up the index and runs maintenance ([OPERATIONS](OPERATIONS.md#maintenance)). An existing index can omit new files until catch-up finishes. An index without a completed walk selects a labelled literal scan; `index_as_of: null` means no completed walk. The server notices when the index file is replaced and reopens it. Returned hits are always re-read and hash-checked.
 
@@ -34,7 +34,7 @@ Read tools (`wi_read`, `wi_search`, `wi_context`, `wi_list`, `wi_find`) accept `
 | `wi_lint` | none | `identifier` (default: every memory note) |
 | `wi_work` | `action: next\|list\|open\|close\|sweep` (`command` is accepted as an alias) | `identifier`, `target`, `reason`, `outcome`, `limits`, `reopen_trigger`, `reopen_detail`; for `next`: `max_items` (default 3) and `max_bytes` (default 4096) |
 
-There is no delete tool. Procedures are served as MCP resources ([SKILLS](SKILLS.md)). `wi_work next` returns the highest-priority open work items, compact and within the byte budget, so a host agent can act on them cheaply.
+There is no delete tool. Procedures are served as MCP resources ([SKILLS](SKILLS.md)). `wi_work next` returns the highest-priority open work items, compact and within the byte budget, so a host agent can act on them cheaply. Listed items carry `actionable`; another device's work items are `false` and read-only here ([OPERATIONS](OPERATIONS.md#work-items)).
 
 Section and line selectors are exclusive. Lines are one-based in the selected content; a qualifier-bearing lifecycle note may not be sliced, projected or stripped by a read. Heading selection uses Markdown parsing, excludes code fences and supports Setext headings. Replace-section keeps the heading and surrounding blank lines; `replace_subsections: false` keeps nested sections. Section edits pin the checksum observed while preparing the patch and persist the original semantic arguments for idempotent replay, including after restart.
 

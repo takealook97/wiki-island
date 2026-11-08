@@ -1,6 +1,6 @@
 # Dependencies
 
-Versions are manifest ranges; `Cargo.lock` records exact resolved versions. Capture, search, reads and MCP use local runtime code only. The isolated publication library uses the network only when explicitly called outside engine locks; crate downloads are build-time only. Each crate declares its own dependencies. A new dependency needs a written reason here: what it does, what it costs, what the alternative was. Release builds use thin LTO, one codegen unit and symbol stripping; panic behavior stays Rust's default because a workspace-wide abort would also affect libraries.
+Versions are manifest ranges; `Cargo.lock` records exact resolved versions. Capture, search, reads and MCP use local runtime code only. Only `wi sync`, `wi publish` and their background threads use the network, outside engine locks; crate downloads are build-time only. Each crate declares its own dependencies. A new dependency needs a written reason here: what it does, what it costs, what the alternative was. Release builds use thin LTO, one codegen unit and symbol stripping; panic behavior stays Rust's default because a workspace-wide abort would also affect libraries.
 
 ## wi-note
 
@@ -104,7 +104,7 @@ Uses `wi-store` for all vault writes and eligibility, `wi-note`, `wi-lifecycle` 
 
 ## wi-cli
 
-`clap` 4 (derive, `env`; subcommands, help, `WI_VAULT`), `anyhow` 1 (error context at the binary boundary; libraries stay typed), `serde_json`, `tokio` for the stdio entry point, and `tempfile` (dev) for CLI and crash tests.
+Workspace crates `wi-notion` (Notion view) and `wi-history` (durable publish state); `clap` 4 (derive, `env`; subcommands, help, `WI_VAULT`), `anyhow` 1 (error context at the binary boundary; libraries stay typed), `serde_json`, `tokio` for the stdio entry point, and `tempfile` (dev) for CLI and crash tests.
 
 ## wi-bench
 

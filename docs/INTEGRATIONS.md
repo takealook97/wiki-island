@@ -67,13 +67,21 @@ Run `wi export rules --host claude|codex|gemini|all --json` (default all). The J
 
 ## Notion
 
-Export the workspace as Markdown & CSV (zip or folder) and run `wi import <export>`. The export may be at an absolute path outside the vault (for example `~/Downloads/Export.zip`): it is read-only and the converted copy is written into the vault. A folder inside the vault also works. The conversion is offline ([FORMAT](FORMAT.md#notion-exports)). There is no live Notion sync, because capture and search never use the network.
+Export the workspace as Markdown & CSV (zip or folder) and run `wi import <export>`. The export may be at an absolute path outside the vault (for example `~/Downloads/Export.zip`): it is read-only and the converted copy is written into the vault. A folder inside the vault also works. The conversion is offline ([FORMAT](FORMAT.md#notion-exports)).
+
+## Notion view
+
+- One-way and read-only: committed notes (the branch tip, never unsaved files) become pages under one parent page. Each page says it is a read-only view; edits made in Notion are never imported.
+- `wi publish notion setup --parent <page link or id>` reads an integration token from standard input or a hidden prompt and stores it in the macOS keychain (service `wiki-island.notion`, account = vault id) through `/usr/bin/security`. The token never reaches the vault, the data directory, logs or output. Setup does not contact Notion.
+- `wi publish notion [--json]` publishes once; `wi publish notion status` reads local state only.
+- The parent, the permalink-to-page map with content hashes, and retry state live in this device's data directory (`<data_dir>/wiki-island/vaults/<vault_id>/notion/`). Only the device where publishing was set up publishes. Unchanged notes make no requests; archived or deleted notes archive their page.
+- Background care runs a publish thread beside the sync thread: after the committed state has been still for a minute, and every five minutes. Failures back off from one minute to one hour; after a day of continuous failure one plain health line is logged. Markdown mapping, API limits and the non-atomic create caveat are in [wi-notion](../crates/wi-notion/README.md).
 
 ## Git remote sync
 
 - `wi sync setup <url>` connects an existing private git remote. `wi sync` makes one attempt and accepts `--json`; `wi sync status` reports local status without network access. Transport is available in git mode only ([OPERATIONS](OPERATIONS.md#git-history-and-sync)).
 - `wi setup --github` uses an installed, authenticated `gh` to create or reuse the private `<login>/wiki-island-notes` repository and connects it. A public repository is refused. If the CLI or authentication is unavailable, setup prints the command for connecting an existing remote.
-- Background care runs sync separately from maintenance, including when a remote is connected after service startup. Each device builds its own index. Conflicting note bytes are retained in a committed copy and a work request; local files receive no conflict markers.
+- Background care runs sync separately from maintenance and from Notion publishing, including when a remote is connected after service startup. Each device builds its own index. Conflicting note bytes are retained in a committed copy and a work request; local files receive no conflict markers.
 - Never place a git directory in an iCloud Drive or Google Drive folder. A vault inside such a folder uses folder mode, which keeps history in the per-device data directory ([DESIGN](DESIGN.md#storage-and-history)).
 
 ## Not integrated

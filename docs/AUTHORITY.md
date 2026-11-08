@@ -9,7 +9,7 @@ There is no human approval step. Trust rests on provenance, git history, revert,
 | Ingress | `origin.kind` |
 | --- | --- |
 | The CLI | `user` |
-| Direct file edit (any editor, file sync, git merge) | as written in the note; `user` when the note has no `origin` |
+| Direct file edit (any editor, file sync, git merge, `wi sync`) | as written in the note; `user` when the note has no `origin` |
 | MCP tool call | `agent` |
 | Document or file import | `file` |
 | Fetched URL | `url` |

@@ -9,7 +9,7 @@
 - There is no UI, dashboard, web app or mobile app. Notes are plain files, so Obsidian or any editor is optional and works as is ([INTEGRATIONS](INTEGRATIONS.md#obsidian-and-other-editors)).
 - Private, personal use.
 - On top of notes and index the engine adds the lifecycle in [KNOWLEDGE](KNOWLEDGE.md): status, freshness, applicability, source pins, adoption gates and work items, with no human approval step.
-- The engine never calls a model. Capture, search, reads, maintenance and every MCP tool are offline; only explicit remote commands and the separate background sync thread use the network. It maintains itself ([KNOWLEDGE](KNOWLEDGE.md#self-maintenance)) and a non-developer installs it with one command ([INTEGRATIONS](INTEGRATIONS.md#setup-and-uninstall)).
+- The engine never calls a model. Network policy: capture, search, reads, maintenance and every MCP tool never use the network; only the background sync and publish threads and the explicit `wi sync` and `wi publish` commands do, and never while an engine lock is held. It maintains itself ([KNOWLEDGE](KNOWLEDGE.md#self-maintenance)) and a non-developer installs it with one command ([INTEGRATIONS](INTEGRATIONS.md#setup-and-uninstall)).
 
 ## Scope
 
@@ -22,8 +22,11 @@ In scope:
 - document import with sidecars and page maps ([FORMAT](FORMAT.md#document-sidecars)) and Notion export import
 - procedures exported as host skills and served over MCP ([SKILLS](SKILLS.md))
 - optional git remote synchronization in git mode ([OPERATIONS](OPERATIONS.md#git-history-and-sync))
+- an optional one-way, read-only Notion view of committed notes ([INTEGRATIONS](INTEGRATIONS.md#notion-view))
 
-Out of scope: cloud or hosted adapters beyond git remote transport, an HTTP API, and embeddings. Embeddings may return later as an opt-in feature, never on the capture or search path.
+Three ways to use it: an Obsidian or file-synced folder as the canonical store (folder mode); a git working tree synced to a private remote, with Obsidian as a view (git mode); Notion as a read-only view on top of either.
+
+Out of scope: cloud or hosted adapters beyond git remote transport and the Notion view, an HTTP API, and embeddings. Embeddings may return later as an opt-in feature, never on the capture or search path.
 
 Structure:
 
@@ -45,6 +48,7 @@ Structure:
 - **Never put a git directory inside an iCloud Drive or Google Drive sync folder.** Those services sync files one by one and can deliver git's objects and refs partly or out of order; the likely result is a corrupt repository. Folder mode keeps history out of the synced folder; `wi doctor` warns when the history folder itself looks synced (detection is heuristic).
 - In folder mode only the primary device (`primary_device` in `.wiki-island/config.toml`, a random per-device id kept in the data directory) runs lifecycle-mutating maintenance; the first setup records it and `wi setup --primary` takes over. Other devices still index, search, serve MCP, capture, ingest owner edits and keep their own history.
 - Work notes live under `.wiki-island/work/<device_id>/`; listings mark other devices' items read-only. Flat engine work notes move through the crash-safe write path on open.
+- No path (capture, `wi write`, import, ingest) adds a file larger than 50 MB to history: it stays in the folder, gets a managed exclude rule and one work request ([OPERATIONS](OPERATIONS.md#git-history-and-sync)).
 - Originals stay in the repository by default; `wi doctor` advises considering Git LFS above an unmeasured 20 MiB threshold. No automatic LFS setup ([OPERATIONS](OPERATIONS.md#attachments)).
 
 ## Write path
@@ -78,7 +82,7 @@ Non-Unix `wi-store::Vault::init[_with]` and `open[_with]` fail with `unsupported
 
 ## Crate map
 
-Ten crates. A crate depends only on crates listed before it:
+Eleven crates. A crate depends only on crates listed before it:
 
 1. `wi-note` (note model, pure) and `wi-history` (git history, manifest, flush, replay, durability barriers) depend on no workspace crate.
 2. `wi-lifecycle` (gates, eligibility, caps; pure) depends on `wi-note`.
@@ -86,5 +90,6 @@ Ten crates. A crate depends only on crates listed before it:
 4. `wi-store` (write path, watcher, recovery, maintenance, lifecycle wiring) depends on `wi-note`, `wi-history`, `wi-index` and `wi-lifecycle`.
 5. `wi-export` (rules export, host table and registration, skills sync, service) depends on `wi-store`, `wi-note`, `wi-lifecycle` and `wi-history`; `wi-docs` (document and Notion import) depends on `wi-note`, `wi-store`, `wi-history` and `wi-index`.
 6. `wi-mcp` (MCP stdio server and its lifecycle `provider` module) depends on `wi-export`, `wi-store`, `wi-note` and `wi-lifecycle`.
-7. `wi-cli` (the `wi` and `wiki-island` binaries) depends on `wi-export`, `wi-docs`, `wi-note`, `wi-store`, `wi-mcp` and `wi-lifecycle`.
-8. `wi-bench` (opt-in measurement, not published) depends on `wi-store`, `wi-index` and `wi-history`.
+7. `wi-notion` (one-way Notion publisher; takes notes from the caller and never depends on `wi-store`) depends on `wi-note` and `wi-history`.
+8. `wi-cli` (the `wi` and `wiki-island` binaries) depends on `wi-export`, `wi-docs`, `wi-note`, `wi-store`, `wi-mcp`, `wi-lifecycle`, `wi-history` and `wi-notion`.
+9. `wi-bench` (opt-in measurement, not published) depends on `wi-store`, `wi-index` and `wi-history`.
