@@ -29,8 +29,9 @@ existing `wiki-island.notion` generic password for the given account using
 Every page starts with “Read-only view; edit in your notes folder”. The mapper
 renders frontmatter as a properties paragraph, headings (levels above three use
 level three), paragraphs, styled inline text, lists, tasks, code, quotes, dividers,
-tables and web links. Known wikilink targets become page mentions; unknown targets
-remain text. Files are not uploaded. HTML, images and unsupported local links are
+tables and web links. A wikilink that names a published note by path (with or
+without `.md`), permalink or title, `project::x` included, becomes a page mention;
+unknown targets and names shared by several notes remain text. Files are not uploaded. HTML, images and unsupported local links are
 rendered as text with warnings. Unknown code languages use plain text. Canonical
 note bytes are never edited. Existing vaults and indexes need no migration.
 

@@ -140,7 +140,7 @@ fn inline(
                 ..
             }) => {
                 if matches!(link_type, LinkType::WikiLink { .. }) {
-                    if let Some(page) = known.get(dest_url.as_ref()) {
+                    if let Some(page) = known.get(&wikilink_name(dest_url)) {
                         output.push(json!({"type":"mention", "mention":{"type":"page", "page":{"id":page}}, "annotations":style}));
                         continue;
                     }
@@ -317,4 +317,13 @@ fn container(
         value[kind]["children"] = json!(children);
     }
     Ok(value)
+}
+
+/// The note name a wikilink target refers to: `project::x` names `project/x`,
+/// as the vault index reads it.
+fn wikilink_name(target: &str) -> String {
+    match target.split_once("::") {
+        Some((project, rest)) => format!("{project}/{}", rest.trim_start_matches('/')),
+        None => target.to_owned(),
+    }
 }

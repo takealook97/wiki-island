@@ -466,3 +466,41 @@ fn failed_restore_is_archived_if_the_note_disappears_again() {
     assert_eq!(report.archived, ["note"]);
     assert_eq!(mock.log().last().unwrap().body["in_trash"], true);
 }
+
+#[test]
+fn wikilinks_by_title_path_or_permalink_become_mentions_unless_ambiguous() {
+    let mock = Mock::new(|request, _| success(request));
+    let dir = tempfile::tempdir().unwrap();
+    let mut map = MapStore::open(dir.path().join("map.json")).unwrap();
+    let note = |rel: &str, permalink: &str, title: &str, body: &str| PublishNote {
+        rel_path: rel.into(),
+        bytes: body.as_bytes().to_vec(),
+        permalink: permalink.into(),
+        title: title.into(),
+        archived: false,
+    };
+    let notes = Source(vec![
+        note("notes/target.md", "notes/target", "Target", "target"),
+        note("a.md", "a", "Shared", "a"),
+        note("b.md", "b", "Shared", "b"),
+        note(
+            "source.md",
+            "source",
+            "Source",
+            "[[Target]] [[notes/target.md]] [[notes/target]] [[notes::target]] [[Shared]]",
+        ),
+    ]);
+    let report = publish(&notes, &Token, &mut map, &mock.options()).unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let appended: Vec<String> = mock
+        .log()
+        .iter()
+        .filter(|r| r.method == "PATCH" && r.path.contains("/blocks/"))
+        .map(|r| r.body.to_string())
+        .collect();
+    let source = appended
+        .iter()
+        .find(|b| b.contains("Shared"))
+        .expect("source note appended");
+    assert_eq!(source.matches("\"mention\":").count(), 4, "{source}");
+}

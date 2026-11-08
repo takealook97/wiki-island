@@ -145,17 +145,7 @@ pub fn publish(
             }
         }
     }
-    let live: BTreeSet<_> = notes
-        .iter()
-        .filter(|n| !n.archived)
-        .map(|n| n.permalink.clone())
-        .collect();
-    let known = map
-        .entries()
-        .iter()
-        .filter(|(key, _)| live.contains(*key))
-        .map(|(key, entry)| (key.clone(), entry.page_id.clone()))
-        .collect();
+    let known = link_targets(&notes, map);
     for note in notes
         .iter()
         .filter(|n| !n.archived && !failed.contains(&n.permalink))
@@ -257,4 +247,36 @@ fn get_client<'a>(
         *slot = Some(client);
     }
     slot.as_mut().ok_or(Error::Response)
+}
+
+/// Wikilink targets that resolve to a published page: each live note is
+/// named by its path, its path without `.md`, its permalink and its title,
+/// as the vault index names notes. A name shared by two live notes is
+/// ambiguous and stays plain text.
+fn link_targets(notes: &[PublishNote], map: &MapStore) -> BTreeMap<String, String> {
+    let mut names: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for note in notes.iter().filter(|n| !n.archived) {
+        let path = note.rel_path.as_str();
+        for name in [
+            path,
+            path.strip_suffix(".md").unwrap_or(path),
+            note.permalink.as_str(),
+            note.title.as_str(),
+        ] {
+            if !name.is_empty() {
+                names.entry(name).or_default().insert(&note.permalink);
+            }
+        }
+    }
+    names
+        .into_iter()
+        .filter_map(|(name, permalinks)| {
+            let mut permalinks = permalinks.into_iter();
+            let (Some(permalink), None) = (permalinks.next(), permalinks.next()) else {
+                return None;
+            };
+            let entry = map.get(permalink)?;
+            Some((name.to_owned(), entry.page_id.clone()))
+        })
+        .collect()
 }
