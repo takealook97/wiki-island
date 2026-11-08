@@ -1,7 +1,7 @@
 //! Device-local installation destinations; never infer them during background work.
 use crate::{hosts::HostId, install::Error};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Targets {
@@ -23,7 +23,7 @@ impl Targets {
         }
         Ok(())
     }
-    pub fn load(root: &Path) -> Result<Option<Self>, Error> {
+    pub fn load<P: crate::install::LocalPlace + ?Sized>(root: &P) -> Result<Option<Self>, Error> {
         crate::install::preflight_local(root)?;
         let path = crate::install::local_base(root).join("targets.json");
         match std::fs::symlink_metadata(&path) {
@@ -41,7 +41,7 @@ impl Targets {
             }
         }
     }
-    pub fn save(&self, root: &Path) -> Result<(), Error> {
+    pub fn save<P: crate::install::LocalPlace + ?Sized>(&self, root: &P) -> Result<(), Error> {
         self.validate()?;
         let mut local = crate::install::local_dir(root)?;
         local.pop();

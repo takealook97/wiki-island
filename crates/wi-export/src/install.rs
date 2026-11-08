@@ -725,13 +725,53 @@ struct SavedConfig {
     installed: Vec<u8>,
 }
 
-/// The per-device local directory of `vault` (S2) and the containers from
+/// Where a vault keeps its per-device state (S2). A path names the vault at
+/// that root with this device's default data directory; an opened vault
+/// answers with the local directory it was opened with, so two handles of
+/// one root under different data directories never share state.
+pub trait LocalPlace {
+    /// The canonical vault root.
+    fn vault_root(&self) -> &Path;
+    /// The per-device local directory (`.wiki-island/local` in git mode,
+    /// `<data>/vaults/<vault_id>/local` in folder mode).
+    fn local_base(&self) -> PathBuf;
+}
+
+impl LocalPlace for Path {
+    fn vault_root(&self) -> &Path {
+        self
+    }
+    fn local_base(&self) -> PathBuf {
+        wi_history::local_state_dir(self, None)
+            .unwrap_or_else(|_| self.join(wi_history::VAULT_LOCAL_DIR))
+    }
+}
+
+impl LocalPlace for PathBuf {
+    fn vault_root(&self) -> &Path {
+        self
+    }
+    fn local_base(&self) -> PathBuf {
+        self.as_path().local_base()
+    }
+}
+
+impl LocalPlace for wi_store::Vault {
+    fn vault_root(&self) -> &Path {
+        self.root()
+    }
+    fn local_base(&self) -> PathBuf {
+        self.local_dir()
+    }
+}
+
+/// The per-device local directory of `place` (S2) and the containers from
 /// the first one this crate checks: git mode checks the vault root,
 /// `.wiki-island` and `.wiki-island/local`; folder mode checks only
 /// `<data>/vaults/<vault_id>/local`, which the engine owns.
-pub(crate) fn local_chain(vault: &Path) -> Vec<PathBuf> {
-    let base = wi_history::local_state_dir(vault, None)
-        .unwrap_or_else(|_| vault.join(wi_history::VAULT_LOCAL_DIR));
+pub(crate) fn local_chain<P: LocalPlace + ?Sized>(place: &P) -> Vec<PathBuf> {
+    let vault = place.vault_root();
+    let base = place.local_base();
     if base == vault.join(wi_history::VAULT_LOCAL_DIR) {
         vec![
             vault.to_path_buf(),
@@ -744,15 +784,14 @@ pub(crate) fn local_chain(vault: &Path) -> Vec<PathBuf> {
     }
 }
 
-/// The per-device local directory of `vault` (`.wiki-island/local` in git
+/// The per-device local directory of `place` (`.wiki-island/local` in git
 /// mode, the data directory in folder mode).
-pub(crate) fn local_base(vault: &Path) -> PathBuf {
-    wi_history::local_state_dir(vault, None)
-        .unwrap_or_else(|_| vault.join(wi_history::VAULT_LOCAL_DIR))
+pub(crate) fn local_base<P: LocalPlace + ?Sized>(place: &P) -> PathBuf {
+    place.local_base()
 }
 
 /// Check local ownership and backup containers without creating anything.
-pub fn preflight_local(vault: &Path) -> Result<(), Error> {
+pub fn preflight_local<P: LocalPlace + ?Sized>(vault: &P) -> Result<(), Error> {
     for path in local_chain(vault) {
         match std::fs::symlink_metadata(&path) {
             Ok(meta)
@@ -772,7 +811,7 @@ pub fn preflight_local(vault: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn local_dir(vault: &Path) -> Result<PathBuf, Error> {
+pub(crate) fn local_dir<P: LocalPlace + ?Sized>(vault: &P) -> Result<PathBuf, Error> {
     let chain = local_chain(vault);
     let path = chain.last().cloned().unwrap_or_default();
     // The vault root itself (git mode) already exists.
@@ -801,7 +840,7 @@ pub(crate) fn local_dir(vault: &Path) -> Result<PathBuf, Error> {
     }
     Ok(path)
 }
-fn record_path(vault: &Path, target: &Path, extension: &str) -> PathBuf {
+fn record_path<P: LocalPlace + ?Sized>(vault: &P, target: &Path, extension: &str) -> PathBuf {
     let hash = wi_lifecycle::sha256(target.as_os_str().as_encoded_bytes());
     local_base(vault)
         .join("backups")
@@ -819,13 +858,13 @@ fn private_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     wi_history::durable::barrier_dir(parent, durability)?;
     Ok(())
 }
-fn load_config(vault: &Path, target: &Path) -> Result<Option<SavedConfig>, Error> {
+fn load_config<P: LocalPlace + ?Sized>(vault: &P, target: &Path) -> Result<Option<SavedConfig>, Error> {
     read_file(&record_path(vault, target, "json"))?
         .map(|bytes| serde_json::from_slice(&bytes).map_err(|e| Error::Config(e.to_string())))
         .transpose()
 }
-fn save_config(
-    vault: &Path,
+fn save_config<P: LocalPlace + ?Sized>(
+    vault: &P,
     target: &Path,
     original: Option<Vec<u8>>,
     installed: Vec<u8>,
@@ -848,7 +887,7 @@ fn save_config(
     )?;
     Ok(backup)
 }
-fn forget_config(vault: &Path, target: &Path) -> Result<(), Error> {
+fn forget_config<P: LocalPlace + ?Sized>(vault: &P, target: &Path) -> Result<(), Error> {
     for extension in ["json", "original"] {
         let path = record_path(vault, target, extension);
         if read_file(&path)?.is_some() {
@@ -859,7 +898,10 @@ fn forget_config(vault: &Path, target: &Path) -> Result<(), Error> {
 }
 
 /// Remember only missing directories, so removal never deletes a pre-existing container.
-pub fn record_created_dirs(vault: &Path, directories: &[PathBuf]) -> Result<(), Error> {
+pub fn record_created_dirs<P: LocalPlace + ?Sized>(
+    vault: &P,
+    directories: &[PathBuf],
+) -> Result<(), Error> {
     let path = local_base(vault).join("backups/created-directories.json");
     let mut created: Vec<PathBuf> = read_file(&path)?
         .map(|bytes| serde_json::from_slice(&bytes).map_err(|e| Error::Config(e.to_string())))
@@ -890,7 +932,7 @@ pub fn record_created_dirs(vault: &Path, directories: &[PathBuf]) -> Result<(), 
 }
 
 /// Remove recorded empty containers; user files and other vaults' files always win.
-pub fn cleanup_created_dirs(vault: &Path) -> Result<(), Error> {
+pub fn cleanup_created_dirs<P: LocalPlace + ?Sized>(vault: &P) -> Result<(), Error> {
     let path = local_base(vault).join("backups/created-directories.json");
     let Some(bytes) = read_file(&path)? else {
         return Ok(());

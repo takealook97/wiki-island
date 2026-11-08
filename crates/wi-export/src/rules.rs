@@ -197,7 +197,7 @@ impl Regenerator {
     }
     fn renew(&mut self, vault: &Vault, set: &RuleSet) -> wi_store::Result<bool> {
         let signature = signature_of(vault, set)?;
-        let mut local = crate::install::local_dir(vault.root())
+        let mut local = crate::install::local_dir(vault)
             .map_err(|e| wi_store::StoreError::Invalid(e.to_string()))?;
         local.pop();
         let marker = local.join("rules-digest");

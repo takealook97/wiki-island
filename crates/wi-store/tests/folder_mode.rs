@@ -258,6 +258,30 @@ fn init_through_a_symlink_to_a_synced_folder_chooses_folder_mode() {
     assert!(!cloud.join("new-vault/.git").exists());
 }
 
+#[test]
+fn init_through_a_missing_parent_and_dotdot_under_an_alias_chooses_folder_mode() {
+    let tmp = TempDir::new().unwrap();
+    let cloud = tmp.path().join("Dropbox");
+    std::fs::create_dir(&cloud).unwrap();
+    let first = tmp.path().join("alias-one");
+    let second = tmp.path().join("alias-two");
+    std::os::unix::fs::symlink(&cloud, &first).unwrap();
+    std::os::unix::fs::symlink(&first, &second).unwrap();
+    let (vault, _) = Vault::init_placed(
+        second.join("missing/../vault"),
+        OpenOptions {
+            index_path: Some(tmp.path().join("index.db")),
+        },
+        Placement {
+            data_root: Some(tmp.path().join("data")),
+            storage: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(vault.storage_mode(), StorageMode::Folder);
+    assert!(!cloud.join("vault/.git").exists());
+}
+
 /// Sizes of every object reachable from any ref in `git_dir`.
 fn reachable_sizes(git_dir: &Path) -> Vec<u64> {
     let list = std::process::Command::new("git")

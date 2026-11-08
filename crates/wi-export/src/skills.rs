@@ -362,7 +362,7 @@ pub fn sync(
     hosts: &[SkillTarget],
     apply: bool,
 ) -> Result<SkillSyncReport> {
-    let state = crate::local::Targets::load(vault.root())?;
+    let state = crate::local::Targets::load(vault)?;
     let home = state.as_ref().map_or(home, |state| state.home.as_path());
     let roots = state.as_ref().map_or_else(
         || {
@@ -382,12 +382,12 @@ pub fn sync(
     );
     let desired = render(vault)?;
     if apply && !desired.is_empty() {
-        crate::install::record_created_dirs(vault.root(), &roots)?;
+        crate::install::record_created_dirs(vault, &roots)?;
     }
     reconcile(vault.vault_id(), home, &roots, &desired, apply)
 }
 pub fn uninstall(vault: &Vault, home: &Path) -> Result<SkillSyncReport> {
-    match crate::local::Targets::load(vault.root())? {
+    match crate::local::Targets::load(vault)? {
         Some(state) => uninstall_recorded(vault.vault_id(), &state),
         None => uninstall_by_id(vault.vault_id(), home),
     }
@@ -495,7 +495,7 @@ pub fn sync_enabled(vault: &Vault, _home: &Path) -> Result<Option<SkillSyncRepor
 
 /// Background synchronization has no environment-dependent destinations.
 pub fn sync_recorded(vault: &Vault) -> Result<Option<SkillSyncReport>> {
-    let Some(state) = crate::local::Targets::load(vault.root())? else {
+    let Some(state) = crate::local::Targets::load(vault)? else {
         return Ok(None);
     };
     let targets = configured(vault);
@@ -524,7 +524,7 @@ pub fn sync_recorded(vault: &Vault) -> Result<Option<SkillSyncReport>> {
 }
 
 fn digest_path(vault: &Vault) -> Result<PathBuf> {
-    let mut local = crate::install::local_dir(vault.root())?;
+    let mut local = crate::install::local_dir(vault)?;
     local.pop();
     Ok(local.join("skills-digest"))
 }

@@ -35,21 +35,36 @@ pub fn cloud_service(path: &Path) -> Option<&'static str> {
 }
 
 /// `path` with its nearest existing ancestor canonicalized and the missing
-/// components appended; `path` itself when no ancestor resolves.
+/// components applied lexically (`.` dropped, `..` removes the previous
+/// component), so `alias/missing/../vault` resolves through `alias`;
+/// `path` itself when no ancestor resolves. Every component after the
+/// nearest existing ancestor is missing, so lexical `..` is exact there.
 fn resolve_existing(path: &Path) -> PathBuf {
+    use std::path::Component;
     let mut missing = Vec::new();
     let mut current = path;
     loop {
         if let Ok(resolved) = current.canonicalize() {
-            return missing
-                .iter()
-                .rev()
-                .fold(resolved, |acc: PathBuf, part| acc.join(part));
+            let mut out = resolved;
+            for part in missing.iter().rev() {
+                match part {
+                    Component::CurDir => {}
+                    Component::ParentDir => {
+                        out.pop();
+                    }
+                    other => out.push(other.as_os_str()),
+                }
+            }
+            return out;
         }
-        match (current.parent(), current.file_name()) {
-            (Some(parent), Some(name)) => {
-                missing.push(name.to_owned());
-                current = parent;
+        match (current.parent(), current.components().next_back()) {
+            (Some(parent), Some(last)) => {
+                missing.push(last);
+                current = if parent.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    parent
+                };
             }
             _ => return path.to_path_buf(),
         }
@@ -86,5 +101,21 @@ mod tests {
         assert!(cloud_sync_warning(drive).is_some());
         assert!(cloud_sync_warning(Path::new("/Users/x/Dropbox/vault")).is_some());
         assert!(cloud_sync_warning(Path::new("/Users/x/Projects/vault")).is_none());
+    }
+
+    #[test]
+    fn a_missing_component_followed_by_dotdot_still_resolves_through_an_alias() {
+        let tmp = std::env::temp_dir().join(format!("wi-cloud-dotdot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("Dropbox")).unwrap();
+        std::os::unix::fs::symlink(tmp.join("Dropbox"), tmp.join("alias-one")).unwrap();
+        std::os::unix::fs::symlink(tmp.join("alias-one"), tmp.join("alias-two")).unwrap();
+        let path = tmp.join("alias-two/missing/./deeper/../../vault");
+        assert_eq!(cloud_service(&path), Some("Dropbox"));
+        assert_eq!(
+            resolve_existing(&path),
+            tmp.join("Dropbox").canonicalize().unwrap().join("vault")
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 }

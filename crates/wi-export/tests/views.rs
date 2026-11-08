@@ -29,6 +29,61 @@ fn explicit_folder_placement_keeps_export_state_outside_the_vault() {
     );
     assert!(vault.local_dir().join("rules-digest").is_file());
 }
+
+#[test]
+fn export_state_follows_each_open_vaults_own_placement() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("vault");
+    let data_a = tmp.path().join("data-a");
+    let data_b = tmp.path().join("data-b");
+    let (a, _) = Vault::init_placed(
+        &root,
+        OpenOptions {
+            index_path: Some(tmp.path().join("a.sqlite3")),
+        },
+        wi_store::Placement {
+            data_root: Some(data_a.clone()),
+            storage: Some(wi_store::StorageMode::Folder),
+        },
+    )
+    .unwrap();
+    std::fs::create_dir_all(&data_b).unwrap();
+    let copied = std::process::Command::new("cp")
+        .arg("-R")
+        .arg(data_a.join("vaults"))
+        .arg(data_b.join("vaults"))
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    let b = Vault::open_placed(
+        &root,
+        OpenOptions {
+            index_path: Some(tmp.path().join("b.sqlite3")),
+        },
+        wi_store::Placement {
+            data_root: Some(data_b),
+            storage: Some(wi_store::StorageMode::Folder),
+        },
+    )
+    .unwrap();
+    let b_local = b.local_dir();
+    assert_ne!(a.local_dir(), b_local);
+    // The later-opened handle must not capture the earlier one's state.
+    Regenerator::default().refresh(&b).unwrap();
+    drop(b);
+    Regenerator::default().refresh(&a).unwrap();
+    assert!(a.local_dir().join("rules-digest").is_file());
+    let targets = wi_export::local::Targets {
+        home: tmp.path().join("home"),
+        hosts: vec![],
+        skill_dirs: vec![],
+        cache_root: tmp.path().join("cache"),
+    };
+    targets.save(&a).unwrap();
+    assert!(a.local_dir().join("targets.json").is_file());
+    assert!(!b_local.join("targets.json").exists());
+    assert!(wi_export::local::Targets::load(&a).unwrap().is_some());
+}
 impl Fixture {
     fn new() -> Self {
         let temp = TempDir::new().unwrap();

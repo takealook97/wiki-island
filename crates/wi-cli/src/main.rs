@@ -946,7 +946,7 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
             }
             let deadline =
                 duration.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
-            let log_home = wi_export::local::Targets::load(vault.root())?
+            let log_home = wi_export::local::Targets::load(&vault)?
                 .map(|state| state.home)
                 .or_else(|| setup_cmd::home().ok());
             let mut seen = 0usize;
