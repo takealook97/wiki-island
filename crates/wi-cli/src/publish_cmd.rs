@@ -6,7 +6,9 @@ use anyhow::{Result, anyhow, bail};
 use clap::Subcommand;
 use serde_json::{Value, json};
 use std::fs::File;
-use std::io::{IsTerminal, Read, Write};
+#[cfg(target_os = "macos")]
+use std::io::Write;
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wi_notion::{MapStore, NoteSource, PublishNote, PublishOptions, TokenSource};
@@ -15,6 +17,7 @@ use wi_store::Vault;
 use super::Output;
 
 /// Keychain service name; the account is the vault id.
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "wiki-island.notion";
 
 #[derive(Subcommand)]
@@ -101,30 +104,44 @@ struct KeychainStore;
 
 impl SecretStore for KeychainStore {
     fn save(&self, account: &str, secret: &str) -> Result<()> {
-        if !cfg!(target_os = "macos") {
+        #[cfg(windows)]
+        {
+            wi_sys::credential::write(&format!("wiki-island.notion/{account}"), secret).map_err(
+                |_| anyhow!("The credential store did not accept the token; it was not saved."),
+            )
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            let _ = (account, secret);
             bail!(
                 "Notion publishing stores its token in the macOS keychain; this device has none."
             );
         }
-        let mut child = std::process::Command::new("/usr/bin/security")
-            .arg("-i")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|_| anyhow!("The keychain could not be opened; the token was not saved."))?;
-        let line =
-            format!("add-generic-password -U -s {KEYCHAIN_SERVICE} -a {account} -w \"{secret}\"\n");
-        let wrote = child
-            .stdin
-            .take()
-            .map(|mut stdin| stdin.write_all(line.as_bytes()).is_ok())
-            .unwrap_or(false);
-        let status = child.wait();
-        if !wrote || !status.is_ok_and(|s| s.success()) {
-            bail!("The keychain did not accept the token; it was not saved.");
+        #[cfg(target_os = "macos")]
+        {
+            let mut child = std::process::Command::new("/usr/bin/security")
+                .arg("-i")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|_| {
+                    anyhow!("The keychain could not be opened; the token was not saved.")
+                })?;
+            let line = format!(
+                "add-generic-password -U -s {KEYCHAIN_SERVICE} -a {account} -w \"{secret}\"\n"
+            );
+            let wrote = child
+                .stdin
+                .take()
+                .map(|mut stdin| stdin.write_all(line.as_bytes()).is_ok())
+                .unwrap_or(false);
+            let status = child.wait();
+            if !wrote || !status.is_ok_and(|s| s.success()) {
+                bail!("The keychain did not accept the token; it was not saved.");
+            }
+            Ok(())
         }
-        Ok(())
     }
 }
 
@@ -132,16 +149,27 @@ impl SecretStore for KeychainStore {
 fn read_token() -> Result<String> {
     if std::io::stdin().is_terminal() {
         eprint!("Notion integration token (hidden): ");
-        let stty = |mode: &str| {
-            std::process::Command::new("/bin/stty")
-                .arg(mode)
-                .status()
-                .is_ok_and(|s| s.success())
-        };
-        let text = read_hidden(|| stty("-echo"), &mut std::io::stdin().lock());
-        stty("echo");
-        eprintln!();
-        return text;
+        #[cfg(windows)]
+        {
+            let guard = wi_sys::console::EchoOff::new();
+            let text = read_hidden(|| guard.is_ok(), &mut std::io::stdin().lock());
+            drop(guard);
+            eprintln!();
+            return text;
+        }
+        #[cfg(not(windows))]
+        {
+            let stty = |mode: &str| {
+                std::process::Command::new("/bin/stty")
+                    .arg(mode)
+                    .status()
+                    .is_ok_and(|s| s.success())
+            };
+            let text = read_hidden(|| stty("-echo"), &mut std::io::stdin().lock());
+            stty("echo");
+            eprintln!();
+            return text;
+        }
     }
     let mut text = String::new();
     std::io::stdin()

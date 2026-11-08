@@ -520,9 +520,9 @@ fn sync_exports(vault: &Vault) {
 fn vault_root(cli_vault: &Option<PathBuf>) -> PathBuf {
     cli_vault.clone().unwrap_or_else(|| {
         if !std::path::Path::new(".wiki-island/config.toml").is_file()
-            && let Some(home) = std::env::var_os("HOME")
+            && let Ok(home) = setup_cmd::home()
         {
-            let default = PathBuf::from(home).join("wiki-island");
+            let default = home.join("wiki-island");
             if default.join(".wiki-island/config.toml").is_file() {
                 return default;
             }
@@ -837,9 +837,7 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
         Command::Mcp {
             command: Some(McpCommand::Install { host, yes }),
         } => {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .context("HOME is unset")?;
+            let home = setup_cmd::home()?;
             let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
             let vault = std::fs::canonicalize(vault_root(&root))?;
             let plan = wi_export::install::plan_host(

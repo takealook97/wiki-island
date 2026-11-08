@@ -9,6 +9,9 @@ fn install_cli_requires_yes_and_export_all_reports_caps() {
     let run = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_wi"))
             .env("HOME", temp.path())
+            .env("USERPROFILE", temp.path())
+            .env("APPDATA", temp.path())
+            .env("LOCALAPPDATA", temp.path())
             .env("WI_CACHE_DIR", temp.path().join("cache"))
             .env_remove("CODEX_HOME")
             .arg("--vault")
@@ -96,6 +99,9 @@ fn host_install_keeps_separate_settings_backups_and_idempotence() {
                 let mut command = Command::new(env!("CARGO_BIN_EXE_wi"));
                 command
                     .env("HOME", home.path())
+                    .env("USERPROFILE", home.path())
+                    .env("APPDATA", home.path())
+                    .env("LOCALAPPDATA", home.path())
                     .env_remove("CODEX_HOME")
                     .args(["--vault"])
                     .arg(&vault)

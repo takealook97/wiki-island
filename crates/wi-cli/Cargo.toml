@@ -29,6 +29,7 @@ clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
+wi-index = { path = "../wi-index" }
 wi-sys = { path = "../wi-sys" }
 
 [dev-dependencies]

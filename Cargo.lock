@@ -4825,6 +4825,7 @@ dependencies = [
  "wi-docs",
  "wi-export",
  "wi-history",
+ "wi-index",
  "wi-lifecycle",
  "wi-mcp",
  "wi-note",

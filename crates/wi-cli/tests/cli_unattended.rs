@@ -14,6 +14,9 @@ impl Env {
     fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_wi"));
         cmd.env("HOME", self.0.path().join("home"))
+            .env("USERPROFILE", self.0.path().join("home"))
+            .env("APPDATA", self.0.path().join("home"))
+            .env("LOCALAPPDATA", self.0.path().join("home"))
             .env("CODEX_HOME", self.0.path().join("home/.codex"))
             .env("WI_VAULT", self.0.path().join("vault"))
             .env("WI_CACHE_DIR", self.0.path().join("cache"))
@@ -132,6 +135,9 @@ fn cli_refuses_a_dev_service_binary_without_invoking_launchctl() {
     let out = Command::new(binary)
         .args(["service", "install", "--json"])
         .env("HOME", env.0.path().join("home"))
+        .env("USERPROFILE", env.0.path().join("home"))
+        .env("APPDATA", env.0.path().join("home"))
+        .env("LOCALAPPDATA", env.0.path().join("home"))
         .env("WI_VAULT", env.0.path().join("vault"))
         .env("WI_CACHE_DIR", env.0.path().join("cache"))
         .output()
@@ -344,4 +350,24 @@ fn directory_import_reports_non_utf8_entry_and_imports_siblings() {
         "{value}"
     );
     assert!(reports.iter().any(|r| r["status"] == "complete"), "{value}");
+}
+
+#[cfg(windows)]
+#[test]
+fn directory_import_never_follows_a_junction_outside_the_vault() {
+    let env = Env::new();
+    env.write("docs/a.csv", "a,b\n");
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("outside.csv"), "private\n").unwrap();
+    let output = Command::new("cmd")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(env.0.path().join("vault/docs/link"))
+        .arg(outside.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = env.run(&["import", "docs", "--ocr", "off", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(json(&output)["imports"].as_array().unwrap().len(), 1);
+    assert!(!outside.path().join("outside.csv.md").exists());
 }

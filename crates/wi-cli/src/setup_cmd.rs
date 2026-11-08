@@ -28,8 +28,15 @@ pub(crate) fn executable() -> Result<PathBuf> {
 }
 
 pub(crate) fn home() -> Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE").or_else(|| {
+        let mut drive = std::env::var_os("HOMEDRIVE")?;
+        drive.push(std::env::var_os("HOMEPATH")?);
+        Some(drive)
+    });
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    home.map(PathBuf::from)
         .context("Your home directory could not be located.")
 }
 pub(crate) fn root(root: &Option<PathBuf>, home: &Path) -> PathBuf {
@@ -154,7 +161,7 @@ fn setup_with_options(
             .collect(),
         skill_dirs: targets.iter().map(|target| target.root(home)).collect(),
         cache_root: {
-            let cache = cache_root(home);
+            let cache = cache_root(home)?;
             std::fs::canonicalize(&cache).or_else(|_| std::path::absolute(cache))?
         },
     }
@@ -252,19 +259,31 @@ pub(crate) fn uninstall(
     })
 }
 
-fn cache_root(home: &Path) -> PathBuf {
-    std::env::var_os("WI_CACHE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            if cfg!(target_os = "macos") {
-                home.join("Library/Caches/wiki-island")
-            } else {
-                std::env::var_os("XDG_CACHE_HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| home.join(".cache"))
-                    .join("wiki-island")
-            }
+fn cache_root(home: &Path) -> Result<PathBuf> {
+    if let Some(root) = std::env::var_os("WI_CACHE_DIR") {
+        return Ok(PathBuf::from(root));
+    }
+    #[cfg(windows)]
+    {
+        let _ = home;
+        // Reuse the index's Windows known-folder resolver.
+        let path = wi_index::Index::cache_path("setup")?;
+        path.parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .context("Your cache directory could not be located.")
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(if cfg!(target_os = "macos") {
+            home.join("Library/Caches/wiki-island")
+        } else {
+            std::env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".cache"))
+                .join("wiki-island")
         })
+    }
 }
 
 fn remove_cache(root: &Path, vault_id: &str) -> Result<()> {
@@ -401,5 +420,27 @@ mod tests {
             0
         );
         assert_eq!(super::root(&None, &home), root);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_locations {
+    use super::*;
+
+    #[test]
+    fn cache_uses_the_index_known_folder_resolver() {
+        // An override takes precedence in both the index and setup.
+        if let Some(root) = std::env::var_os("WI_CACHE_DIR") {
+            assert_eq!(
+                cache_root(Path::new("unused")).unwrap(),
+                PathBuf::from(root)
+            );
+        } else {
+            let database = wi_index::Index::cache_path("setup").unwrap();
+            assert_eq!(
+                cache_root(Path::new("unused")).unwrap(),
+                database.parent().unwrap().parent().unwrap()
+            );
+        }
     }
 }
