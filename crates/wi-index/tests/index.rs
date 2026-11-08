@@ -858,3 +858,63 @@ fn lifecycle_rows_match_files_and_survive_rebuild() {
     );
     assert_eq!(updated, rebuilt);
 }
+
+#[cfg(windows)]
+#[test]
+fn junctions_and_symlinks_never_index_external_files() {
+    let mut f = Fixture::new();
+    let outside = TempDir::new().unwrap();
+    fs::write(outside.path().join("private.md"), "secret").unwrap();
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(f.vault.path().join("link"))
+        .arg(outside.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::os::windows::fs::symlink_file(
+        outside.path().join("private.md"),
+        f.vault.path().join("file.md"),
+    )
+    .unwrap();
+    f.sync();
+    assert!(f.paths("secret").is_empty());
+    assert!(f.index.update_paths(&[r"link\private.md"]).is_err());
+    assert!(f.index.update_paths(&["file.md"]).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn native_nested_paths_share_slash_keys_for_walk_update_and_remove() {
+    let mut f = Fixture::new();
+    f.write(r"a\b\c.md", "needle");
+    f.sync();
+    assert_eq!(f.paths("needle"), ["a/b/c.md"]);
+    let literal = literal_search(f.vault.path(), &Query::text("needle")).unwrap();
+    assert_eq!(literal.hits[0].rel_path.to_str().unwrap(), "a/b/c.md");
+    f.write(r"a\b\c.md", "changed");
+    f.index.update_paths(&[r"a\b\c.md"]).unwrap();
+    assert!(f.paths("needle").is_empty());
+    assert_eq!(f.paths("changed"), ["a/b/c.md"]);
+    assert_eq!(f.index.remove_paths(&[r"a\b\c.md"]).unwrap(), 1);
+    assert!(f.paths("changed").is_empty());
+    f.sync();
+    fs::write(f.vault.path().join(r"a\b\c.md"), [255, 254]).unwrap();
+    let report = f.index.sync(f.vault.path()).unwrap();
+    assert_eq!(report.skipped[0].to_str().unwrap(), "a/b/c.md");
+    let result = f.index.search(&Query::text("changed")).unwrap();
+    assert!(result.is_skipped(&result.hits[0]));
+    f.write(r"a\b\c.md", "repaired");
+    f.index.update_paths(&[r"a\b\c.md"]).unwrap();
+    assert!(
+        f.index
+            .search(&Query::text("repaired"))
+            .unwrap()
+            .skipped
+            .is_empty()
+    );
+}

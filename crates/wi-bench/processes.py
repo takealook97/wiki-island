@@ -140,7 +140,11 @@ def measure(args):
     scratch = root.parent
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("WI_", "XDG_", "HF_"))}
-    env.update(HOME=str(scratch / "process-home"), WI_CACHE_DIR=str(cache),
+    env.update(HOME=str(scratch / "process-home"),
+               USERPROFILE=str(scratch / "process-home"),
+               APPDATA=str(scratch / "process-roaming"),
+               LOCALAPPDATA=str(scratch / "process-local"),
+               WI_CACHE_DIR=str(cache),
                XDG_CONFIG_HOME=str(scratch / "process-config"),
                XDG_DATA_HOME=str(scratch / "process-data"),
                XDG_CACHE_HOME=str(scratch / "process-cache"))

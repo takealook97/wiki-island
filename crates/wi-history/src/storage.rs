@@ -40,11 +40,24 @@ impl StorageMode {
 
 /// The per-device data directory: `$WI_DATA_DIR`, else
 /// `~/Library/Application Support/wiki-island` on macOS, else
+/// `%LOCALAPPDATA%\wiki-island` on Windows, else
 /// `$XDG_DATA_HOME/wiki-island` or `~/.local/share/wiki-island`.
 pub fn data_root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os(DATA_DIR_ENV).filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir));
     }
+    platform_data_root()
+}
+
+#[cfg(windows)]
+fn platform_data_root() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| PathBuf::from(dir).join("wiki-island"))
+}
+
+#[cfg(not(windows))]
+fn platform_data_root() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)?;
@@ -65,7 +78,14 @@ pub(crate) fn data_root_or_default(explicit: Option<&Path>) -> Result<PathBuf> {
         .map(Path::to_path_buf)
         .or_else(data_root)
         .ok_or_else(|| HistoryError::InvalidConfig {
-            reason: format!("no per-device data directory: set HOME or {DATA_DIR_ENV}"),
+            reason: format!(
+                "no per-device data directory: set {} or {DATA_DIR_ENV}",
+                if cfg!(windows) {
+                    "LOCALAPPDATA"
+                } else {
+                    "HOME"
+                }
+            ),
         })
 }
 
@@ -226,5 +246,66 @@ mod tests {
             vault_state_dir(Path::new("/d"), "ab-1").unwrap(),
             Path::new("/d/vaults/ab-1")
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn data_root_uses_local_app_data_and_honors_overrides() {
+        const CHILD: &str = "WI_TEST_DATA_ROOT_CHILD";
+        if let Ok(mode) = std::env::var(CHILD) {
+            let expected = match mode.as_str() {
+                "override" => Some(PathBuf::from(std::env::var_os(DATA_DIR_ENV).unwrap())),
+                "missing" | "empty" => None,
+                _ => Some(
+                    PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("wiki-island"),
+                ),
+            };
+            assert_eq!(data_root(), expected);
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        for layout in ["none", "profile", "drive", "override", "missing", "empty"] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "storage::windows_tests::data_root_uses_local_app_data_and_honors_overrides",
+                ])
+                .env(CHILD, layout)
+                .env_remove(DATA_DIR_ENV)
+                .env_remove("HOME")
+                .env_remove("USERPROFILE")
+                .env_remove("HOMEDRIVE")
+                .env_remove("HOMEPATH")
+                .env("APPDATA", temp.path().join("roaming"))
+                .env("LOCALAPPDATA", temp.path().join("local"));
+            match layout {
+                "profile" => {
+                    command.env("USERPROFILE", temp.path());
+                }
+                "drive" => {
+                    command
+                        .env("HOMEDRIVE", "C:")
+                        .env("HOMEPATH", "\\Users\\fixture");
+                }
+                "override" => {
+                    command
+                        .env_remove("LOCALAPPDATA")
+                        .env(DATA_DIR_ENV, temp.path().join("override"));
+                }
+                "missing" => {
+                    command.env_remove("LOCALAPPDATA");
+                }
+                "empty" => {
+                    command.env("LOCALAPPDATA", "");
+                }
+                _ => {}
+            }
+            assert!(command.status().unwrap().success(), "{layout}");
+        }
     }
 }
