@@ -175,10 +175,7 @@ pub(crate) fn parse_parent(input: &str) -> Result<String> {
         .unwrap_or_default();
     let hex: String = last.chars().filter(|c| *c != '-').collect();
     // `get` refuses a cut inside a multibyte character instead of panicking.
-    let tail = hex
-        .len()
-        .checked_sub(32)
-        .and_then(|start| hex.get(start..));
+    let tail = hex.len().checked_sub(32).and_then(|start| hex.get(start..));
     let Some(id) = tail.filter(|t| t.bytes().all(|b| b.is_ascii_hexdigit())) else {
         bail!("Use the Notion page link or its 32-character page id.");
     };
