@@ -148,6 +148,10 @@ Relative links in `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `docs/` and the c
 - `wi-history/tests/history.rs` checks operation and loss trailers from both merge parents, without double-counting shared ancestors.
 - `wi-mcp/tests/lifecycle.rs` verifies foreign-device work is listed read-only and excluded from `next`. CLI unit tests use an injected runner to check unavailable authentication, private repository creation/reuse and public repository refusal without contacting a host.
 - `wi-store/tests/folder_mode.rs` checks, without a remote, that ingest, capture and `wi write` of bytes above 50 MiB reach no reachable git object, add one exclude rule and one work request each.
+- `wi-store/tests/sync.rs` also checks that a tracked note grown past 50 MiB keeps its last committed version at the local and remote tip and on the peer with one work request; that a file above 50 MiB ingested before `wi sync setup` never enters history or blocks the first push; that a remote file name this device cannot create is skipped with one work request, never recorded as a deletion, while later notes still push; and that a peer's `wi doctor` lists a committed sync conflict copy as `ok` and its work item read-only.
+- `wi-cli/tests/sync.rs` checks that an editor save made while a sync intent is pending (remote deletion or remote change, and after a crash between files) stays visible, leaves no hidden copy and is committed over the planned version on both devices.
+- `wi-store/tests/folder_mode.rs` and the `wi-history` cloud unit test check that a missing component followed by `..` under a symlinked synced folder still chooses folder mode. `wi-export/tests/views.rs` checks that two open handles of one root under different data directories keep rules, target and backup state apart, with no process-wide registry.
+- `wi-notion/tests/publish.rs` checks that `./` and `../` wikilinks resolve from the source note's folder; missing targets and paths above the root stay text.
 
 ## Notion view
 

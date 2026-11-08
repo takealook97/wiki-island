@@ -4,7 +4,7 @@ This defines the files. Lifecycle behavior is in [KNOWLEDGE](KNOWLEDGE.md); the 
 
 ## Vault layout and config
 
-A vault is one directory of notes with git history, either in `<vault>/.git` (git mode) or in an external git directory in the per-device data directory (folder mode, for a vault in a file-synced folder, judged by the nearest existing ancestor of a new vault path with symlinks resolved; [DESIGN](DESIGN.md#storage-and-history)). Any folder of Markdown notes is a valid vault.
+A vault is one directory of notes with git history, either in `<vault>/.git` (git mode) or in an external git directory in the per-device data directory (folder mode, for a vault in a file-synced folder, judged by the nearest existing ancestor of a new vault path with symlinks resolved and the missing components applied lexically, so `alias/missing/../vault` is judged through `alias`; [DESIGN](DESIGN.md#storage-and-history)). Any folder of Markdown notes is a valid vault.
 
 ```text
 <vault>/
