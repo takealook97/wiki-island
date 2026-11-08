@@ -354,3 +354,26 @@ fn no_path_adds_a_file_over_fifty_megabytes_to_history_without_a_remote() {
         assert_eq!(requests.iter().filter(|r| r.path == path).count(), 1);
     }
 }
+
+#[test]
+fn init_through_a_missing_parent_dotdot_and_then_a_symlink_into_cloud_chooses_folder_mode() {
+    let tmp = TempDir::new().unwrap();
+    let cloud = tmp.path().join("Dropbox");
+    std::fs::create_dir(&cloud).unwrap();
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    std::os::unix::fs::symlink(&cloud, plain.join("hop")).unwrap();
+    let (vault, _) = Vault::init_placed(
+        plain.join("missing/../hop/vault"),
+        OpenOptions {
+            index_path: Some(tmp.path().join("index.sqlite3")),
+        },
+        Placement {
+            data_root: Some(tmp.path().join("data")),
+            storage: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(vault.storage_mode(), StorageMode::Folder);
+    assert!(!cloud.join("vault/.git").exists());
+}

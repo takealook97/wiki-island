@@ -46,16 +46,21 @@ fn resolve_existing(path: &Path) -> PathBuf {
     loop {
         if let Ok(resolved) = current.canonicalize() {
             let mut out = resolved;
+            let mut popped = false;
             for part in missing.iter().rev() {
                 match part {
                     Component::CurDir => {}
                     Component::ParentDir => {
                         out.pop();
+                        popped = true;
                     }
                     other => out.push(other.as_os_str()),
                 }
             }
-            return out;
+            // A `..` can climb back to an existing ancestor whose children
+            // (perhaps symlinks) were never resolved; resolve the lexical
+            // result once more. It holds no `..`, so this ends.
+            return if popped { resolve_existing(&out) } else { out };
         }
         match (current.parent(), current.components().next_back()) {
             (Some(parent), Some(last)) => {
@@ -111,6 +116,22 @@ mod tests {
         std::os::unix::fs::symlink(tmp.join("Dropbox"), tmp.join("alias-one")).unwrap();
         std::os::unix::fs::symlink(tmp.join("alias-one"), tmp.join("alias-two")).unwrap();
         let path = tmp.join("alias-two/missing/./deeper/../../vault");
+        assert_eq!(cloud_service(&path), Some("Dropbox"));
+        assert_eq!(
+            resolve_existing(&path),
+            tmp.join("Dropbox").canonicalize().unwrap().join("vault")
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn dotdot_back_to_an_existing_folder_resolves_its_symlinked_child() {
+        let tmp = std::env::temp_dir().join(format!("wi-cloud-hop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("Dropbox")).unwrap();
+        std::fs::create_dir_all(tmp.join("plain")).unwrap();
+        std::os::unix::fs::symlink(tmp.join("Dropbox"), tmp.join("plain/hop")).unwrap();
+        let path = tmp.join("plain/missing/../hop/vault");
         assert_eq!(cloud_service(&path), Some("Dropbox"));
         assert_eq!(
             resolve_existing(&path),
