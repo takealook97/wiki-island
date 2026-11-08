@@ -73,9 +73,11 @@ fn folder_mode_vault_holds_only_notes_and_engine_folder() {
     assert!(!f.root.join(".gitignore").exists());
     let state = f.data.join("vaults").join(vault.vault_id());
     assert!(state.join("git").is_dir());
+    let local = vault.local_dir();
+    assert_eq!(local.file_name().unwrap(), "local");
     assert_eq!(
-        vault.local_dir(),
-        state.canonicalize().unwrap().join("local")
+        local.parent().unwrap().canonicalize().unwrap(),
+        state.canonicalize().unwrap()
     );
     write(&vault, "a.md", "# a\n");
     vault.flush().unwrap();

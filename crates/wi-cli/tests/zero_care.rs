@@ -116,6 +116,12 @@ fn doctor_commits_an_editor_note_and_reports_nothing_unseen() {
 fn service_install_without_yes_previews_and_writes_nothing() {
     let env = Env::new();
     let out = env.wi(&["service", "install", "--allow-dev-binary"]);
+    if !cfg!(target_os = "macos") {
+        assert!(!out.status.success(), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("run wi watch"));
+        assert!(std::fs::read_dir(env.home.path()).unwrap().next().is_none());
+        return;
+    }
     assert_ok(&out);
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(

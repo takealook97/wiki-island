@@ -102,6 +102,7 @@ fn host_install_keeps_separate_settings_backups_and_idempotence() {
                     .env("USERPROFILE", home.path())
                     .env("APPDATA", home.path())
                     .env("LOCALAPPDATA", home.path())
+                    .env("WI_CACHE_DIR", home.path().join("cache"))
                     .env_remove("CODEX_HOME")
                     .args(["--vault"])
                     .arg(&vault)

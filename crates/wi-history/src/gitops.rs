@@ -19,6 +19,20 @@ use crate::vault::Vault;
 const ENGINE_NAME: &str = "wiki-island";
 const ENGINE_EMAIL: &str = "wiki-island@localhost";
 
+#[cfg(windows)]
+fn object_repository(vault: &Vault) -> Result<gix::Repository> {
+    let mut repo = vault.repo().clone();
+    // Objects and the staging index must retain remote names that this
+    // device cannot materialize. The store still validates every disk path;
+    // keep gix's separate NTFS/.git protections enabled.
+    let mut config = repo.config_snapshot_mut();
+    config
+        .set_value(&gix::config::tree::gitoxide::Core::PROTECT_WINDOWS, "false")
+        .map_err(HistoryError::git)?;
+    config.commit().map_err(HistoryError::git)?;
+    Ok(repo)
+}
+
 /// A tree change applied by a commit.
 pub(crate) enum TreeEdit<'a> {
     Upsert { path: &'a str, blob: ObjectId },
@@ -80,7 +94,10 @@ pub(crate) fn write_commit(
     message: &str,
     author_secs: i64,
 ) -> Result<(ObjectId, ObjectId)> {
+    #[cfg(not(windows))]
     let repo = vault.repo();
+    #[cfg(windows)]
+    let repo = object_repository(vault)?;
     let mut editor = repo
         .edit_tree(tree_of(vault, parent)?)
         .map_err(HistoryError::git)?;
@@ -341,10 +358,11 @@ pub(crate) fn sync_git_index(vault: &Vault, commit: ObjectId) -> Result<()> {
     let pending = vault.wi_dir().join("git-index-pending");
     let result: Result<()> = (|| {
         let tree = tree_of(vault, Some(commit))?;
-        let mut index = vault
-            .repo()
-            .index_from_tree(&tree)
-            .map_err(HistoryError::git)?;
+        #[cfg(not(windows))]
+        let repo = vault.repo();
+        #[cfg(windows)]
+        let repo = object_repository(vault)?;
+        let mut index = repo.index_from_tree(&tree).map_err(HistoryError::git)?;
         index
             .write(gix::index::write::Options::default())
             .map_err(HistoryError::git)

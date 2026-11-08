@@ -767,6 +767,24 @@ fn with_note_bound(tmp: &TempDir, vault: Vault, bound: usize) -> Vault {
 
 #[test]
 fn configured_bound_keeps_whole_pdf_prefix_and_both_notes_searchable() {
+    #[cfg(windows)]
+    if std::env::var_os("WI_NOTE_BOUND_TEST_CHILD").is_none() {
+        // This case tests the embedded PDF extractor and size bounds,
+        // independently of optional tools installed on the host.
+        let tools = TempDir::new().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "configured_bound_keeps_whole_pdf_prefix_and_both_notes_searchable",
+                "--nocapture",
+            ])
+            .env("WI_NOTE_BOUND_TEST_CHILD", "1")
+            .env("PATH", tools.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
     let (tmp, vault) = setup();
     let vault = with_note_bound(&tmp, vault, 12_000);
     let mut doc = Document::load_mem(&pdf()).unwrap();
@@ -842,7 +860,8 @@ fn configured_bound_keeps_whole_pdf_prefix_and_both_notes_searchable() {
         )
         .is_err()
     );
-    assert!(import(&vault, "large.pdf", options()).unwrap().unchanged);
+    let repeated = import(&vault, "large.pdf", options()).unwrap();
+    assert!(repeated.unchanged, "{repeated:?}");
 }
 
 #[test]

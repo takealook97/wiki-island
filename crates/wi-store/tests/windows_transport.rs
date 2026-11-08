@@ -2,8 +2,8 @@
 //! kill-on-close job, so a timeout ends git and every descendant, and an
 //! HTTPS remote that asks for credentials fails without prompting.
 //!
-//! One test in its own binary because it sets `WI_SYNC_TIMEOUT_MS`, which
-//! every sync in the process reads.
+//! The timeout case runs in a child with `WI_SYNC_TIMEOUT_MS`, so the
+//! authentication case retains the normal transport deadline.
 #![cfg(windows)]
 
 use std::path::Path;
@@ -49,21 +49,36 @@ fn note(vault: &Vault, path: &str, text: &str) {
 
 #[test]
 fn transport_never_prompts_and_a_timeout_ends_the_whole_tree() {
-    // An HTTPS remote that answers with an authentication challenge must
-    // fail on its own, well before the transport timeout (60 s).
-    let temp = TempDir::new().unwrap();
-    let a = vault(temp.path());
-    note(&a, "x.md", "x\n");
-    a.sync_setup("https://github.com/takealook97/wi-no-such-private-repo-7f3c.git")
-        .unwrap();
-    let start = Instant::now();
-    assert!(a.sync().is_err());
-    assert!(
-        start.elapsed() < Duration::from_secs(45),
-        "an auth challenge took {:?}",
-        start.elapsed()
-    );
-    drop(a);
+    if std::env::var_os("WI_TRANSPORT_TIMEOUT_CHILD").is_none() {
+        // An HTTPS remote that answers with an authentication challenge must
+        // fail on its own, well before the transport timeout (60 s).
+        let temp = TempDir::new().unwrap();
+        let a = vault(temp.path());
+        note(&a, "x.md", "x\n");
+        a.sync_setup("https://github.com/takealook97/wi-no-such-private-repo-7f3c.git")
+            .unwrap();
+        let start = Instant::now();
+        assert!(a.sync().is_err());
+        assert!(
+            start.elapsed() < Duration::from_secs(45),
+            "an auth challenge took {:?}",
+            start.elapsed()
+        );
+        drop(a);
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "transport_never_prompts_and_a_timeout_ends_the_whole_tree",
+                "--nocapture",
+            ])
+            .env("WI_TRANSPORT_TIMEOUT_CHILD", "1")
+            .env("WI_SYNC_TIMEOUT_MS", "3000")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
 
     // A pre-receive hook (a grandchild of the transport git) that would
     // write a marker after 6 s. A 3 s timeout must end it with git.
@@ -90,9 +105,6 @@ fn transport_never_prompts_and_a_timeout_ends_the_whole_tree() {
     )
     .unwrap();
     note(&a, "late.md", "late\n");
-    // SAFETY: this binary runs this single test, so no other thread reads
-    // the environment concurrently.
-    unsafe { std::env::set_var("WI_SYNC_TIMEOUT_MS", "3000") };
     let start = Instant::now();
     let result = a.sync();
     let elapsed = start.elapsed();

@@ -924,6 +924,15 @@ impl Engine {
             .git_global(false)
             .follow_links(false)
             .filter_entry(move |e| {
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if std::fs::symlink_metadata(e.path())
+                        .is_ok_and(|m| m.file_attributes() & 0x400 != 0)
+                    {
+                        return false;
+                    }
+                }
                 e.path().strip_prefix(&root).is_ok_and(|relative| {
                     !relative.components().any(
                         |c| matches!(c, Component::Normal(p) if p==".git" || p==".wiki-island"),
@@ -946,6 +955,10 @@ impl Engine {
             let Some(rel) = rel.to_str() else {
                 continue;
             };
+            #[cfg(windows)]
+            let rel = rel.replace('\\', "/");
+            #[cfg(windows)]
+            let rel = rel.as_str();
             let tail = if prefix.is_empty() {
                 rel
             } else if let Some(tail) = rel.strip_prefix(&format!("{prefix}/")) {

@@ -1253,13 +1253,58 @@ fn list_and_find_allow_internal_names_in_the_vault_ancestors() {
 }
 
 #[test]
+#[cfg(windows)]
+fn name_listing_never_traverses_junctions_or_lists_file_symlinks() {
+    let (temp, e) = fixture(Arc::new(Unavailable));
+    engine_write(&e, "visible.md", "visible\n");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("foreign.md"), "foreign\n").unwrap();
+    let junction = e.vault().root().join("linked");
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&outside)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    std::os::windows::fs::symlink_file(
+        outside.join("foreign.md"),
+        e.vault().root().join("alias.md"),
+    )
+    .unwrap();
+    for name in ["wi_list", "wi_find"] {
+        let value = good(&e, name, json!({"depth":10}));
+        let paths: Vec<_> = value["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["path"].as_str().unwrap())
+            .collect();
+        assert!(paths.contains(&"visible.md"), "{value}");
+        assert!(
+            paths
+                .iter()
+                .all(|path| !path.starts_with("linked") && *path != "alias.md"),
+            "{value}"
+        );
+    }
+}
+
+#[test]
 fn updated_listing_orders_by_file_time_and_keeps_folders_first() {
     let (_temp, e) = fixture(Arc::new(Unavailable));
     engine_write(&e, "listing/older.md", "---\ntitle: Zulu\n---\nold");
     engine_write(&e, "listing/newer.md", "---\ntitle: Alpha\n---\nnew");
     engine_write(&e, "listing/folder/note.md", "nested");
     for (name, seconds) in [("older.md", 100), ("newer.md", 200)] {
+        #[cfg(not(windows))]
         let file = std::fs::File::open(e.vault().root().join("listing").join(name)).unwrap();
+        #[cfg(windows)]
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(e.vault().root().join("listing").join(name))
+            .unwrap();
         file.set_times(
             std::fs::FileTimes::new()
                 .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
