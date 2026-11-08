@@ -29,11 +29,18 @@ pub(crate) fn executable() -> Result<PathBuf> {
 
 pub(crate) fn home() -> Result<PathBuf> {
     #[cfg(windows)]
-    let home = std::env::var_os("USERPROFILE").or_else(|| {
-        let mut drive = std::env::var_os("HOMEDRIVE")?;
-        drive.push(std::env::var_os("HOMEPATH")?);
-        Some(drive)
-    });
+    let home = {
+        // Empty or relative values are unset: they would place the vault
+        // and app configurations under the working directory.
+        let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+        let absolute =
+            |value: std::ffi::OsString| Some(value).filter(|v| Path::new(v).is_absolute());
+        set("USERPROFILE").and_then(absolute).or_else(|| {
+            let mut drive = set("HOMEDRIVE")?;
+            drive.push(set("HOMEPATH")?);
+            absolute(drive)
+        })
+    };
     #[cfg(not(windows))]
     let home = std::env::var_os("HOME");
     home.map(PathBuf::from)

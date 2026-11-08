@@ -123,7 +123,13 @@ impl HostId {
         {
             let app_data = _app_data
                 .map(Path::to_path_buf)
-                .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
+                .or_else(|| {
+                    // An empty or relative APPDATA is unset, never a path
+                    // under the working directory.
+                    std::env::var_os("APPDATA")
+                        .map(PathBuf::from)
+                        .filter(|path| path.is_absolute())
+                })
                 .unwrap_or_else(|| home.join("AppData/Roaming"));
             let relative = match self {
                 Self::ClaudeDesktop => Some(("Claude", "Claude/claude_desktop_config.json")),

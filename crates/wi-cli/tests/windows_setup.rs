@@ -105,3 +105,71 @@ fn setup_falls_back_to_home_drive_and_home_path() {
             .is_file()
     );
 }
+
+#[test]
+fn empty_profile_variables_fall_back_instead_of_using_the_working_directory() {
+    let fixture = Fixture::new();
+    let home = fixture.home.to_str().unwrap();
+    let output = fixture
+        .command()
+        .env("USERPROFILE", "")
+        .env("HOMEDRIVE", &home[..2])
+        .env("HOMEPATH", &home[2..])
+        .args(["setup", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    // The fallback profile is used ...
+    assert!(
+        fixture
+            .home
+            .join("wiki-island/.wiki-island/config.toml")
+            .is_file()
+    );
+    // ... and nothing is created relative to the working directory.
+    assert!(!fixture._temp.path().join("wiki-island").exists());
+}
+
+#[test]
+fn relative_profile_is_ignored_in_favor_of_an_absolute_fallback() {
+    let fixture = Fixture::new();
+    let home = fixture.home.to_str().unwrap();
+    let output = fixture
+        .command()
+        .env("USERPROFILE", "elsewhere")
+        .env("HOMEDRIVE", &home[..2])
+        .env("HOMEPATH", &home[2..])
+        .args(["setup", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        fixture
+            .home
+            .join("wiki-island/.wiki-island/config.toml")
+            .is_file()
+    );
+    assert!(!fixture._temp.path().join("elsewhere").exists());
+}
+
+#[test]
+fn empty_appdata_never_targets_a_relative_app_config() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.home.join("AppData/Roaming/Claude")).unwrap();
+    std::fs::create_dir_all(fixture._temp.path().join("Claude")).unwrap();
+    let output = fixture
+        .command()
+        .env("APPDATA", "")
+        .args(["setup", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    // An empty APPDATA must not resolve to <cwd>\Claude\claude_desktop_config.json.
+    assert!(
+        !fixture
+            ._temp
+            .path()
+            .join("Claude/claude_desktop_config.json")
+            .exists()
+    );
+}
