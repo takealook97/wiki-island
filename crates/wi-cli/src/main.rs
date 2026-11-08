@@ -837,7 +837,7 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
         Command::Mcp {
             command: Some(McpCommand::Install { host, yes }),
         } => {
-            let home = setup_cmd::home()?;
+            let home = setup_cmd::integration_home()?;
             let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
             let vault = std::fs::canonicalize(vault_root(&root))?;
             let plan = wi_export::install::plan_host(

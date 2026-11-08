@@ -9,7 +9,7 @@ use wi_export::service::{self, SystemLaunchctl};
 use super::{Output, ServiceCommand, Session};
 
 fn home() -> Result<PathBuf> {
-    super::setup_cmd::home()
+    super::setup_cmd::integration_home()
 }
 
 pub(crate) fn run(vault: &Session, command: ServiceCommand) -> Result<Output> {

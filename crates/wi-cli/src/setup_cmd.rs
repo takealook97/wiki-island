@@ -39,6 +39,19 @@ pub(crate) fn home() -> Result<PathBuf> {
     home.map(PathBuf::from)
         .context("Your home directory could not be located.")
 }
+/// Locate the home used by explicit app and service commands.
+pub(crate) fn integration_home() -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        home()
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .context("HOME is unset")
+    }
+}
 pub(crate) fn root(root: &Option<PathBuf>, home: &Path) -> PathBuf {
     root.clone().unwrap_or_else(|| home.join("wiki-island"))
 }
