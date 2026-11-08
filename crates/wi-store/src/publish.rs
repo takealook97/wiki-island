@@ -56,6 +56,10 @@ pub(crate) fn request_digest(value: &serde_json::Value) -> String {
     hash_bytes(&serde_json::to_vec(value).unwrap_or_default())
 }
 
+/// The manifest id stored with the first result of a write placed in the
+/// folder only (over the history size limit).
+const OUTSIDE_HISTORY: &str = "outside-history";
+
 fn mismatch(op_id: &str) -> StoreError {
     StoreError::OperationMismatch {
         op_id: op_id.to_owned(),
@@ -97,6 +101,11 @@ impl Vault {
         if let Some(first) = &stored {
             if first.request_digest != digest {
                 return Err(mismatch(op_id));
+            }
+            // A write kept outside history (over the size limit) has no
+            // manifest entry or commit; its stored result is the record.
+            if first.manifest_id == OUTSIDE_HISTORY {
+                return Ok(Some(self.replayed(snap, first.clone())));
             }
             let retired = first.manifest_id == snap.manifest_id
                 && first.seq <= snap.retired_upto
@@ -300,7 +309,7 @@ impl Vault {
         self.persist_large_excludes(std::slice::from_ref(&target.rel))?;
         let (dir, name) = Dir::create_parent(self.root(), &target.rel, mode)?;
         let permissions = dir.permissions(&name)?;
-        let temp = TempFile::create(&dir, &name, &change.bytes, mode, permissions)?;
+        let mut temp = TempFile::create(&dir, &name, &change.bytes, mode, permissions)?;
         let new_hash = hash_bytes(&change.bytes);
         let guard = PublisherLock::acquire(&self.history)?;
         if self.history.wi_dir().join("sync-intent.json").exists() {
@@ -308,23 +317,58 @@ impl Vault {
                 "Sync recovery is finishing; retry this save.".into(),
             ));
         }
+        let snap = Manifest::snapshot(&self.history, &guard)?;
+        if let Some(op_id) = &change.op_id
+            && let Some(first) = self.lookup_operation(&guard, &snap, op_id, &change.digest)?
+        {
+            return Ok(first);
+        }
         let old_hash = check_preconditions(change, &dir, &name, None)?;
+        let mut conflict_copy = None;
+        let mut recheck = None;
         if old_hash.as_deref() != Some(new_hash.as_str()) {
-            // An exchange leaves the checked old bytes under the temp name;
-            // dropping the temp removes them.
-            place(&dir, &temp.name, &name, old_hash.as_deref()).map_err(|e| match e {
-                StoreError::Stale {
-                    expected, current, ..
-                } => StoreError::Stale {
-                    path: target.rel.clone(),
-                    expected,
-                    current,
-                },
-                other => other,
-            })?;
+            let placed =
+                place(&dir, &temp.name, &name, old_hash.as_deref()).map_err(|e| match e {
+                    StoreError::Stale {
+                        expected, current, ..
+                    } => StoreError::Stale {
+                        path: target.rel.clone(),
+                        expected,
+                        current,
+                    },
+                    other => other,
+                })?;
+            // The displaced bytes are kept when an editor changed them,
+            // exactly as on the ordinary write path.
+            (conflict_copy, recheck) =
+                self.settle_displaced(&mut temp, placed, target, old_hash.as_deref(), 0)?;
             dir.barrier(mode)?;
         }
+        if let Some(op_id) = &change.op_id {
+            opresult::store(
+                &self.history,
+                &FirstResult {
+                    op_id: op_id.clone(),
+                    request_digest: change.digest.clone(),
+                    manifest_id: OUTSIDE_HISTORY.into(),
+                    seq: 0,
+                    path: target.rel.clone(),
+                    checksum: new_hash.clone(),
+                    previous_checksum: old_hash.clone(),
+                    conflict_copy: conflict_copy.clone(),
+                    moved_from: None,
+                },
+            )?;
+        }
         drop(guard);
+        // Last look at displaced bytes right before the temp guard unlinks
+        // them, as on the ordinary write path.
+        if let Some(file) = recheck
+            && let Some(late) =
+                self.recheck_displaced(&mut temp, file, target, old_hash.as_deref(), 0)
+        {
+            conflict_copy = Some(late);
+        }
         drop(temp);
         Ok(WriteResult {
             path: target.rel.clone(),
@@ -334,7 +378,7 @@ impl Vault {
             generation: self.generation()?,
             index: IndexState::Ok,
             replayed: false,
-            conflict_copy: None,
+            conflict_copy,
             moved_from: None,
             lifecycle: None,
         })

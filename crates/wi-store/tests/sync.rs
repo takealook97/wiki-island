@@ -800,3 +800,294 @@ fn a_peer_lists_a_sync_conflict_copy_read_only_without_a_doctor_warning() {
             .any(|i| i.target.as_deref() == Some("base.md") && i.actionable)
     );
 }
+
+#[test]
+fn a_note_that_shrinks_back_under_fifty_megabytes_is_ingested_and_synced_again() {
+    let p = Pair::new();
+    let a = p.a.open();
+    let b = p.b.open();
+    write(&a, "big.md", "small initial note\n");
+    a.sync().unwrap();
+    b.sync().unwrap();
+    let file = std::fs::File::create(p.a.root.join("big.md")).unwrap();
+    file.set_len(50 * 1024 * 1024 + 1).unwrap();
+    drop(file);
+    a.sync().unwrap();
+    std::fs::write(p.a.root.join("big.md"), "small corrected note\n").unwrap();
+    let report = a.ingest_path("big.md").unwrap();
+    assert!(
+        !matches!(report.outcome, wi_store::IngestOutcome::Skipped { .. }),
+        "{report:?}"
+    );
+    a.sync().unwrap();
+    b.sync().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(p.b.root.join("big.md")).unwrap(),
+        "small corrected note\n"
+    );
+}
+
+#[test]
+fn a_sync_conflict_on_a_long_valid_name_places_a_visible_copy() {
+    let p = Pair::new();
+    let name = format!("{}.md", "n".repeat(200));
+    let a = p.a.open();
+    let b = p.b.open();
+    write(&a, &name, "base\n");
+    a.sync().unwrap();
+    b.sync().unwrap();
+    write(&a, &name, "remote\n");
+    write(&b, &name, "local\n");
+    a.sync().unwrap();
+    let report = b.sync().unwrap();
+    assert_eq!(report.conflicts.len(), 1);
+    let copy = &report.conflicts[0];
+    eprintln!(
+        "copy length: {}; exists: {}; copy committed: {}",
+        copy.len(),
+        p.b.root.join(copy).exists(),
+        git(&p.b.root, &["cat-file", "-p", &format!("HEAD:{copy}")])
+    );
+    assert!(
+        p.b.root.join(copy).is_file(),
+        "acknowledged conflict copy was never placed"
+    );
+    assert!(copy.len() <= 224, "{copy}");
+    assert_eq!(
+        std::fs::read_to_string(p.b.root.join(copy)).unwrap(),
+        "remote\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(p.b.root.join(&name)).unwrap(),
+        "local\n"
+    );
+}
+
+#[test]
+fn an_oversized_write_retried_with_its_operation_id_replays_its_first_result() {
+    let p = Pair::new();
+    let a = p.a.open();
+    let request = wi_store::WriteRequest {
+        path: "big.md".into(),
+        content: vec![b'x'; 50 * 1024 * 1024 + 1],
+        expected_checksum: None,
+        op_id: Some("oversized-retry-test".into()),
+        ingress: wi_store::Ingress::Cli,
+    };
+    let first = a.write(request.clone()).unwrap();
+    let retry = a.write(request);
+    eprintln!("first seq: {}; retry: {retry:?}", first.seq);
+    assert!(retry.unwrap().replayed);
+}
+
+#[test]
+fn a_valid_225_byte_remote_name_this_device_skips_is_never_deleted() {
+    let p = Pair::new();
+    let long = format!("{}.md", "a".repeat(222));
+    // A peer commits a 225-byte name: valid on disk, but past the sibling
+    // headroom, so this device skips it.
+    let blob = {
+        let mut child = Command::new("git")
+            .arg("--git-dir")
+            .arg(&p.remote)
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(b"x\n").unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let listing = git(&p.remote, &["ls-tree", "main^{tree}"]);
+    let tree = {
+        let mut child = Command::new("git")
+            .arg("--git-dir")
+            .arg(&p.remote)
+            .arg("mktree")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        let input = format!("{listing}100644 blob {blob}\t{long}\n");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let parent = git(&p.remote, &["rev-parse", "main"]);
+    let commit = git(
+        &p.remote,
+        &[
+            "-c",
+            "user.name=peer",
+            "-c",
+            "user.email=peer@example.invalid",
+            "commit-tree",
+            &tree,
+            "-p",
+            parent.trim(),
+            "-m",
+            "long name",
+        ],
+    );
+    git(&p.remote, &["update-ref", "refs/heads/main", commit.trim()]);
+    let b = p.b.open();
+    write(&b, "later.md", "later\n");
+    assert!(b.sync().unwrap().pushed);
+    let names = git(&p.remote, &["ls-tree", "-r", "--name-only", "main"]);
+    assert!(names.lines().any(|l| l == "later.md"), "{names}");
+    assert!(names.lines().any(|l| l == long), "kept for other devices");
+    b.reconcile().unwrap();
+    b.flush().unwrap();
+    write(&b, "after.md", "after\n");
+    assert!(b.sync().unwrap().pushed);
+    let names = git(&p.remote, &["ls-tree", "-r", "--name-only", "main"]);
+    assert!(names.lines().any(|l| l == "after.md"), "{names}");
+    assert!(names.lines().any(|l| l == long), "never deleted: {names}");
+    assert_eq!(
+        b.work_requests()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path == long)
+            .count(),
+        1
+    );
+    b.doctor().unwrap();
+    let a = p.a.open();
+    a.sync().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(p.a.root.join("later.md")).unwrap(),
+        "later\n"
+    );
+}
+
+#[test]
+fn an_editor_save_to_the_file_an_oversized_write_displaces_is_kept() {
+    use std::os::unix::fs::{FileExt, MetadataExt};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let p = Pair::new();
+    let a = p.a.open();
+    let precious = b"precious editor save before unlink\n";
+    for trial in 0..8 {
+        let name = format!("race-{trial}.dat");
+        write(&a, &name, "old bytes\n");
+        let path = p.a.root.join(&name);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let inode = file.metadata().unwrap().ino();
+        let checksum = wi_history::hash_bytes(b"old bytes\n");
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = done.clone();
+        let editor = std::thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                if std::fs::metadata(&path).is_ok_and(|m| m.ino() != inode) {
+                    file.write_all_at(precious, 0).unwrap();
+                    return file.metadata().unwrap().nlink() > 0;
+                }
+                std::hint::spin_loop();
+            }
+            false
+        });
+        let result = a.write_attachment(
+            &name,
+            vec![b'x'; 50 * 1024 * 1024 + 1],
+            Some(checksum),
+            wi_store::Ingress::Import,
+        );
+        done.store(true, Ordering::Release);
+        let saved_while_still_named = editor.join().unwrap();
+        result.unwrap();
+        if saved_while_still_named {
+            let mut preserved = false;
+            for e in std::fs::read_dir(&p.a.root).unwrap().flatten() {
+                if e.file_name().to_string_lossy().contains(&name) {
+                    let bytes = std::fs::read(e.path()).unwrap();
+                    preserved |= bytes.windows(precious.len()).any(|w| w == precious);
+                }
+            }
+            eprintln!(
+                "trial {trial}: editor saved while displaced inode was still named; precious saved in any sibling: {preserved}; requests: {:?}",
+                a.work_requests().unwrap()
+            );
+            assert!(
+                preserved,
+                "the engine unlinked an editor save made before temp retirement"
+            );
+            return;
+        }
+    }
+    panic!("inconclusive scheduling: no editor write preceded unlink");
+}
+
+#[test]
+fn an_editor_save_to_the_file_a_small_attachment_write_displaces_is_kept() {
+    use std::os::unix::fs::{FileExt, MetadataExt};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let p = Pair::new();
+    let a = p.a.open();
+    let precious = b"precious editor save before unlink\n";
+    for trial in 0..8 {
+        let name = format!("race-{trial}.dat");
+        write(&a, &name, "old bytes\n");
+        let path = p.a.root.join(&name);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let inode = file.metadata().unwrap().ino();
+        let checksum = wi_history::hash_bytes(b"old bytes\n");
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = done.clone();
+        let editor = std::thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                if std::fs::metadata(&path).is_ok_and(|m| m.ino() != inode) {
+                    file.write_all_at(precious, 0).unwrap();
+                    return file.metadata().unwrap().nlink() > 0;
+                }
+                std::hint::spin_loop();
+            }
+            false
+        });
+        let result = a.write_attachment(
+            &name,
+            vec![b'x'; 1024 * 1024],
+            Some(checksum),
+            wi_store::Ingress::Import,
+        );
+        done.store(true, Ordering::Release);
+        let saved_while_still_named = editor.join().unwrap();
+        result.unwrap();
+        if saved_while_still_named {
+            let mut preserved = false;
+            for e in std::fs::read_dir(&p.a.root).unwrap().flatten() {
+                if e.file_name().to_string_lossy().contains(&name) {
+                    let bytes = std::fs::read(e.path()).unwrap();
+                    preserved |= bytes.windows(precious.len()).any(|w| w == precious);
+                }
+            }
+            eprintln!(
+                "trial {trial}: editor saved while displaced inode was still named; precious saved in any sibling: {preserved}; requests: {:?}",
+                a.work_requests().unwrap()
+            );
+            assert!(
+                preserved,
+                "the engine unlinked an editor save made before temp retirement"
+            );
+            return;
+        }
+    }
+    panic!("inconclusive scheduling: no editor write preceded unlink");
+}

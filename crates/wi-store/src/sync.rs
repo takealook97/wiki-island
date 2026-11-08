@@ -22,6 +22,8 @@ const STATE: &str = "sync-state.json";
 const INTENT: &str = "sync-intent.json";
 /// Files above this size never enter history (capture, writes, ingest).
 pub(crate) const LIMIT: u64 = 50 * 1024 * 1024;
+/// The comment line above each managed large-file exclude rule.
+const LARGE_MARK: &str = "# wiki-island: file exceeds 50 MB";
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -428,7 +430,7 @@ impl Vault {
     /// every folder name at most 255 bytes, the file name at most 224, the
     /// whole path under the platform path limit, and no name the file
     /// system rejects outright.
-    fn creatable(&self, path: &str) -> bool {
+    pub(crate) fn creatable(&self, path: &str) -> bool {
         const NAME_MAX: usize = 255;
         // `.<name>.wi-conflict-sync-<12 hex>` is the longest sibling.
         const SIBLING: usize = 31;
@@ -894,10 +896,7 @@ impl Vault {
         if let Some(displaced) = dir.read_regular(temp)? {
             let blob = wi_history::blob_id_of(&displaced)?;
             if Some(&blob) != update.old.as_ref() && Some(&blob) != update.new.as_ref() {
-                let copy = format!(
-                    ".{name}.wi-conflict-sync-{}",
-                    &hash_bytes(&displaced)[7..19]
-                );
+                let copy = copy_name(name, &hash_bytes(&displaced)[7..19]);
                 crate::work::record(
                     &self.history,
                     &WorkRequest::new(
@@ -923,6 +922,7 @@ impl Vault {
     }
 
     fn exclude_large_files(&self) -> Result<Vec<String>> {
+        self.release_large_excludes(None)?;
         let mut large = Vec::new();
         for path in crate::ingest::walk_files(self.root()) {
             if std::fs::metadata(self.root().join(&path)).is_ok_and(|m| m.len() > LIMIT) {
@@ -958,6 +958,66 @@ impl Vault {
         Ok(true)
     }
 
+    /// Drop the managed large-file rule of every path in `paths` (all
+    /// managed rules when `None`) whose file is back at or under the
+    /// limit, so a note that shrank is ingested and synced again. Returns
+    /// the released paths.
+    pub(crate) fn release_large_excludes(&self, paths: Option<&[&str]>) -> Result<Vec<String>> {
+        let path = self.history.exclude_file();
+        let shrunk = |text: &str| -> Vec<String> {
+            let mut out = Vec::new();
+            let mut lines = text.lines().peekable();
+            while let Some(line) = lines.next() {
+                if line != LARGE_MARK {
+                    continue;
+                }
+                let Some(rule) = lines.peek().and_then(|r| r.strip_prefix('/')) else {
+                    continue;
+                };
+                let rel = unescape_pattern(rule);
+                let wanted = paths.is_none_or(|p| p.contains(&rel.as_str()));
+                if wanted
+                    && std::fs::metadata(self.root().join(&rel))
+                        .is_ok_and(|m| m.is_file() && m.len() <= LIMIT)
+                {
+                    out.push(rel);
+                }
+            }
+            out
+        };
+        // Cheap unlocked look first: most calls find nothing to release.
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if shrunk(&text).is_empty() {
+            return Ok(Vec::new());
+        }
+        let _guard = PublisherLock::acquire(&self.history)?;
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let released = shrunk(&text);
+        if released.is_empty() {
+            return Ok(released);
+        }
+        let rules: Vec<String> = released
+            .iter()
+            .map(|rel| format!("/{}", escape_pattern(rel)))
+            .collect();
+        let mut kept = Vec::new();
+        let mut lines = text.lines().peekable();
+        while let Some(line) = lines.next() {
+            if line == LARGE_MARK && lines.peek().is_some_and(|r| rules.iter().any(|x| x == r)) {
+                lines.next();
+                continue;
+            }
+            kept.push(line);
+        }
+        let mut out = kept.join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        durable::write_atomic(&path, out.as_bytes(), self.history.durability())?;
+        wi_index::set_exclude_file(self.root(), Some(&path));
+        Ok(released)
+    }
+
     pub(crate) fn persist_large_excludes(&self, large: &[String]) -> Result<()> {
         let _guard = PublisherLock::acquire(&self.history)?;
         let path = self.history.exclude_file();
@@ -969,7 +1029,8 @@ impl Vault {
                 if !text.ends_with('\n') {
                     text.push('\n');
                 }
-                text.push_str("# wiki-island: file exceeds 50 MB\n");
+                text.push_str(LARGE_MARK);
+                text.push('\n');
                 text.push_str(&rule);
                 text.push('\n');
                 reported.push(rel.clone());
@@ -1019,11 +1080,28 @@ fn empty_remote_branch(config: &Config) -> String {
 }
 
 fn conflict_path(path: &str, remote: &str) -> String {
-    let suffix = &remote[..12];
     match path.rsplit_once('/') {
-        Some((dir, name)) => format!("{dir}/.{name}.wi-conflict-sync-{suffix}"),
-        None => format!(".{path}.wi-conflict-sync-{suffix}"),
+        Some((dir, name)) => format!("{dir}/{}", copy_name(name, &remote[..12])),
+        None => copy_name(path, &remote[..12]),
     }
+}
+
+/// `.<name>.wi-conflict-sync-<suffix>`. The copy must itself be creatable
+/// (see `Vault::creatable`), so its file name stays within 224 bytes: a
+/// long note name is shortened at a character boundary and ends in a
+/// digest of the full name, keeping copies of different notes apart.
+fn copy_name(name: &str, suffix: &str) -> String {
+    const NAME_LIMIT: usize = 255 - 31;
+    const ROOM: usize = NAME_LIMIT - ".".len() - ".wi-conflict-sync-".len() - 12;
+    if name.len() <= ROOM {
+        return format!(".{name}.wi-conflict-sync-{suffix}");
+    }
+    let digest = &hash_bytes(name.as_bytes())[7..15];
+    let mut end = ROOM - 1 - digest.len();
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(".{}~{digest}.wi-conflict-sync-{suffix}", &name[..end])
 }
 
 // Committed sync copies use the existing conflict-copy protocol. They are
@@ -1154,4 +1232,16 @@ fn transport_timeout() -> Duration {
         return Duration::from_millis(ms.clamp(1, 60_000));
     }
     TIMEOUT
+}
+
+fn unescape_pattern(rule: &str) -> String {
+    let mut out = String::new();
+    let mut chars = rule.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.extend(chars.next()),
+            other => out.push(other),
+        }
+    }
+    out
 }

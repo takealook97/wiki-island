@@ -123,7 +123,14 @@ impl Vault {
             Err(_) => {
                 return Some("large-file exclusion is waiting to be saved; it will retry".into());
             }
-            Ok(false) => {}
+            Ok(false) => {
+                // A file back under the limit leaves its large-file rule.
+                if self.release_large_excludes(Some(&[rel])).is_err() {
+                    return Some(
+                        "large-file exclusion is waiting to be lifted; it will retry".into(),
+                    );
+                }
+            }
         }
         if wi_index::ignored(self.root(), Path::new(rel)) {
             return Some("ignored by .gitignore or .ignore".into());
@@ -286,6 +293,12 @@ impl Vault {
             let known = self.known(&snap, head.as_deref(), rel)?;
             let Some(bytes) = current else {
                 let outcome = match known {
+                    // A committed name this device cannot create (a long
+                    // name from a peer) is absent here, not deleted.
+                    Known::Blob(_) if !self.creatable(rel) => IngestOutcome::Skipped {
+                        reason: "this device cannot create this file name; it stays in history"
+                            .into(),
+                    },
                     Known::Blob(_) => IngestOutcome::Missing,
                     _ => IngestOutcome::Skipped {
                         reason: "absent".into(),
@@ -510,6 +523,8 @@ impl Vault {
             removed_temps: self.remove_dead_temps()?,
             ..ReconcileReport::default()
         };
+        // Files that shrank back under the size limit are walked again.
+        self.release_large_excludes(None)?;
         let survey = self.survey(crate::ingress::Scope::All)?;
         self.ingest_survey(survey, &mut report)?;
         for path in self.record_missing()? {
@@ -534,7 +549,9 @@ impl Vault {
             {
                 let mut pending = self.pending_deletions.borrow_mut();
                 for entry in Missing::scan(&self.history)? {
-                    if self.ingress_filter(&entry.path).is_none() {
+                    // A committed name this device cannot create (a long
+                    // name from a peer) is absent here, not deleted.
+                    if self.creatable(&entry.path) && self.ingress_filter(&entry.path).is_none() {
                         pending.insert(entry.path);
                     }
                 }
