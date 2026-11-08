@@ -408,13 +408,17 @@ fn configured_note_limit_and_invalid_csv_fail_before_publication() {
     assert_eq!(vault.publication_mark().unwrap(), before);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn folder_symlinks_are_not_followed() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file as symlink;
     let (tmp, vault) = setup();
     write(&vault, &format!("export/{HOME}.md"), b"safe");
     fs::write(tmp.path().join("outside.md"), b"private").unwrap();
-    std::os::unix::fs::symlink(
+    symlink(
         tmp.path().join("outside.md"),
         vault.root().join("export/link.md"),
     )

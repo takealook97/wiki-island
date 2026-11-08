@@ -48,6 +48,9 @@ impl Env {
             .arg("--json")
             .env("WI_VAULT", self.base.join(device))
             .env("HOME", self.base.join(format!("{device}-home")))
+            .env("USERPROFILE", self.base.join(format!("{device}-home")))
+            .env("APPDATA", self.base.join(format!("{device}-home")))
+            .env("LOCALAPPDATA", self.base.join(format!("{device}-home")))
             .env("WI_DATA_DIR", self.base.join(format!("{device}-data")))
             .env("WI_CACHE_DIR", self.base.join(format!("{device}-cache")))
             .env_remove("WI_FAULT");
@@ -63,10 +66,14 @@ impl Env {
     }
     fn git(&self, root: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
+            .args(["-c", "core.autocrlf=false"])
             .arg("-C")
             .arg(root)
             .args(args)
             .env("HOME", self.base.join("git-home"))
+            .env("USERPROFILE", self.base.join("git-home"))
+            .env("APPDATA", self.base.join("git-home"))
+            .env("LOCALAPPDATA", self.base.join("git-home"))
             .output()
             .unwrap();
         assert!(out.status.success(), "git {args:?}: {out:?}");

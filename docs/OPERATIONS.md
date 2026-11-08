@@ -44,7 +44,7 @@ An editor can save between step 3 and step 7. Where the platform has an atomic e
 | --- | --- | --- |
 | macOS arm64 / APFS | race tests pass | process crashes tested; power loss untested |
 | Linux arm64 / overlay, tmpfs, btrfs | race tests pass in a container | no bare-metal, ext4 or power-loss claim |
-| Windows | atomic exchange not implemented | Rust-only type check; runtime untested |
+| Windows / NTFS | no atomic exchange; re-hash then replace; tests pass on GitHub Actions `windows-latest` | an editor save between the re-hash and the rename can be overwritten ([Windows](#windows)) |
 | exFAT | exchange returns `ENOTSUP` | re-hash then rename |
 
 ### Idempotency and first results
@@ -58,7 +58,38 @@ A write with an operation id stores `{op_id, request_digest, manifest_id, seq, p
 - **Identity.** Protected names are compared component by component after folding: Unicode NFC, lowercase, NFC again, on every platform. `.GIT`, `.Wiki-Island`, `Exports` or a decomposed `café` are refused wherever `.git`, `.wiki-island`, an export path `exports` or `café` would be. Ordinary note names are not folded: two spellings that alias on APFS are one file to the file system but two paths to git (a limit).
 - **Absolute input.** Only the prefix that resolves to the canonical vault root is canonicalized. Components inside the vault are checked as given; an in-vault symlink is refused.
 - **Containment.** Every file operation of the write path, reads, ingress and recovery opens directories one component at a time from the root with `O_NOFOLLOW | O_DIRECTORY` and acts relative to that descriptor (`openat`, `renameat`, `unlinkat`). A symlink or non-directory component is refused, and a directory replaced after the check cannot redirect the operation.
+- **Windows containment.** The same rule holds without `openat`: each directory is opened one component at a time relative to the previous handle (`NtCreateFile` with a root directory handle, in `wi-sys`), and a symlink, junction or other reparse point at any component is refused. See [Windows](#windows).
 - **Persisted paths.** Paths read from the manifest get the same treatment before any read or change. A changed directory leaves outside bytes untouched and records `recovery-problem`.
+
+## Windows
+
+Windows 10 1709 or later on x86_64 (MSVC) with NTFS is the target; the tests run on GitHub Actions `windows-latest` ([VALIDATION](VALIDATION.md#platform)). ARM64 Windows and other volumes (ReFS, FAT, network shares) are untested. All Windows system calls are in the `wi-sys` crate ([DESIGN](DESIGN.md#windows)).
+
+**Mechanisms.**
+
+- **Containment.** Every vault operation opens one component at a time relative to a checked directory handle and refuses a reparse point (symlink, junction) at every component. Before any change, each existing component's on-disk name is read back through its handle and must equal the requested name case-insensitively, so an 8.3 short-name alias is refused.
+- **Names.** A vault-relative component with `:`, any of `<>"|?*`, a control character, a reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, with any extension) or a trailing dot or space is refused. An existing note with such a name (for example synced from a Mac) is never renamed or deleted: it stays in history, is skipped on this device and gets one work request, like any remote name the file system cannot create.
+- **Input paths.** `\` is a separator in input and stored vault paths keep `/`. Drive (`C:\`), verbatim (`\\?\C:\`) and UNC prefixes are stripped against the vault root by component, case-insensitively; drive-relative (`C:foo`), root-relative (`\foo`) and device (`\\.\`) inputs are refused. UNC is best effort and unexercised.
+- **Rename and delete.** Renames and deletes go through the open handle with POSIX semantics, so a file that another program has open with delete sharing can be replaced or removed. A sharing violation (including access denied on a delete-pending entry) is retried five times with a 20 ms doubling backoff; after that the operation fails without losing bytes and recovery handles it.
+- **Placement.** There is no atomic exchange. A replacement re-hashes the target through the checked handle, refuses as stale if it changed, then renames with replace. A create renames without replace and treats an existing file as stale, leaving it untouched. The placement path therefore never makes a conflict copy of a displaced editor file.
+- **Processes.** Git transport and document extractors start in a kill-on-close Job Object before they run; a timeout, an output cap or the leader exiting terminates the whole job. If termination cannot unblock an inherited pipe, the wait for the output readers ends after two seconds and the extraction returns an error.
+- **Git transport.** Prompts are disabled (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, `credential.interactive=never`, a nonexistent askpass program), hooks are pointed at an empty directory under the engine directory, and the 60-second timeout applies as on Unix.
+- **Locations.** The data directory is `%LOCALAPPDATA%\wiki-island` (`WI_DATA_DIR` overrides it) and the home folder is `%USERPROFILE%`. The Notion token is a generic Windows Credential Manager entry `wiki-island.notion/<vault id>`; the hidden token prompt turns console echo off and restores it, and refuses when echo cannot be turned off on a console.
+
+**Weaker than Unix.** Each item below is a known difference, not a test gap.
+
+- **Editor race.** The window between the re-hash and the rename can overwrite an editor save made in it. When the target changed before the rename, the write is refused as stale and the editor's file is kept; Unix keeps a conflict copy and succeeds.
+- **Namespace durability.** Directories cannot be flushed, so creates, renames and deletes are not claimed to survive power loss as they are with a Unix directory `fsync`. Process-crash recovery is tested; power loss is not measured. `standard` equals `full`.
+- **Read-only files.** A path barrier on a read-only file (git objects) cannot open it for writing and records a trace without flushing.
+- **Publication renames.** The staged `.git` and folder-mode `git.tmp` publications, the atomic-write temp file of `wi_history::durable` and git's own ref lock files use an ordinary rename, which can fail on a sharing violation where Unix succeeds.
+- **Replacing an open file.** A file held open by another program without delete sharing cannot be replaced or removed; the operation fails after the retries.
+- **Stray links.** A symlink or junction inside the vault is never followed and is not removed by the engine.
+- **Indexing.** Every reparse entry is skipped, including non-link reparse points such as some cloud placeholders. An open SQLite file cannot be deleted on Windows, so an index replacement closes it first. File identity folds the 128-bit file id to 64 bits, which on ReFS can collide.
+- **Permissions.** File modes are not carried over; the read-only attribute is the only mode, and private config and backup files rely on inherited ACLs instead of 0600 and 0700.
+- **Process identity.** A reused process id can make a dead owner look alive, as on Unix; an unreadable process counts as alive.
+- **No service.** There is no background service ([Service](#service)).
+- **Creation flags.** A job-started child cannot carry custom process creation flags.
+- **Tools.** Benchmarks report machine details and Python-based process metrics as unknown.
 
 ## Git history and sync
 
@@ -104,7 +135,7 @@ Vault config key `durability`, `"standard"` (default) or `"full"`; `Vault::with_
 - `standard`: POSIX `fsync` on files and directories. On Apple platforms it orders writes and survives process and OS crashes but may not survive power loss, because the drive cache is not flushed. This follows Apple's `fsync(2)` and `fcntl(2)` man pages; it is not measured here.
 - `full`: `F_FULLFSYNC` on Apple platforms, falling back to `fsync` only where unsupported; `fsync` elsewhere.
 
-Ordering rules are identical in both modes.
+Ordering rules are identical in both modes. On Windows the two modes are the same: files are flushed with `FlushFileBuffers` on a write-capable handle and directory barriers do nothing ([Windows](#windows)).
 
 ### Barrier order
 
@@ -179,7 +210,7 @@ Originals stay inside the git repository by default and import never modifies th
 - Existing hand-enriched sidecars or inconsistent provenance cause a conflict; move the note aside to import a fresh projection.
 - `Off` never invokes OCR. `Auto` and `Required` use an existing local Tesseract for supported images and PDF pages via local `pdftoppm`; unmet OCR is a reported `needs_ocr` state, never an installation or network operation. PDF pages without extractable native text first try local `pdftotext -layout`, even with `Off`, then rasterization and OCR when enabled. OCR uses `kor+eng` when Korean traineddata exists, otherwise `eng`. Models, VLMs and macOS Vision are not used.
 - **Tool discovery** is tri-state: present (with version), absent (spawn `NotFound`) or unknown (probe timeout, budget, any other probe error). Present and absent are part of the cache identity and final; unknown is transient, retried on the next import, and its cause appears in the run diagnostics.
-- **Timeouts.** Each external extraction tool runs in its own process group with a 60 s timeout per call (`WI_TOOL_TIMEOUT_MS`) and an output cap; a timeout or cap kill stops its descendants too. Each document has a total budget (`WI_IMPORT_BUDGET_MS`). A run that ended `partial` from a timeout or the budget, or `needs_ocr`, is re-extracted on the next import; if the retry fails, the prior original/run pair stays intact. Permanent results are reused from the cache.
+- **Timeouts.** Each external extraction tool runs in its own process group (on Windows, in a kill-on-close Job Object) with a 60 s timeout per call (`WI_TOOL_TIMEOUT_MS`) and an output cap; a timeout or cap kill stops its descendants too. Each document has a total budget (`WI_IMPORT_BUDGET_MS`). A run that ended `partial` from a timeout or the budget, or `needs_ocr`, is re-extracted on the next import; if the retry fails, the prior original/run pair stays intact. Permanent results are reused from the cache.
 - **Safety bounds** (unmeasured): a 256 MiB source-size preflight; both derived notes must fit `max_note_bytes` (oversized output keeps a whole-page prefix, status `partial`, `pages_not_indexed`); CSV records parse incrementally and stop at the logical-page text bound. These are not a hard process memory limit.
 
 ## Zero-maintenance operations
@@ -199,7 +230,7 @@ Nothing here puts a daemon, network or model on the capture or search path.
 
 ## Service
 
-`wi service install|uninstall|status` manages an optional macOS launchd LaunchAgent that runs `wi watch` (watcher, maintenance, and the sync and Notion publish threads when configured on this device); `wi setup` and `wi uninstall` call the same code. Off macOS, install returns an unsupported error. No capture or search path depends on the service.
+`wi service install|uninstall|status` manages an optional macOS launchd LaunchAgent that runs `wi watch` (watcher, maintenance, and the sync and Notion publish threads when configured on this device); `wi setup` and `wi uninstall` call the same code. Off macOS, install returns an unsupported error; on Windows it says to run `wi watch` yourself (there is no Windows service, for example start `wi watch` from Task Scheduler at logon), and `wi setup` skips the service there. No capture or search path depends on the service.
 
 - Label `com.wiki-island.watch.<vault_id>`. Plist `$HOME/Library/LaunchAgents/<label>.plist` with `ProgramArguments` `[<absolute wi binary>, "watch", "--vault", <absolute vault root>]`, `RunAtLoad` and `KeepAlive` true, `ProcessType` Background, stdout and stderr to `$HOME/Library/Logs/wiki-island/<vault_id>.log` (only changes and errors are logged; the file rotates at 1 MiB and one old file is kept), and a fixed `PATH`.
 - `service install` without `--yes` prints a diff. Applying writes the plist atomically, backs up a differing existing file under a unique name, rejects a symlink or non-regular destination, refuses a stale preview, creates the log directory, runs `launchctl bootout` (only a recognized not-loaded result is ignored) and then `launchctl bootstrap gui/<uid>`. A bootstrap failure rolls the change back. Other launchctl failures are reported. Paths are XML-escaped and must be absolute and exist.

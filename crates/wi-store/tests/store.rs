@@ -166,6 +166,7 @@ fn conflict_markers_get_flag_and_work_item_and_the_engine_refuses_to_write() {
     let _ = first;
 }
 
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 #[test]
 fn editor_save_between_check_and_swap_is_kept_as_a_conflict_copy() {
     const {
@@ -226,6 +227,7 @@ fn no_conflict_copy_when_nothing_raced() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
+#[cfg(unix)]
 #[test]
 fn protected_paths_are_refused_and_change_nothing() {
     let (_fx, vault) = Fixture::new();
@@ -644,6 +646,7 @@ fn reconcile_ingests_offline_edits_and_commits_deleted_files() {
     assert!(vault.reconcile().unwrap().ingested.is_empty());
 }
 
+#[cfg(unix)]
 impl Fixture {
     fn open_existing(vault: &wi_store::Vault) -> wi_store::Vault {
         wi_store::Vault::open_with(vault.root(), wi_store::OpenOptions::default()).unwrap()

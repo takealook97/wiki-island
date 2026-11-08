@@ -724,7 +724,7 @@ fn relative(root: &Path, path: &Path) -> Option<String> {
         Ok(rel) => rel.to_path_buf(),
         // FSEvents may report a non-canonical prefix of the root.
         Err(_) => {
-            let parent = path.parent()?.canonicalize().ok()?;
+            let parent = crate::paths::canonical(path.parent()?)?;
             parent
                 .join(path.file_name()?)
                 .strip_prefix(root)
@@ -732,8 +732,8 @@ fn relative(root: &Path, path: &Path) -> Option<String> {
                 .to_path_buf()
         }
     };
-    let rel = rel.to_str()?;
-    (!rel.is_empty()).then(|| rel.to_owned())
+    let rel = crate::paths::rel_string(&rel)?;
+    (!rel.is_empty()).then_some(rel)
 }
 
 #[cfg(test)]

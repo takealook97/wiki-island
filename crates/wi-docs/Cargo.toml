@@ -23,5 +23,8 @@ csv = "=1.4.0"
 imagesize = "=0.14.0"
 tempfile = "3"
 
+[target.'cfg(windows)'.dependencies]
+wi-sys = { path = "../wi-sys" }
+
 [dev-dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }

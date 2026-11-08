@@ -4653,6 +4653,7 @@ dependencies = [
  "wi-index",
  "wi-note",
  "wi-store",
+ "wi-sys",
  "zip",
 ]
 
@@ -4685,6 +4686,7 @@ dependencies = [
  "thiserror",
  "toml_edit 0.23.10+spec-1.0.0",
  "wi-history",
+ "wi-sys",
 ]
 
 [[package]]
@@ -4773,6 +4775,7 @@ dependencies = [
  "ureq",
  "wi-history",
  "wi-note",
+ "wi-sys",
 ]
 
 [[package]]
@@ -4799,6 +4802,15 @@ dependencies = [
  "wi-lifecycle",
  "wi-note",
  "wi-store",
+ "wi-sys",
+]
+
+[[package]]
+name = "wi-sys"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4813,11 +4825,13 @@ dependencies = [
  "wi-docs",
  "wi-export",
  "wi-history",
+ "wi-index",
  "wi-lifecycle",
  "wi-mcp",
  "wi-note",
  "wi-notion",
  "wi-store",
+ "wi-sys",
 ]
 
 [[package]]

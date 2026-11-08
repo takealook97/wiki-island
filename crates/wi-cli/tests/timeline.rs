@@ -99,6 +99,9 @@ impl World {
     fn command(&self, binary: &Path) -> Command {
         let mut cmd = Command::new(binary);
         cmd.env("HOME", self.path("home"))
+            .env("USERPROFILE", self.path("home"))
+            .env("APPDATA", self.path("home"))
+            .env("LOCALAPPDATA", self.path("home"))
             .env("CODEX_HOME", self.path("home/.codex"))
             .env("WI_VAULT", self.vault())
             .env("WI_CACHE_DIR", self.path("cache"))
@@ -128,6 +131,7 @@ impl World {
 
     fn git(&self, args: &[&str]) -> String {
         let out = Command::new("git")
+            .args(["-c", "core.autocrlf=false"])
             .args(args)
             .current_dir(self.vault())
             .output()

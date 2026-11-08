@@ -73,9 +73,11 @@ fn folder_mode_vault_holds_only_notes_and_engine_folder() {
     assert!(!f.root.join(".gitignore").exists());
     let state = f.data.join("vaults").join(vault.vault_id());
     assert!(state.join("git").is_dir());
+    let local = vault.local_dir();
+    assert_eq!(local.file_name().unwrap(), "local");
     assert_eq!(
-        vault.local_dir(),
-        state.canonicalize().unwrap().join("local")
+        local.parent().unwrap().canonicalize().unwrap(),
+        state.canonicalize().unwrap()
     );
     write(&vault, "a.md", "# a\n");
     vault.flush().unwrap();
@@ -236,6 +238,7 @@ fn gitignore_reinclusion_beats_external_exclude_in_index() {
     assert_eq!(report.discovered, 1, "{report:?}");
 }
 
+#[cfg(unix)]
 #[test]
 fn init_through_a_symlink_to_a_synced_folder_chooses_folder_mode() {
     let tmp = TempDir::new().unwrap();
@@ -258,6 +261,7 @@ fn init_through_a_symlink_to_a_synced_folder_chooses_folder_mode() {
     assert!(!cloud.join("new-vault/.git").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn init_through_a_missing_parent_and_dotdot_under_an_alias_chooses_folder_mode() {
     let tmp = TempDir::new().unwrap();
@@ -355,6 +359,7 @@ fn no_path_adds_a_file_over_fifty_megabytes_to_history_without_a_remote() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn init_through_a_missing_parent_dotdot_and_then_a_symlink_into_cloud_chooses_folder_mode() {
     let tmp = TempDir::new().unwrap();
@@ -378,6 +383,7 @@ fn init_through_a_missing_parent_dotdot_and_then_a_symlink_into_cloud_chooses_fo
     assert!(!cloud.join("vault/.git").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn init_through_a_missing_parent_a_symlink_and_its_parent_into_cloud_chooses_folder_mode() {
     let tmp = TempDir::new().unwrap();
@@ -401,6 +407,7 @@ fn init_through_a_missing_parent_a_symlink_and_its_parent_into_cloud_chooses_fol
     assert!(!cloud.join("vault/.git").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn init_through_a_dangling_symlink_and_its_parent_is_detected_as_cloud_and_fails_cleanly() {
     // `plain/link -> Dropbox/missing`: the OS cannot walk `link/..` while

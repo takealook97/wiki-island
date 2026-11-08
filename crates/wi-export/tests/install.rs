@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+#[cfg(unix)]
 use std::path::Path;
 use tempfile::TempDir;
 use wi_export::{Host, install};
@@ -24,7 +25,7 @@ fn install_preview_backup_and_unrelated_config_survive_for_every_host() {
             host,
             home.path(),
             Some(&custom),
-            Path::new("/bin/wi"),
+            &std::env::temp_dir().join("wi-test-bin"),
             &home.path().join("vault"),
         )
         .unwrap();
@@ -77,7 +78,7 @@ fn install_preview_backup_and_unrelated_config_survive_for_every_host() {
             host,
             home.path(),
             Some(&custom),
-            Path::new("/bin/wi"),
+            &std::env::temp_dir().join("wi-test-bin"),
             &home.path().join("vault"),
         )
         .unwrap();
@@ -99,7 +100,7 @@ fn install_absent_configs_stale_preview_and_invalid_shape() {
             host,
             home.path(),
             None,
-            Path::new("/bin/wi"),
+            &std::env::temp_dir().join("wi-test-bin"),
             &home.path().join("vault"),
         )
         .unwrap();
@@ -110,7 +111,7 @@ fn install_absent_configs_stale_preview_and_invalid_shape() {
             host,
             home.path(),
             None,
-            Path::new("/bin/new-wi"),
+            &std::env::temp_dir().join("wi-test-new-bin"),
             &home.path().join("vault"),
         )
         .unwrap();
@@ -130,7 +131,7 @@ fn install_absent_configs_stale_preview_and_invalid_shape() {
                 host,
                 home.path(),
                 None,
-                Path::new("/bin/wi"),
+                &std::env::temp_dir().join("wi-test-bin"),
                 &home.path().join("vault")
             )
             .is_err()
@@ -142,7 +143,7 @@ fn install_absent_configs_stale_preview_and_invalid_shape() {
                     host,
                     home.path(),
                     None,
-                    Path::new("/bin/wi"),
+                    &std::env::temp_dir().join("wi-test-bin"),
                     &home.path().join("vault")
                 )
                 .is_err()
@@ -162,7 +163,7 @@ fn install_follows_a_symlink_config_and_writes_private_files() {
         Host::Claude,
         home.path(),
         None,
-        Path::new("/bin/wi"),
+        &std::env::temp_dir().join("wi-test-bin"),
         &home.path().join("vault"),
     )
     .unwrap();
@@ -176,13 +177,13 @@ fn install_follows_a_symlink_config_and_writes_private_files() {
     assert_eq!(
         serde_json::from_slice::<Value>(&std::fs::read(&outside).unwrap()).unwrap()["mcpServers"]["wiki-island"]
             ["command"],
-        "/bin/wi"
+        std::env::temp_dir().join("wi-test-bin").to_str().unwrap()
     );
     let plan = install::plan(
         Host::Gemini,
         home.path(),
         None,
-        Path::new("/bin/wi"),
+        &std::env::temp_dir().join("wi-test-bin"),
         &home.path().join("vault"),
     )
     .unwrap();
@@ -206,7 +207,7 @@ fn json_install_preserves_unrelated_bytes_key_order_and_escaped_strings() {
         Host::Claude,
         home.path(),
         None,
-        Path::new("/bin/wi"),
+        &std::env::temp_dir().join("wi-test-bin"),
         &home.path().join("vault"),
     )
     .unwrap();
@@ -274,7 +275,7 @@ fn json_insertion_preserves_existing_members_and_warns_on_duplicate_keys() {
             Host::Claude,
             home.path(),
             None,
-            Path::new("/bin/wi"),
+            &std::env::temp_dir().join("wi-test-bin"),
             &home.path().join("vault"),
         )
         .unwrap();
@@ -296,9 +297,39 @@ fn json_insertion_preserves_existing_members_and_warns_on_duplicate_keys() {
         Host::Claude,
         home.path(),
         None,
-        Path::new("/bin/wi"),
+        &std::env::temp_dir().join("wi-test-bin"),
         &home.path().join("vault"),
     )
     .unwrap();
     assert_eq!(plan.warnings.len(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn install_follows_a_windows_config_symlink_without_replacing_it() {
+    let home = TempDir::new().unwrap();
+    let target = home.path().join("other.json");
+    let link = home.path().join(".claude.json");
+    std::fs::write(&target, "{}").unwrap();
+    std::os::windows::fs::symlink_file(&target, &link).unwrap();
+    let plan = install::plan(
+        Host::Claude,
+        home.path(),
+        None,
+        &home.path().join("wi.exe"),
+        &home.path().join("vault"),
+    )
+    .unwrap();
+    plan.apply().unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        std::fs::read_to_string(target)
+            .unwrap()
+            .contains("wiki-island")
+    );
 }

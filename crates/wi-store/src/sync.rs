@@ -151,7 +151,9 @@ impl Vault {
                 .arg("--git-dir")
                 .arg(self.history.git_dir())
                 .arg("--work-tree")
-                .arg(self.root())
+                .arg(self.root());
+            #[cfg(not(windows))]
+            command
                 .args([
                     "-c",
                     "core.hooksPath=/dev/null",
@@ -160,6 +162,31 @@ impl Vault {
                     "-c",
                     "credential.interactive=false",
                 ])
+                .env("GIT_ASKPASS", "/usr/bin/false")
+                .env("SSH_ASKPASS", "/usr/bin/false");
+            #[cfg(windows)]
+            {
+                // D15: an empty hooks directory under the engine dir instead
+                // of /dev/null, and askpass helpers that do not exist, so
+                // git fails instead of prompting.
+                let hooks = self.sync_file("no-hooks");
+                std::fs::create_dir_all(&hooks).map_err(|e| StoreError::io(&hooks, e))?;
+                let mut hooks_path = std::ffi::OsString::from("core.hooksPath=");
+                hooks_path.push(hooks.as_os_str());
+                let askpass = self.sync_file("no-askpass").join("askpass.exe");
+                command
+                    .arg("-c")
+                    .arg(hooks_path)
+                    .args([
+                        "-c",
+                        "protocol.ext.allow=never",
+                        "-c",
+                        "credential.interactive=never",
+                    ])
+                    .env("GIT_ASKPASS", &askpass)
+                    .env("SSH_ASKPASS", &askpass);
+            }
+            command
                 .args(args)
                 .env_remove("GIT_DIR")
                 .env_remove("GIT_WORK_TREE")
@@ -171,8 +198,6 @@ impl Vault {
                 .env_remove("GIT_CONFIG_COUNT")
                 .env_remove("GIT_CONFIG_PARAMETERS")
                 .env("GIT_TERMINAL_PROMPT", "0")
-                .env("GIT_ASKPASS", "/usr/bin/false")
-                .env("SSH_ASKPASS", "/usr/bin/false")
                 .env("GCM_INTERACTIVE", "Never")
                 .env("GCM_GUI_PROMPT", "false")
                 .env(
@@ -191,8 +216,13 @@ impl Vault {
                 use std::os::unix::process::CommandExt;
                 command.process_group(0);
             }
+            #[cfg(not(windows))]
             let mut child = command
                 .spawn()
+                .map_err(|_| invalid("Git is unavailable; install git to sync your notes."))?;
+            // D14: the whole transport tree runs in a kill-on-close job.
+            #[cfg(windows)]
+            let (mut child, job) = wi_sys::process::spawn_in_job(&mut command)
                 .map_err(|_| invalid("Git is unavailable; install git to sync your notes."))?;
             let start = Instant::now();
             let status = loop {
@@ -203,6 +233,10 @@ impl Vault {
                     break status;
                 }
                 if start.elapsed() >= transport_timeout() {
+                    #[cfg(windows)]
+                    {
+                        let _ = job.terminate(1);
+                    }
                     #[cfg(unix)]
                     {
                         let _ = rustix::process::kill_process_group(
@@ -218,6 +252,10 @@ impl Vault {
                 }
                 std::thread::sleep(Duration::from_millis(25));
             };
+            // The leader exited: end any descendant (ssh, credential
+            // helpers) before reading the spooled output.
+            #[cfg(windows)]
+            drop(job);
             let bytes = std::fs::read(&out_path).map_err(|e| StoreError::io(&out_path, e))?;
             Ok((status.success(), bytes, status.code().unwrap_or(-1)))
         })();
@@ -392,7 +430,13 @@ impl Vault {
     fn validate_sync_tree(&self, tree: &SyncTree) -> Result<BTreeSet<String>> {
         let mut identities = BTreeSet::new();
         for path in tree.keys() {
-            let normalized = crate::paths::normalize(self.root(), path)?;
+            // A name this device cannot store (Windows D7) is not a protected
+            // path: it stays in history and is skipped here as uncreatable.
+            let normalized = if crate::paths::host_can_name(path) {
+                crate::paths::normalize(self.root(), path)?
+            } else {
+                path.clone()
+            };
             if normalized != *path
                 || sync_internal(path)
                 || path
@@ -449,6 +493,9 @@ impl Vault {
             if part.is_empty() || part.len() > limit {
                 return false;
             }
+        }
+        if !crate::paths::host_can_name(path) {
+            return false;
         }
         let full = self.root().join(path);
         if full.as_os_str().len() + SIBLING >= PATH_MAX {
@@ -661,7 +708,7 @@ impl Vault {
     /// Retire transport scratch from dead owners. Live attempts keep
     /// their own temporary refs until application finishes.
     pub(crate) fn cleanup_sync_scratch(&self) -> Result<()> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let _guard = PublisherLock::acquire(&self.history)?;
             for (dir, prefix) in [
@@ -685,12 +732,11 @@ impl Vault {
                     let owner = name
                         .strip_prefix(prefix)
                         .and_then(|s| s.split_once('-'))
-                        .and_then(|(p, _)| p.parse::<i32>().ok())
-                        .and_then(rustix::process::Pid::from_raw);
+                        .and_then(|(p, _)| p.parse::<i32>().ok());
                     let Some(owner) = owner else {
                         continue;
                     };
-                    if rustix::process::test_kill_process(owner) == Err(rustix::io::Errno::SRCH) {
+                    if owner_gone(owner) {
                         match std::fs::remove_file(entry.path()) {
                             Ok(()) => removed += 1,
                             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1244,4 +1290,18 @@ fn unescape_pattern(rule: &str) -> String {
         }
     }
     out
+}
+
+/// Whether the transport owner `pid` has exited (no such process).
+#[cfg(unix)]
+fn owner_gone(pid: i32) -> bool {
+    rustix::process::Pid::from_raw(pid).is_some_and(|owner| {
+        rustix::process::test_kill_process(owner) == Err(rustix::io::Errno::SRCH)
+    })
+}
+
+/// Whether the transport owner `pid` has exited (D13: unknown is alive).
+#[cfg(windows)]
+fn owner_gone(pid: i32) -> bool {
+    crate::doctor::process_gone(Some(pid))
 }

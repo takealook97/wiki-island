@@ -1,6 +1,7 @@
 //! Publishing wiring against a loopback mock only: no real service, no
 //! real keychain, temporary data directories.
 use super::*;
+use std::io::Write;
 use std::net::TcpListener;
 use std::sync::{
     Arc, Mutex,
@@ -358,4 +359,29 @@ fn the_token_prompt_never_reads_when_echo_cannot_be_turned_off() {
     assert_eq!(input.position(), 0, "the token was read while echo was on");
     let mut input = std::io::Cursor::new(format!("{TOKEN}\n"));
     assert_eq!(read_hidden(|| true, &mut input).unwrap(), TOKEN);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_secret_store_and_token_source_use_the_same_vault_target() {
+    let temp = tempfile::tempdir().unwrap();
+    let account = format!(
+        "test-{}-{}",
+        std::process::id(),
+        temp.path().file_name().unwrap().to_string_lossy()
+    );
+    let target = format!("wiki-island.notion/{account}");
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = wi_sys::credential::delete(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(target.clone());
+    KeychainStore.save(&account, TOKEN).unwrap();
+    assert_eq!(
+        wi_notion::KeychainTokenSource { account }.token().unwrap(),
+        TOKEN
+    );
+    assert!(wi_sys::credential::delete(&target).unwrap());
 }

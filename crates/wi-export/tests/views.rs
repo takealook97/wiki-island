@@ -48,13 +48,19 @@ fn export_state_follows_each_open_vaults_own_placement() {
     )
     .unwrap();
     std::fs::create_dir_all(&data_b).unwrap();
-    let copied = std::process::Command::new("cp")
-        .arg("-R")
-        .arg(data_a.join("vaults"))
-        .arg(data_b.join("vaults"))
-        .status()
-        .unwrap();
-    assert!(copied.success());
+    fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
+        std::fs::create_dir_all(target).unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let destination = target.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &destination);
+            } else {
+                std::fs::copy(entry.path(), destination).unwrap();
+            }
+        }
+    }
+    copy_tree(&data_a.join("vaults"), &data_b.join("vaults"));
     let b = Vault::open_placed(
         &root,
         OpenOptions {
@@ -499,12 +505,16 @@ fn configured_path_is_protected_and_symlinks_are_refused() {
             .code(),
         "protected-path"
     );
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
+        #[cfg(unix)]
+        use std::os::unix::fs::symlink;
+        #[cfg(windows)]
+        use std::os::windows::fs::symlink_file as symlink;
         std::fs::remove_file(vault.root().join("custom/rules.md")).unwrap();
         let other = f._temp.path().join("outside.md");
         std::fs::write(&other, "outside").unwrap();
-        std::os::unix::fs::symlink(&other, vault.root().join("custom/rules.md")).unwrap();
+        symlink(&other, vault.root().join("custom/rules.md")).unwrap();
         assert_eq!(
             export_rules(&vault, &[Host::Codex]).unwrap_err().code(),
             "protected-path"

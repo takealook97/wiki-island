@@ -78,13 +78,18 @@ Private by default; English docs, code, comments and commits; Markdown and attac
 
 ## Portability boundary
 
-Non-Unix `wi-store::Vault::init[_with]` and `open[_with]` fail with `unsupported-platform` before filesystem writes, and non-Unix history barriers return an unsupported error, so descriptor-relative containment and durability guarantees are never weakened. This is compile portability, not Windows runtime support. See [CONTRIBUTING](../CONTRIBUTING.md#linux-container).
+Unix and Windows (x86_64, NTFS) are supported. Other targets fail with `unsupported-platform` before any filesystem write, so containment and durability guarantees are never weakened.
+
+### Windows
+
+Windows has no `openat`, so `wi-store` has a second containment backend on top of `wi_sys::fs::Dir`, a directory handle that opens, creates, renames and deletes one component at a time relative to itself, refusing reparse points. The write path, recovery and ingress use the same API on both platforms. Windows adds name rules (reserved device names, `:`, trailing dot or space, 8.3 aliases), `\` input handling, a placement that re-hashes then replaces instead of exchanging, file barriers by `FlushFileBuffers` and no directory barrier, child processes in kill-on-close Job Objects, per-user data in `%LOCALAPPDATA%` and the Notion token in Credential Manager. There is no background service. The mechanisms and every behavior weaker than on Unix are in [OPERATIONS](OPERATIONS.md#windows).
 
 ## Crate map
 
-Eleven crates. A crate depends only on crates listed before it:
+Twelve crates. A crate depends only on crates listed before it:
 
-1. `wi-note` (note model, pure) and `wi-history` (git history, manifest, flush, replay, durability barriers) depend on no workspace crate.
+0. `wi-sys` (Windows system calls: handle-relative file operations, job objects, Credential Manager, console echo) depends on no workspace crate and is empty on other platforms. It is the only crate with `unsafe` code; every other crate forbids it. Crates use it only on Windows.
+1. `wi-note` (note model, pure) and `wi-history` (git history, manifest, flush, replay, durability barriers) depend on no workspace crate other than `wi-sys` on Windows.
 2. `wi-lifecycle` (gates, eligibility, caps; pure) depends on `wi-note`.
 3. `wi-index` (SQLite index, literal fallback) depends on `wi-note` and `wi-lifecycle`.
 4. `wi-store` (write path, watcher, recovery, maintenance, lifecycle wiring) depends on `wi-note`, `wi-history`, `wi-index` and `wi-lifecycle`.

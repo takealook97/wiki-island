@@ -8,7 +8,11 @@ use tempfile::TempDir;
 
 fn command(tmp: &TempDir) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_wi"));
-    cmd.env("WI_CACHE_DIR", tmp.path().join("cache"))
+    cmd.env("HOME", tmp.path().join("home"))
+        .env("USERPROFILE", tmp.path().join("home"))
+        .env("APPDATA", tmp.path().join("roaming"))
+        .env("LOCALAPPDATA", tmp.path().join("local"))
+        .env("WI_CACHE_DIR", tmp.path().join("cache"))
         .arg("--vault")
         .arg(tmp.path().join("vault"))
         .arg("--json");
@@ -213,6 +217,7 @@ fn real_local_tesseract_when_configured() {
     );
     assert_eq!(fs::read(tmp.path().join("vault/hello.bmp")).unwrap(), bmp);
 }
+#[cfg(unix)]
 #[test]
 fn import_directory_prunes_unreadable_ignored_directory() {
     use std::os::unix::fs::PermissionsExt;

@@ -54,8 +54,16 @@ pub fn barrier(file: &File, mode: Durability) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Non-Unix durability is unsupported until directory barriers are validated.
-#[cfg(not(unix))]
+/// Make a file's written data and metadata durable: `FlushFileBuffers` on
+/// Windows, where Standard and Full are the same barrier. The handle must
+/// have write access.
+#[cfg(windows)]
+pub fn barrier(file: &File, _mode: Durability) -> std::io::Result<()> {
+    wi_sys::fs::flush_file(file)
+}
+
+/// Other platforms have no validated barrier.
+#[cfg(not(any(unix, windows)))]
 pub fn barrier(_file: &File, _mode: Durability) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -80,8 +88,16 @@ fn full_sync(file: &File) -> std::io::Result<()> {
 
 /// Make the entries of directory `path` (files created, renamed or removed
 /// in it) durable at `mode` strength.
+///
+/// Windows has no directory flush: this records the trace and returns
+/// `Ok(())` without opening anything, so namespace changes are not made
+/// durable the way a Unix directory `fsync` makes them.
 pub fn barrier_dir(path: &Path, mode: Durability) -> Result<()> {
     trace::record(trace::Kind::Dir, path);
+    if cfg!(windows) {
+        let _ = mode;
+        return Ok(());
+    }
     let dir = File::open(path).map_err(|e| HistoryError::io(path, e))?;
     barrier(&dir, mode).map_err(|e| HistoryError::io(path, e))
 }
@@ -93,6 +109,20 @@ pub(crate) fn barrier_at(file: &File, path: &Path, mode: Durability) -> Result<(
 }
 
 /// Open and barrier the file at `path`.
+///
+/// On Windows the file is reopened write-capable without truncation and
+/// flushed; a read-only file (git objects) cannot be opened for writing, so
+/// it is skipped after recording the trace (best effort).
+#[cfg(windows)]
+pub(crate) fn barrier_path(path: &Path, _mode: Durability) -> Result<()> {
+    trace::record(trace::Kind::File, path);
+    wi_sys::fs::flush_path(path)
+        .map(|_flushed| ())
+        .map_err(|e| HistoryError::io(path, e))
+}
+
+/// Open and barrier the file at `path`.
+#[cfg(not(windows))]
 pub(crate) fn barrier_path(path: &Path, mode: Durability) -> Result<()> {
     let file = File::open(path).map_err(|e| HistoryError::io(path, e))?;
     barrier_at(&file, path, mode)

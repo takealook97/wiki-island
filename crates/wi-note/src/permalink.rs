@@ -48,7 +48,7 @@ pub fn generate_permalink(rel_path: &str) -> String {
             | "cs" | "vb" | "pem" | "img" | "rpm" | "war",
         ) => false,
         Some("rst" | "a" | "o" | "pyc") => true,
-        Some(_) => mime_guess::from_path(&path).first().is_some(),
+        Some(ext) => mime_guess::from_ext(ext).first().is_some(),
         None => false,
     };
     let base = if recognized {

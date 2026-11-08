@@ -1,5 +1,6 @@
 //! An ignored directory (`name/` in `.gitignore`) is pruned before it is
 //! read, so an unreadable one never fails a scan or an index walk.
+#![cfg(unix)]
 
 mod common;
 

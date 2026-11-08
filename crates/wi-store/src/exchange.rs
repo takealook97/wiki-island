@@ -16,6 +16,13 @@
 //! That leaves a best-effort window between the re-hash and the rename in
 //! which an editor save can be lost (exFAT, some network file systems).
 //!
+//! Windows has no atomic exchange. A replacement re-hashes the target
+//! through the checked directory handle, refuses a changed target as stale,
+//! and then renames with replace; an editor save between that re-hash and
+//! the rename can be lost (a documented weaker guarantee). A creation
+//! renames without replace and is stale when the target appeared, leaving
+//! the incumbent untouched. Windows never reports [`Placed::Exchanged`].
+//!
 //! Every name is relative to a [`Dir`] opened without following symlinks.
 
 use wi_history::durable::Durability;
@@ -28,6 +35,7 @@ use crate::error::{Result, StoreError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Placed {
     /// Atomic swap; the temp name now holds the displaced bytes.
+    #[cfg_attr(windows, allow(dead_code))]
     Exchanged,
     /// New file created atomically without replacing anything.
     Created,
@@ -53,7 +61,12 @@ fn rename_flags(dir: &Dir, from: &str, to: &str, exchange: bool) -> std::io::Res
     renameat_with(dir.file(), from, dir.file(), to, flags).map_err(std::io::Error::from)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    windows
+)))]
 fn rename_flags(_dir: &Dir, _from: &str, _to: &str, _exchange: bool) -> std::io::Result<()> {
     Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
@@ -68,7 +81,7 @@ fn unsupported(e: &std::io::Error) -> bool {
     ) || e.kind() == std::io::ErrorKind::Unsupported
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::Unsupported
 }
@@ -76,6 +89,7 @@ fn unsupported(e: &std::io::Error) -> bool {
 /// Place temp file `tmp` at `name`, both in `dir`. `expected` is the hash
 /// the precondition saw at `name` (`None`: absent); the fallback rename
 /// re-checks it first.
+#[cfg(not(windows))]
 pub(crate) fn place(dir: &Dir, tmp: &str, name: &str, expected: Option<&str>) -> Result<Placed> {
     let target = dir.path().join(name);
     let io = |e| StoreError::io(&target, e);
@@ -116,6 +130,7 @@ pub(crate) fn place(dir: &Dir, tmp: &str, name: &str, expected: Option<&str>) ->
 /// Rename `from` to `to` in `dir` without replacing an existing `to`.
 /// `Ok(false)` when `to` exists. Where the no-replace flag is refused, the
 /// engine checks for `to` first (best effort, like [`place`]).
+#[cfg(not(windows))]
 pub(crate) fn rename_no_replace(dir: &Dir, from: &str, to: &str) -> Result<bool> {
     match rename_flags(dir, from, to, false) {
         Ok(()) => Ok(true),
@@ -127,6 +142,68 @@ pub(crate) fn rename_no_replace(dir: &Dir, from: &str, to: &str) -> Result<bool>
             dir.rename(from, dir, to)
         }
         Err(e) => Err(StoreError::io(dir.path().join(to), e)),
+    }
+}
+
+/// Place temp file `tmp` at `name`, both in `dir`, on Windows (D10).
+/// `expected` is the hash the precondition saw at `name` (`None`: absent).
+/// A replacement re-hashes the target before every rename attempt and is
+/// stale when it changed or vanished; a creation never replaces, and is
+/// stale when the target appeared. Never returns [`Placed::Exchanged`].
+#[cfg(windows)]
+pub(crate) fn place(dir: &Dir, tmp: &str, name: &str, expected: Option<&str>) -> Result<Placed> {
+    let target = dir.path().join(name);
+    let stale = |current: Option<String>| StoreError::Stale {
+        path: target.display().to_string(),
+        expected: expected.unwrap_or("absent").to_owned(),
+        current,
+    };
+    let Some(expected) = expected else {
+        return match dir.rename_raw(tmp, dir, name, false) {
+            Ok(()) => Ok(Placed::Created),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let current = dir
+                    .read_regular(name)
+                    .ok()
+                    .flatten()
+                    .map(|b| hash_bytes(&b))
+                    .or_else(|| Some("unreadable".to_owned()));
+                Err(stale(current))
+            }
+            Err(e) => Err(crate::contained::map_io(&target, e)),
+        };
+    };
+    // Bind every attempt to the temp file written for this placement.
+    let source = dir
+        .identity(tmp)
+        .map_err(|e| StoreError::io(dir.path().join(tmp), e))?;
+    let mut delay = std::time::Duration::from_millis(20);
+    let mut attempt = 0;
+    loop {
+        let now = dir.read_regular(name)?.map(|b| hash_bytes(&b));
+        if now.as_deref() != Some(expected) {
+            return Err(stale(now));
+        }
+        match dir.sys().rename_if(tmp, dir.sys(), name, true, source) {
+            Ok(()) => return Ok(Placed::Renamed),
+            Err(e) if attempt < 4 && wi_sys::fs::is_sharing_violation(&e) => {
+                attempt += 1;
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            Err(e) => return Err(crate::contained::map_io(&target, e)),
+        }
+    }
+}
+
+/// Rename `from` to `to` in `dir` without replacing an existing `to`
+/// (Windows: one no-replace handle rename). `Ok(false)` when `to` exists.
+#[cfg(windows)]
+pub(crate) fn rename_no_replace(dir: &Dir, from: &str, to: &str) -> Result<bool> {
+    match dir.rename_raw(from, dir, to, false) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(crate::contained::map_io(&dir.path().join(to), e)),
     }
 }
 

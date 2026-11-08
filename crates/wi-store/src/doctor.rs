@@ -405,7 +405,10 @@ fn scratch_files(root: &std::path::Path, mark: &str) -> Vec<(String, Option<i32>
                 && let Ok(rel) = entry.path().strip_prefix(root)
             {
                 let pid = rest.split('-').next().and_then(|p| p.parse().ok());
-                out.push((rel.display().to_string(), pid));
+                out.push((
+                    crate::paths::rel_string(rel).unwrap_or_else(|| rel.display().to_string()),
+                    pid,
+                ));
             } else if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 stack.push(entry.path());
             }
@@ -427,8 +430,18 @@ pub(crate) fn process_gone(pid: Option<i32>) -> bool {
     )
 }
 
+/// Whether the process that created a temp file is gone (D13): only a
+/// definite `Gone`; an unknown state counts as alive.
+#[cfg(windows)]
+pub(crate) fn process_gone(pid: Option<i32>) -> bool {
+    let Some(pid) = pid.and_then(|p| u32::try_from(p).ok()).filter(|p| *p != 0) else {
+        return false;
+    };
+    wi_sys::process::liveness(pid) == wi_sys::process::Liveness::Gone
+}
+
 /// Without a process-liveness probe, never delete another writer's temp file.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn process_gone(_pid: Option<i32>) -> bool {
     false
 }
@@ -468,7 +481,9 @@ fn large_attachments(root: &std::path::Path) -> Vec<String> {
                 && entry.metadata().is_ok_and(|m| m.len() > 20 * 1024 * 1024)
                 && let Ok(rel) = entry.path().strip_prefix(root)
             {
-                out.push(rel.display().to_string());
+                out.push(
+                    crate::paths::rel_string(rel).unwrap_or_else(|| rel.display().to_string()),
+                );
             }
         }
     }

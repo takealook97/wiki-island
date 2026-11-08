@@ -7,9 +7,7 @@ use std::rc::Rc;
 
 use common::{Fixture, assert_deletion_committed, manifest_text, write};
 use serde_json::json;
-use wi_store::{
-    EditRequest, Hooks, IndexState, Ingress, MoveRequest, StoreError, Vault, WriteRequest,
-};
+use wi_store::{EditRequest, Hooks, IndexState, Ingress, StoreError, Vault, WriteRequest};
 
 fn request(
     path: &str,
@@ -89,6 +87,7 @@ fn filesystem_equivalent_protected_names_are_refused_before_any_change() {
     assert!(fx.open().doctor().unwrap().healthy());
 }
 
+#[cfg(unix)]
 #[test]
 fn absolute_path_through_an_in_vault_symlink_is_refused() {
     let (_fx, vault) = Fixture::new();
@@ -338,6 +337,8 @@ fn lifecycle_revert_is_refused_and_missing_revert_uses_creation_checks() {
     );
 }
 
+// Needs atomic exchange; Windows placement is stale instead (tests/windows.rs).
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 #[test]
 fn replay_returns_the_first_result_after_retirement() {
     let (fx, mut vault) = Fixture::new();
@@ -364,7 +365,7 @@ fn replay_returns_the_first_result_after_retirement() {
     );
     vault.set_hooks(Hooks::default());
     let moved = vault
-        .move_note(MoveRequest {
+        .move_note(wi_store::MoveRequest {
             from: "a.md".into(),
             to: "b.md".into(),
             expected_checksum: None,
@@ -408,7 +409,7 @@ fn replay_returns_the_first_result_after_retirement() {
         .unwrap();
     same(&conflict, &replay);
     let replay = vault
-        .move_note(MoveRequest {
+        .move_note(wi_store::MoveRequest {
             from: "a.md".into(),
             to: "b.md".into(),
             expected_checksum: None,

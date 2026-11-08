@@ -30,6 +30,9 @@ impl Fixture {
         Command::new(binary)
             .args(args)
             .env("HOME", self.path("home"))
+            .env("USERPROFILE", self.path("home"))
+            .env("APPDATA", self.path("home"))
+            .env("LOCALAPPDATA", self.path("home"))
             .env("CODEX_HOME", self.path("home/.codex"))
             .env("WI_VAULT", self.path("vault"))
             .env("WI_CACHE_DIR", self.path("cache"))
@@ -46,12 +49,28 @@ impl Fixture {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, bytes).unwrap();
     }
+    fn assert_setup_without_service(&self, out: &Output) {
+        assert!(out.status.success(), "{out:?}");
+        assert!(self.path("vault/.git").is_dir());
+        assert!(
+            fs::read_to_string(self.path("home/.claude.json"))
+                .unwrap()
+                .contains("wiki-island")
+        );
+        assert!(!self.path("home/calls").exists());
+        assert!(!self.path("home/loaded").exists());
+    }
 }
 #[test]
 fn setup_preflights_development_binary_without_changing_home_or_vault() {
     let f = Fixture::new();
     f.seed("home/.claude.json", "{\"theme\":1}\n");
     let out = f.run_binary(Path::new(env!("CARGO_BIN_EXE_wi")), &["setup"]);
+    if !cfg!(target_os = "macos") {
+        f.assert_setup_without_service(&out);
+        assert!(!f.path("home/Library/LaunchAgents").exists());
+        return;
+    }
     assert!(!out.status.success(), "{out:?}");
     assert_eq!(
         fs::read_to_string(f.path("home/.claude.json")).unwrap(),
@@ -94,11 +113,15 @@ fn setup_twice_and_uninstall_restore_exact_host_bytes_and_created_containers() {
     fs::create_dir_all(f.path("home/Library/Application Support/Code/User")).unwrap();
     let setup = f.run(&["setup", "--json"]);
     assert!(setup.status.success(), "{setup:?}");
-    assert!(
-        fs::read_to_string(f.path("home/calls"))
-            .unwrap()
-            .contains("bootstrap")
-    );
+    if cfg!(target_os = "macos") {
+        assert!(
+            fs::read_to_string(f.path("home/calls"))
+                .unwrap()
+                .contains("bootstrap")
+        );
+    } else {
+        assert!(!f.path("home/calls").exists());
+    }
     let configured: Vec<_> = seeds
         .iter()
         .map(|(p, _)| fs::read(f.path(p)).unwrap())
@@ -108,13 +131,17 @@ fn setup_twice_and_uninstall_restore_exact_host_bytes_and_created_containers() {
     for ((path, _), bytes) in seeds.iter().zip(configured) {
         assert_eq!(fs::read(f.path(path)).unwrap(), bytes);
     }
-    assert_eq!(
-        fs::read_to_string(f.path("home/calls"))
-            .unwrap()
-            .matches("bootstrap")
-            .count(),
-        1
-    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            fs::read_to_string(f.path("home/calls"))
+                .unwrap()
+                .matches("bootstrap")
+                .count(),
+            1
+        );
+    } else {
+        assert!(!f.path("home/calls").exists());
+    }
     let out = f.run(&["uninstall"]);
     assert!(out.status.success(), "{out:?}");
     for (path, bytes) in seeds {
@@ -259,10 +286,12 @@ fn uninstall_keeps_preexisting_service_and_skill_containers() {
     );
     let out = f.run(&["uninstall"]);
     assert!(out.status.success(), "{out:?}");
-    assert!(
-        !f.path(&format!("home/Library/Logs/wiki-island/{id}.log"))
-            .exists()
-    );
+    let log = f.path(&format!("home/Library/Logs/wiki-island/{id}.log"));
+    if cfg!(target_os = "macos") {
+        assert!(!log.exists());
+    } else {
+        assert_eq!(fs::read_to_string(log).unwrap(), "owned log\n");
+    }
     for path in [
         "home/Library/LaunchAgents",
         "home/Library/Logs/wiki-island",
@@ -303,6 +332,12 @@ fn failed_background_start_does_not_leave_host_connections_or_service_files() {
         "#!/bin/sh\ncase $1 in bootstrap) exit 1;; print) exit 3;; *) exit 0;; esac\n",
     );
     let out = f.run(&["setup"]);
+    if !cfg!(target_os = "macos") {
+        f.assert_setup_without_service(&out);
+        assert!(!f.path("home/Library/LaunchAgents").exists());
+        assert!(!f.path("home/Library/Logs").exists());
+        return;
+    }
     assert!(!out.status.success(), "{out:?}");
     assert_eq!(
         fs::read_to_string(f.path("home/.claude.json")).unwrap(),
@@ -338,6 +373,22 @@ fn setup_preflights_the_existing_service_destination() {
     )
     .unwrap();
     let out = f.run(&["setup"]);
+    if !cfg!(target_os = "macos") {
+        f.assert_setup_without_service(&out);
+        assert_eq!(
+            fs::read_to_string(f.path("foreign.plist")).unwrap(),
+            "keep\n"
+        );
+        assert!(
+            fs::symlink_metadata(f.path(&format!(
+                "home/Library/LaunchAgents/com.wiki-island.watch.{id}.plist"
+            )))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+        );
+        return;
+    }
     assert!(!out.status.success(), "{out:?}");
     assert_eq!(
         fs::read_to_string(f.path("home/.claude.json")).unwrap(),
@@ -422,23 +473,31 @@ fn setup_records_destinations_and_later_home_changes_cannot_redirect_exports_or_
             .iter()
             .all(|entry| Path::new(entry[1].as_str().unwrap()).is_absolute())
     );
-    let plist = fs::read_dir(f.path("home/Library/LaunchAgents"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let plist = fs::read_to_string(plist).unwrap();
-    assert!(plist.contains(&format!(
-        "<key>HOME</key>\n\t\t<string>{}</string>",
-        f.path("home").display()
-    )));
+    if cfg!(target_os = "macos") {
+        let plist = fs::read_dir(f.path("home/Library/LaunchAgents"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let plist = fs::read_to_string(plist).unwrap();
+        assert!(plist.contains(&format!(
+            "<key>HOME</key>\n\t\t<string>{}</string>",
+            f.path("home").display()
+        )));
+    } else {
+        assert!(!f.path("home/Library/LaunchAgents").exists());
+        assert!(!f.path("home/calls").exists());
+    }
     f.seed("other/.claude.json", "{\"owner\":true}\n");
     fs::create_dir_all(f.path("other-cache")).unwrap();
     let invoke = |args: &[&str]| {
         Command::new(f.path("bin/wi"))
             .args(args)
             .env("HOME", f.path("other"))
+            .env("USERPROFILE", f.path("other"))
+            .env("APPDATA", f.path("other"))
+            .env("LOCALAPPDATA", f.path("other"))
             .env("CODEX_HOME", f.path("other/.codex"))
             .env("WI_VAULT", f.path("vault"))
             .env("WI_CACHE_DIR", f.path("other-cache"))
@@ -485,14 +544,21 @@ fn watcher_continues_when_previous_log_is_a_directory() {
         &fs::read_to_string(f.path("vault/.wiki-island/config.toml")).unwrap(),
     )
     .unwrap();
-    let log = wi_export::service::plan(
-        &f.path("home"),
-        &f.path("bin/wi"),
-        &f.path("vault"),
-        config.vault_id().unwrap(),
-    )
-    .unwrap()
-    .log_path;
+    let log = if cfg!(target_os = "macos") {
+        wi_export::service::plan(
+            &f.path("home"),
+            &f.path("bin/wi"),
+            &f.path("vault"),
+            config.vault_id().unwrap(),
+        )
+        .unwrap()
+        .log_path
+    } else {
+        f.path(&format!(
+            "home/Library/Logs/wiki-island/{}.log",
+            config.vault_id().unwrap()
+        ))
+    };
     fs::create_dir_all(log.parent().unwrap()).unwrap();
     fs::write(&log, vec![b'x'; 1_100_000]).unwrap();
     fs::create_dir(log.with_extension("log.old")).unwrap();
@@ -501,7 +567,10 @@ fn watcher_continues_when_previous_log_is_a_directory() {
     let errors = String::from_utf8(watched.stderr).unwrap();
     assert_eq!(
         errors.matches("log could not be trimmed").count(),
-        1,
+        usize::from(cfg!(target_os = "macos")),
         "{errors}"
     );
+    if !cfg!(target_os = "macos") {
+        assert_eq!(fs::metadata(log).unwrap().len(), 1_100_000);
+    }
 }

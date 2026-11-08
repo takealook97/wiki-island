@@ -5,14 +5,37 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{Fixture, git};
-use wi_store::{FLUSH_RETRY, WatchEvent};
+use wi_store::{FLUSH_RETRY, OpenOptions, Vault, WatchEvent};
 
 #[test]
 fn a_failed_watcher_flush_is_retried_without_new_events() {
-    let (_fx, vault) = Fixture::new();
-    // SAFETY: the only test in this binary; set before the watcher thread
-    // starts, read by `Vault::flush`.
-    unsafe { std::env::set_var("WI_FAULT", "flush_once") };
+    let Some(root) = std::env::var_os("WI_WATCH_RETRY_ROOT") else {
+        let (fixture, vault) = Fixture::new();
+        drop(vault);
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "a_failed_watcher_flush_is_retried_without_new_events",
+                "--nocapture",
+            ])
+            .env("WI_WATCH_RETRY_ROOT", fixture.root_input())
+            .env(
+                "WI_WATCH_RETRY_INDEX",
+                fixture.options().index_path.unwrap(),
+            )
+            .env("WI_FAULT", "flush_once")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    };
+    let vault = Vault::open_with(
+        root,
+        OpenOptions {
+            index_path: Some(std::env::var_os("WI_WATCH_RETRY_INDEX").unwrap().into()),
+        },
+    )
+    .unwrap();
     let handle = vault.watch().unwrap();
     std::fs::write(vault.root().join("retry.md"), "retry me\n").unwrap();
     let deadline = Instant::now() + FLUSH_RETRY + Duration::from_secs(10);

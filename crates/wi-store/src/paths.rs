@@ -177,6 +177,7 @@ fn protected(rel: &str, reason: &'static str) -> StoreError {
 
 /// Turn user input (vault-relative, or absolute inside the vault) into a
 /// normalized relative path. Pure; no protection checks.
+#[cfg(not(windows))]
 pub(crate) fn normalize(root: &Path, input: &str) -> Result<String> {
     if input.is_empty() || input.chars().any(|c| c.is_control()) || input.contains('\\') {
         return Err(StoreError::Invalid(format!(
@@ -210,11 +211,222 @@ pub(crate) fn normalize(root: &Path, input: &str) -> Result<String> {
     Ok(parts.join("/"))
 }
 
+/// Turn user input (vault-relative, or absolute inside the vault) into a
+/// normalized relative path on Windows (D8). Drive (`C:\`), verbatim
+/// (`\\?\C:\`) and UNC prefixes are parsed first and the vault root is
+/// stripped component by component, case-insensitively; drive-relative
+/// (`C:foo`), root-relative (`\foo`) and device (`\\.\`) inputs are
+/// refused. `\` and `/` both separate components, every component must be
+/// a name Windows can store (D7), and the result always uses `/`.
+#[cfg(windows)]
+pub(crate) fn normalize(root: &Path, input: &str) -> Result<String> {
+    let rel = normalize_syntax(root, input)?;
+    for part in rel.split('/') {
+        check_windows_name(part).map_err(|reason| {
+            StoreError::Invalid(format!("{input:?} is not a vault path ({reason})"))
+        })?;
+    }
+    Ok(rel)
+}
+
+/// [`normalize`] without the Windows name rules (D7): only prefixes,
+/// separators and traversal.
+#[cfg(windows)]
+fn normalize_syntax(root: &Path, input: &str) -> Result<String> {
+    use std::path::Prefix;
+    if input.is_empty() || input.chars().any(|c| c.is_control()) {
+        return Err(StoreError::Invalid(format!(
+            "{input:?} is not a vault path (empty or control character)"
+        )));
+    }
+    let path = Path::new(input);
+    let mut components = path.components().peekable();
+    let relative: Vec<Component> = match components.peek() {
+        Some(Component::Prefix(prefix)) => {
+            match prefix.kind() {
+                Prefix::DeviceNS(_) | Prefix::Verbatim(_) => {
+                    return Err(protected(input, "device path"));
+                }
+                Prefix::Disk(_) | Prefix::VerbatimDisk(_) => {
+                    if !path.has_root() {
+                        return Err(protected(input, "drive-relative path"));
+                    }
+                }
+                Prefix::UNC(..) | Prefix::VerbatimUNC(..) => {}
+            }
+            strip_root_windows(root, path).ok_or_else(|| protected(input, "outside the vault"))?
+        }
+        Some(Component::RootDir) => return Err(protected(input, "root-relative path")),
+        _ => components.collect(),
+    };
+    let mut parts = Vec::new();
+    for component in relative {
+        match component {
+            Component::Normal(part) => {
+                let part = part
+                    .to_str()
+                    .ok_or_else(|| StoreError::Invalid(format!("{input:?} is not UTF-8")))?;
+                // A verbatim prefix turns off `/` parsing for the rest.
+                for piece in part.split('/') {
+                    match piece {
+                        "" | "." => {}
+                        ".." => return Err(protected(input, "outside the vault")),
+                        piece => parts.push(piece.to_owned()),
+                    }
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir => return Err(protected(input, "outside the vault")),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(protected(input, "outside the vault"));
+            }
+        }
+    }
+    if parts.is_empty() {
+        return Err(StoreError::Invalid("the vault root is not a note".into()));
+    }
+    Ok(parts.join("/"))
+}
+
+/// One component of a path prefix, folded for comparison: a drive letter
+/// or UNC server/share in upper case, verbatim or not.
+#[cfg(windows)]
+fn prefix_key(component: &Component) -> Option<String> {
+    use std::path::Prefix;
+    match component {
+        Component::Prefix(prefix) => Some(match prefix.kind() {
+            Prefix::Disk(d) | Prefix::VerbatimDisk(d) => {
+                format!("{}:", char::from(d).to_ascii_uppercase())
+            }
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => format!(
+                "\\\\{}\\{}",
+                server.to_string_lossy().to_uppercase(),
+                share.to_string_lossy().to_uppercase()
+            ),
+            _ => return None,
+        }),
+        Component::RootDir => Some("\\".to_owned()),
+        Component::Normal(part) => Some(part.to_string_lossy().to_lowercase()),
+        Component::CurDir | Component::ParentDir => None,
+    }
+}
+
+/// Windows [`strip_root`]: the vault root is stripped component by
+/// component, case-insensitively (a verbatim and a plain drive prefix
+/// match); otherwise the shallowest prefix of `path` whose canonical form
+/// is the root is stripped. A lookalike (`C:\vault2` for `C:\vault`)
+/// never matches because whole components are compared.
+#[cfg(windows)]
+fn strip_root_windows<'a>(root: &Path, path: &'a Path) -> Option<Vec<Component<'a>>> {
+    let components: Vec<Component<'a>> = path.components().collect();
+    let root_keys: Option<Vec<String>> = root.components().map(|c| prefix_key(&c)).collect();
+    if let Some(root_keys) = root_keys
+        && components.len() >= root_keys.len()
+        && components
+            .iter()
+            .zip(&root_keys)
+            .all(|(c, key)| prefix_key(c).as_ref() == Some(key))
+    {
+        return Some(components[root_keys.len()..].to_vec());
+    }
+    let mut prefix = PathBuf::new();
+    for (i, component) in components.iter().enumerate() {
+        prefix.push(component.as_os_str());
+        if matches!(component, Component::ParentDir | Component::Prefix(_)) {
+            continue;
+        }
+        if canonical(&prefix).is_some_and(|c| c == root) {
+            return Some(components[i + 1..].to_vec());
+        }
+    }
+    None
+}
+
+/// `std::fs::canonicalize`, on Windows without the verbatim prefix the
+/// vault root is stored without (`\\?\C:\x` → `C:\x`,
+/// `\\?\UNC\s\x` → `\\s\x`).
+#[cfg(not(windows))]
+pub(crate) fn canonical(path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(path).ok()
+}
+
+/// `std::fs::canonicalize`, on Windows without the verbatim prefix the
+/// vault root is stored without (`\\?\C:\x` → `C:\x`,
+/// `\\?\UNC\s\x` → `\\s\x`).
+#[cfg(windows)]
+pub(crate) fn canonical(path: &Path) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    let text = canonical.to_str()?;
+    Some(if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
+        PathBuf::from(format!("\\\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix("\\\\?\\") {
+        PathBuf::from(rest)
+    } else {
+        canonical
+    })
+}
+
+/// Why `name` cannot be a component of a vault path on Windows (D7): a
+/// character Windows reserves, a reserved device name (with any
+/// extension), or a trailing dot or space.
+pub(crate) fn check_windows_name(name: &str) -> std::result::Result<(), &'static str> {
+    if name
+        .chars()
+        .any(|c| c.is_control() || matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*' | '\\'))
+    {
+        return Err("a character Windows does not allow in names");
+    }
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Err("a trailing dot or space");
+    }
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ');
+    let upper = stem.to_uppercase();
+    let reserved = matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|device| {
+        upper.strip_prefix(device).is_some_and(|n| {
+            let mut chars = n.chars();
+            matches!(
+                (chars.next(), chars.next()),
+                (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+            )
+        })
+    });
+    if reserved {
+        return Err("a reserved device name");
+    }
+    Ok(())
+}
+
+/// A path relative to the vault root as a vault path string (`/`
+/// separators on every platform); `None` when it is not UTF-8.
+pub(crate) fn rel_string(rel: &Path) -> Option<String> {
+    let text = rel.to_str()?;
+    Some(if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.to_owned()
+    })
+}
+
+/// Whether this device can store the vault path `rel` by name: always on
+/// Unix; on Windows no component may contain `\\` or break the D7 name
+/// rules. Such paths stay in history and are skipped here.
+pub(crate) fn host_can_name(rel: &str) -> bool {
+    !cfg!(windows) || rel.split('/').all(|part| check_windows_name(part).is_ok())
+}
+
 /// The part of an absolute `path` below the canonical `root`. Only a prefix
 /// of `path` is canonicalized (the shallowest one that resolves to the
 /// root, so `/var` → `/private/var` style system aliases work); the
 /// components after it are returned as given, so an in-vault symlink stays
 /// visible to the symlink check instead of being resolved away.
+#[cfg(not(windows))]
 fn strip_root(root: &Path, path: &Path) -> Option<PathBuf> {
     if let Ok(rest) = path.strip_prefix(root) {
         return Some(rest.to_path_buf());
@@ -364,13 +576,28 @@ pub(crate) fn is_generated_export(config: &VaultConfig, rel: &str) -> bool {
         .any(|export| has_prefix(&parts, &folded_parts(export)))
 }
 
+/// Whether `meta` (not followed) is a symlink; on Windows any reparse
+/// point (junction, symlink, mount point, cloud placeholder) counts.
+fn is_link(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        /// `FILE_ATTRIBUTE_REPARSE_POINT`.
+        const REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
+}
+
 /// Refuse a path any existing component of which is a symlink.
 pub(crate) fn check_no_symlink(root: &Path, rel: &str) -> Result<()> {
     let mut current = root.to_path_buf();
     for part in rel.split('/') {
         current.push(part);
         match std::fs::symlink_metadata(&current) {
-            Ok(meta) if meta.file_type().is_symlink() => {
+            Ok(meta) if is_link(&meta) => {
                 return Err(protected(rel, "symlink"));
             }
             Ok(_) => {}
@@ -407,7 +634,10 @@ mod tests {
         assert!(normalize(root, "../x.md").is_err());
         assert!(normalize(root, "a/../../x.md").is_err());
         assert_eq!(normalize(root, "./a//b.md").unwrap(), "a/b.md");
+        #[cfg(not(windows))]
         assert!(normalize(root, "a\\b.md").is_err());
+        #[cfg(windows)]
+        assert_eq!(normalize(root, "a\\b.md").unwrap(), "a/b.md");
     }
 
     #[test]
@@ -470,5 +700,89 @@ mod tests {
             assert!(!is_default_export(rel), "{rel}");
         }
         assert!(!is_generated_export(&plain, "notes/AGENTS.md"));
+    }
+
+    #[test]
+    fn windows_name_rules_refuse_reserved_names_characters_and_trailers() {
+        for bad in [
+            "CON",
+            "con.md",
+            "Con .md",
+            "PRN.txt",
+            "aux",
+            "NUL.tar.gz",
+            "COM0",
+            "com1.md",
+            "COM9",
+            "LPT1",
+            "lpt9.txt",
+            "COM\u{b9}",
+            "lpt\u{b2}.md",
+            "COM\u{b3}.x",
+            "CONIN$",
+            "a:b",
+            "a<b",
+            "a>b",
+            "a\"b",
+            "a|b",
+            "a?b",
+            "a*b",
+            "a\\b",
+            "a\u{1}b",
+            "x.",
+            "x ",
+            "x.md.",
+        ] {
+            assert!(check_windows_name(bad).is_err(), "{bad:?}");
+        }
+        for good in [
+            "console.md",
+            "COM10",
+            "LPT",
+            "nul-x.md",
+            "auxiliary",
+            "a.b",
+            ".hidden",
+            "caf\u{e9}",
+            "COM\u{b9}0",
+        ] {
+            assert!(check_windows_name(good).is_ok(), "{good:?}");
+        }
+        assert!(host_can_name("a/b.md"));
+        assert_eq!(host_can_name("a/CON.md"), !cfg!(windows));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_input_forms_normalize_against_the_vault_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canonical(dir.path()).unwrap();
+        let text = root.to_str().unwrap().to_owned();
+        assert!(!text.starts_with("\\\\?\\"), "{text}");
+        let ok = |input: &str, want: &str| {
+            assert_eq!(normalize(&root, input).unwrap(), want, "{input}");
+        };
+        ok("a\\b.md", "a/b.md");
+        ok("a/b\\c.md", "a/b/c.md");
+        ok(&format!("{text}\\a\\b.md"), "a/b.md");
+        ok(&format!("{text}/a/b.md"), "a/b.md");
+        ok(&format!("\\\\?\\{text}\\a.md"), "a.md");
+        ok(&format!("{}\\a.md", text.to_uppercase()), "a.md");
+        ok(&format!("{}\\a.md", text.to_lowercase()), "a.md");
+        let refused = |input: &str| {
+            assert!(normalize(&root, input).is_err(), "{input}");
+        };
+        refused("C:a.md");
+        refused("\\a.md");
+        refused("/a.md");
+        refused("\\\\.\\C:\\a.md");
+        refused("\\\\?\\GLOBALROOT\\Device\\x");
+        refused("\\\\server\\share\\a.md");
+        refused(&format!("{text}2\\a.md"));
+        refused(&format!("{text}\\..\\a.md"));
+        refused("a\\CON.md");
+        refused("a\\b.md.");
+        refused("a:b.md");
+        refused(&text);
     }
 }

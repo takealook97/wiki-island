@@ -66,7 +66,7 @@ fn ensure_supported() -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::Unsupported(
-            "wi service requires macOS launchd".into(),
+            "wi service requires macOS launchd; run wi watch to keep this vault up to date".into(),
         ))
     }
 }
@@ -259,7 +259,7 @@ fn user_id(home: &Path) -> Result<u32, Error> {
 #[cfg(not(unix))]
 fn user_id(_home: &Path) -> Result<u32, Error> {
     Err(Error::Unsupported(
-        "wi service requires macOS launchd".into(),
+        "wi service requires macOS launchd; run wi watch to keep this vault up to date".into(),
     ))
 }
 

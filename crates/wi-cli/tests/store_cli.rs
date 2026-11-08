@@ -87,6 +87,7 @@ impl Env {
 
 fn git(root: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .arg("-C")
         .arg(root)
         .args(args)
@@ -238,6 +239,7 @@ fn third_version_after_a_crash_keeps_both_as_a_conflict_with_a_work_item() {
     let detail = work[0]["detail"].as_str().unwrap();
     let blob = detail.rsplit(' ').next().unwrap();
     let out = Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .arg("-C")
         .arg(&env.root)
         .args(["cat-file", "-p", blob])
@@ -405,6 +407,7 @@ fn cli_reindex_after_index_deletion_returns_the_same_results() {
     assert_eq!(paths(&before), paths(&after));
 }
 
+#[cfg(unix)]
 #[test]
 fn recovery_never_touches_files_behind_a_changed_directory() {
     let env = Env::new();

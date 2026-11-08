@@ -21,6 +21,7 @@ fn folder_vault(id: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path::
 
 fn git_external(git_dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .arg("--git-dir")
         .arg(git_dir)
         .args(args)
@@ -34,6 +35,32 @@ fn git_external(git_dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
+fn git_worktree_path(text: &str) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        Path::new(text.trim()).canonicalize().unwrap()
+    }
+    #[cfg(not(windows))]
+    {
+        Path::new(text.trim()).to_path_buf()
+    }
+}
+
+/// The canonical form of `path` without the verbatim prefix, as the vault
+/// stores its paths on Windows.
+#[cfg(windows)]
+fn plain_canonical(path: &Path) -> std::path::PathBuf {
+    let canonical = path.canonicalize().unwrap();
+    let text = canonical.to_str().unwrap();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => std::path::PathBuf::from(rest),
+        None => canonical,
+    }
+}
+
 #[test]
 fn folder_mode_commits_through_core_worktree_without_git_in_the_folder() {
     let (_tmp, root, data) = folder_vault("v-folder");
@@ -41,7 +68,10 @@ fn folder_mode_commits_through_core_worktree_without_git_in_the_folder() {
     assert_eq!(vault.storage_mode(), StorageMode::Folder);
     assert!(!root.join(".git").exists());
     let git_dir = data.join("vaults/v-folder/git");
+    #[cfg(not(windows))]
     assert_eq!(vault.git_dir(), git_dir.canonicalize().unwrap());
+    #[cfg(windows)]
+    assert_eq!(vault.git_dir(), plain_canonical(&git_dir));
     assert!(vault.wi_dir().starts_with(vault.git_dir()));
 
     save(&vault, "notes/a.md", b"a1\n", "cli", Some("op-1"));
@@ -50,7 +80,7 @@ fn folder_mode_commits_through_core_worktree_without_git_in_the_folder() {
     assert_eq!(git_external(&git_dir, &["show", "HEAD:notes/a.md"]), "a1\n");
     // The system git agrees the working tree is the notes folder.
     let top = git_external(&git_dir, &["rev-parse", "--show-toplevel"]);
-    assert_eq!(Path::new(top.trim()), root.canonicalize().unwrap());
+    assert_eq!(git_worktree_path(&top), root.canonicalize().unwrap());
     let status = git_external(&git_dir, &["status", "--porcelain", "--", "notes"]);
     assert!(status.is_empty(), "{status}");
 
@@ -93,7 +123,10 @@ fn moved_folder_vault_is_rebound_and_remembered_for_doctor() {
     save(&vault, "a.md", b"a\n", "cli", None);
     Flusher::flush(&vault).unwrap();
     drop(vault);
+    #[cfg(not(windows))]
     let old = root.canonicalize().unwrap();
+    #[cfg(windows)]
+    let old = plain_canonical(&root);
     let moved = tmp.path().join("moved");
     std::fs::rename(&root, &moved).unwrap();
     let vault = Vault::open_in(&moved, Some(&data)).unwrap();
@@ -104,7 +137,7 @@ fn moved_folder_vault_is_rebound_and_remembered_for_doctor() {
         &data.join("vaults/v-move/git"),
         &["rev-parse", "--show-toplevel"],
     );
-    assert_eq!(Path::new(top.trim()), moved.canonicalize().unwrap());
+    assert_eq!(git_worktree_path(&top), moved.canonicalize().unwrap());
     drop(vault);
     // The notice stays visible to later opens.
     let vault = Vault::open_in(&moved, Some(&data)).unwrap();

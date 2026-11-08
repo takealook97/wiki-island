@@ -99,6 +99,9 @@ fn child(mode: &str, budget: &str) {
         .env("WI_IMPORT_BUDGET_MS", budget)
         .env("PATH", dir.path())
         .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path())
+        .env("APPDATA", dir.path())
+        .env("LOCALAPPDATA", dir.path())
         .env("WI_VAULT", dir.path().join("vault"))
         .output()
         .unwrap();
@@ -244,6 +247,9 @@ fn failed_retry_preserves_the_prior_raw_revision_and_can_retry_again() {
             .env("WI_DOCS_RETRY_STEP", step)
             .env("WI_VAULT", &root)
             .env("HOME", dir.path())
+            .env("USERPROFILE", dir.path())
+            .env("APPDATA", dir.path())
+            .env("LOCALAPPDATA", dir.path())
             .env("PATH", dir.path())
             .env_remove("WI_IMPORT_BUDGET_MS")
             .env_remove("WI_TOOL_TIMEOUT_MS");
@@ -305,6 +311,7 @@ fn isolated_tool_cache_child() {
     };
     let head = || {
         let output = Command::new("git")
+            .args(["-c", "core.autocrlf=false"])
             .env("PATH", std::env::var_os("WI_DOCS_TEST_PATH").unwrap())
             .arg("-C")
             .arg(vault.root())
@@ -344,6 +351,7 @@ fn isolated_tool_cache_child() {
             "abnormal" => "#!/bin/sh\nexit 7\n",
             "empty" => "#!/bin/sh\nexit 0\n",
             "permission" => "#!/bin/sh\nexit 0\n",
+            "timeout" => "#!/bin/sh\nexec /bin/sleep 60\n",
             _ => "#!/bin/sh\nexec /bin/sleep 5\n",
         };
         std::fs::write(&tool, script).unwrap();
@@ -378,14 +386,8 @@ fn isolated_tool_cache_child() {
             return;
         }
     }
-    // The short timeout only proves a hanging tool is cut off. A working
-    // tool gets the same generous limit as the other cases, so a loaded
-    // machine cannot turn the recovery below into a timeout.
-    if std::env::var("WI_DOCS_DISCOVERY_CASE").as_deref() == Ok("timeout") {
-        // SAFETY: this child process runs one test (`--exact`) on one
-        // thread, and no import is running while the variable changes.
-        unsafe { std::env::set_var("WI_TOOL_TIMEOUT_MS", "10000") };
-    }
+    // Hanging and working tools use the same fixed deadline, so recovery
+    // needs no mutation of the running process's environment.
     install("1");
     let available = import(&vault, "image.png", options).unwrap();
     assert!(!available.unchanged);
@@ -413,6 +415,9 @@ fn missing_tool_is_cached_until_installed_or_upgraded() {
         .env("WI_DOCS_TEST_PATH", std::env::var_os("PATH").unwrap())
         .env("PATH", dir.path().join("bin"))
         .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path())
+        .env("APPDATA", dir.path())
+        .env("LOCALAPPDATA", dir.path())
         .env_remove("WI_IMPORT_BUDGET_MS")
         .env_remove("WI_TOOL_TIMEOUT_MS")
         .output()
@@ -435,12 +440,12 @@ fn unknown_tool_discovery_retries_until_resolved() {
             .env("WI_DOCS_TOOL_CACHE_ROOT", dir.path())
             .env("WI_DOCS_TEST_PATH", std::env::var_os("PATH").unwrap())
             .env("WI_DOCS_DISCOVERY_CASE", case)
-            .env(
-                "WI_TOOL_TIMEOUT_MS",
-                if case == "timeout" { "300" } else { "10000" },
-            )
+            .env("WI_TOOL_TIMEOUT_MS", "10000")
             .env("PATH", dir.path().join("bin"))
             .env("HOME", dir.path())
+            .env("USERPROFILE", dir.path())
+            .env("APPDATA", dir.path())
+            .env("LOCALAPPDATA", dir.path())
             .env(
                 "WI_IMPORT_BUDGET_MS",
                 if case == "budget" { "1" } else { "10000" },

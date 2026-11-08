@@ -311,7 +311,19 @@ fn current_note_bound(vault: &Vault) -> Result<usize> {
     Ok(config.max_note_bytes().min(usize::MAX as u64) as usize)
 }
 
+// Normalize native separators only at the caller boundary. Archive member names
+// still pass the portable path validator without normalization.
+fn source_input(path: &str) -> std::borrow::Cow<'_, str> {
+    #[cfg(windows)]
+    if !Path::new(path).is_absolute() {
+        return std::borrow::Cow::Owned(path.replace('\\', "/"));
+    }
+    std::borrow::Cow::Borrowed(path)
+}
+
 fn import_inner(vault: &Vault, rel_path: &str, options: ImportOptions) -> Result<ImportReport> {
+    let input = source_input(rel_path);
+    let rel_path = input.as_ref();
     if Path::new(rel_path)
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("zip"))

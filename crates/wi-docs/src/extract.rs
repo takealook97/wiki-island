@@ -107,7 +107,7 @@ fn run_tool(cmd: &mut Command, timeout: Duration, max_stdout: usize) -> Result<O
         // A wrapper may have forked children that inherited the output handles.
         // Kill the group before reaping its leader, then fall back to direct kill.
         let _ = Command::new("/bin/kill")
-            .args(["-KILL", &format!("-{}", child.id())])
+            .args(["-KILL", "--", &format!("-{}", child.id())])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -118,7 +118,124 @@ fn run_tool(cmd: &mut Command, timeout: Duration, max_stdout: usize) -> Result<O
     result
 }
 
-#[cfg(not(unix))]
+// Job termination closes inherited writers before bounded reader completion.
+#[cfg(windows)]
+fn run_tool(cmd: &mut Command, timeout: Duration, max_stdout: usize) -> Result<Output> {
+    use std::sync::mpsc;
+    fn reader(
+        mut stream: impl Read + Send + 'static,
+        cap: usize,
+    ) -> (mpsc::Receiver<Result<Vec<u8>>>, std::thread::JoinHandle<()>) {
+        let (send, receive) = mpsc::sync_channel(1);
+        let handle = std::thread::spawn(move || {
+            let result = (|| {
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 8192];
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) => return Ok(bytes),
+                        Ok(n) => {
+                            if n > cap.saturating_sub(bytes.len()) {
+                                return Err(Error::Extraction("output-too-large".into()));
+                            }
+                            bytes.extend_from_slice(&buffer[..n]);
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => return Err(Error::Extraction(format!("tool I/O: {e}"))),
+                    }
+                }
+            })();
+            let _ = send.send(result);
+        });
+        (receive, handle)
+    }
+    fn poll(receive: &mpsc::Receiver<Result<Vec<u8>>>, bytes: &mut Option<Vec<u8>>) -> Result<()> {
+        if bytes.is_none() {
+            match receive.try_recv() {
+                Ok(result) => *bytes = Some(result?),
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(Error::Extraction("tool reader stopped".into()));
+                }
+            }
+        }
+        Ok(())
+    }
+    if timeout.is_zero() {
+        return Err(Error::Extraction("tool-timeout".into()));
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let started = Instant::now();
+    let (mut child, job) = wi_sys::process::spawn_in_job(cmd)?;
+    let (stdout, out_thread) = reader(
+        child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Extraction("tool stdout unavailable".into()))?,
+        max_stdout,
+    );
+    let (stderr, err_thread) = reader(
+        child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::Extraction("tool stderr unavailable".into()))?,
+        max_stdout,
+    );
+    let (mut out, mut err) = (None, None);
+    let result = (|| {
+        loop {
+            poll(&stdout, &mut out)?;
+            poll(&stderr, &mut err)?;
+            if started.elapsed() >= timeout {
+                return Err(Error::Extraction("tool-timeout".into()));
+            }
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|e| Error::Extraction(format!("tool I/O: {e}")))?
+            {
+                return Ok(status);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    // Also kill descendants after a successful leader exit: they can hold pipes open.
+    let terminated = job.terminate(1);
+    drop(job);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let finish = |receive: mpsc::Receiver<Result<Vec<u8>>>,
+                  handle: std::thread::JoinHandle<()>,
+                  bytes: Option<Vec<u8>>| {
+        let result = match bytes {
+            Some(bytes) => Ok(bytes),
+            None => receive
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|_| Error::Extraction("tool reader did not stop".into()))?,
+        };
+        while !handle.is_finished() {
+            if Instant::now() >= deadline {
+                return Err(Error::Extraction("tool reader did not stop".into()));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        handle
+            .join()
+            .map_err(|_| Error::Extraction("tool reader stopped".into()))?;
+        result
+    };
+    let out = finish(stdout, out_thread, out);
+    let err = finish(stderr, err_thread, err);
+    let status = result?;
+    terminated.map_err(|e| Error::Extraction(format!("tool termination failed: {e}")))?;
+    Ok(Output {
+        status,
+        stdout: out?,
+        stderr: err?,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
 fn run_tool(_cmd: &mut Command, _timeout: Duration, _max_stdout: usize) -> Result<Output> {
     Err(Error::Extraction(
         "unsupported-platform: bounded local tools require Unix".into(),
@@ -1131,6 +1248,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn local_tool_failure_leaves_unrelated_process_groups_alive() {
+        use std::os::unix::process::CommandExt;
+
+        let mut unrelated = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let result = run_tool(
+            Command::new("/bin/sleep").arg("30"),
+            Duration::from_millis(100),
+            1024,
+        );
+        let survived = unrelated.try_wait().unwrap().is_none();
+        let _ = unrelated.kill();
+        let _ = unrelated.wait();
+
+        assert!(result.unwrap_err().to_string().contains("tool-timeout"));
+        assert!(
+            survived,
+            "tool termination reached an unrelated process group"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn local_tool_failure_kills_descendants_in_its_process_group() {
         for (script_tail, expected) in [
             ("wait", "tool-timeout"),
@@ -1166,6 +1309,61 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_windows_tool_returns_both_streams_and_bounds_output() {
+        let output = run_tool(
+            Command::new("cmd").args(["/D", "/C", "echo done & echo warning 1>&2"]),
+            Duration::from_secs(5),
+            1024,
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "done");
+        assert_eq!(String::from_utf8(output.stderr).unwrap().trim(), "warning");
+        for redirect in ["", "1>&2"] {
+            let script = format!("for /L %i in (1,1,100000) do @echo 1234567890 {redirect}");
+            let error = run_tool(
+                Command::new("cmd").args(["/D", "/C", &script]),
+                Duration::from_secs(10),
+                1024,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("output-too-large"), "{error}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_windows_tool_timeout_and_leader_exit_kill_grandchildren() {
+        use wi_sys::process::{Liveness, liveness};
+        for tail in ["$p.WaitForExit()", ""] {
+            let temp = tempfile::tempdir().unwrap();
+            let pid_path = temp.path().join("pid");
+            let script = format!(
+                "$p=Start-Process ping -ArgumentList '-n','30','127.0.0.1' -NoNewWindow -PassThru; [IO.File]::WriteAllText($env:WI_TOOL_PID,[string]$p.Id); {tail}"
+            );
+            let result = run_tool(
+                Command::new("cmd")
+                    .args(["/D", "/C", "powershell", "-NoProfile", "-Command", &script])
+                    .env("WI_TOOL_PID", &pid_path),
+                Duration::from_secs(5),
+                8192,
+            );
+            if tail.is_empty() {
+                assert!(result.unwrap().status.success());
+            } else {
+                assert!(result.unwrap_err().to_string().contains("tool-timeout"));
+            }
+            let pid = std::fs::read_to_string(pid_path).unwrap().parse().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while liveness(pid) != Liveness::Gone && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(liveness(pid), Liveness::Gone);
         }
     }
 

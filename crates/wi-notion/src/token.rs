@@ -39,7 +39,43 @@ impl TokenSource for KeychainTokenSource {
             }
             Ok(token)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            wi_sys::credential::read(&format!("wiki-island.notion/{}", self.account))
+                .map_err(|_| Error::Token)?
+                .filter(|token| !token.is_empty())
+                .ok_or(Error::Token)
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
         Err(Error::Token)
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_source_reads_a_unique_vault_target_and_cleans_up() {
+        let unique = tempfile::tempdir().unwrap();
+        let account = format!(
+            "test-{}-{}",
+            std::process::id(),
+            unique.path().file_name().unwrap().to_string_lossy()
+        );
+        let target = format!("wiki-island.notion/{account}");
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = wi_sys::credential::delete(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(target.clone());
+        let source = KeychainTokenSource { account };
+        assert!(source.token().is_err());
+        wi_sys::credential::write(&target, "test_token_value_1234").unwrap();
+        assert_eq!(source.token().unwrap(), "test_token_value_1234");
+        assert!(wi_sys::credential::delete(&target).unwrap());
+        assert!(source.token().is_err());
     }
 }

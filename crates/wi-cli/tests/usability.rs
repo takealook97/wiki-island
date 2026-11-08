@@ -55,6 +55,7 @@ impl Env {
 
 fn git_log(root: &std::path::Path) -> String {
     let out = Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .arg("-C")
         .arg(root)
         .args(["log", "--name-only", "--format=%s"])

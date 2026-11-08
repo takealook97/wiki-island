@@ -1,11 +1,16 @@
+#[cfg(target_os = "macos")]
 use std::cell::RefCell;
+#[cfg(target_os = "macos")]
 use std::collections::VecDeque;
 use std::path::Path;
+#[cfg(target_os = "macos")]
 use std::process::Output;
 use wi_export::install::Error;
-use wi_export::service::{Launchctl, plan, status, uninstall};
+use wi_export::service::plan;
+#[cfg(target_os = "macos")]
+use wi_export::service::{Launchctl, status, uninstall};
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn output(code: i32, stderr: &str) -> Output {
     use std::os::unix::process::ExitStatusExt;
     Output {
@@ -15,6 +20,7 @@ fn output(code: i32, stderr: &str) -> Output {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Default)]
 struct Fake {
     calls: RefCell<Vec<Vec<String>>>,
@@ -22,6 +28,7 @@ struct Fake {
     bootstrap_files: RefCell<Vec<Option<String>>>,
 }
 
+#[cfg(target_os = "macos")]
 impl Fake {
     fn scripted(outputs: Vec<Output>) -> Self {
         Self {
@@ -35,6 +42,7 @@ impl Fake {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Launchctl for Fake {
     fn run(&self, args: &[&str]) -> std::io::Result<Output> {
         if args.first() == Some(&"bootstrap") {

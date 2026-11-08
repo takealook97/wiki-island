@@ -35,6 +35,9 @@ impl Env {
             .env("WI_CACHE_DIR", self.cache.path())
             .env("WI_VAULT", &self.root)
             .env("HOME", self.home.path())
+            .env("USERPROFILE", self.home.path())
+            .env("APPDATA", self.home.path())
+            .env("LOCALAPPDATA", self.home.path())
             .env_remove("WI_FAULT")
             .output()
             .unwrap()
@@ -51,6 +54,7 @@ impl Env {
 
     fn git_log(&self) -> String {
         let out = Command::new("git")
+            .args(["-c", "core.autocrlf=false"])
             .args(["log", "--name-only", "--format=%s"])
             .current_dir(&self.root)
             .output()
@@ -112,6 +116,12 @@ fn doctor_commits_an_editor_note_and_reports_nothing_unseen() {
 fn service_install_without_yes_previews_and_writes_nothing() {
     let env = Env::new();
     let out = env.wi(&["service", "install", "--allow-dev-binary"]);
+    if !cfg!(target_os = "macos") {
+        assert!(!out.status.success(), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("run wi watch"));
+        assert!(std::fs::read_dir(env.home.path()).unwrap().next().is_none());
+        return;
+    }
     assert_ok(&out);
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -132,6 +142,7 @@ fn work_requests(env: &Env) -> String {
     std::fs::read_to_string(env.root.join(".git/wi/work-requests.jsonl")).unwrap_or_default()
 }
 
+#[cfg(unix)]
 fn unseen_check(out: &Output) -> Value {
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     report["checks"]
@@ -191,6 +202,7 @@ fn deleting_a_just_written_note_is_committed_without_work() {
     let requests = work_requests(&env);
     assert!(!requests.contains("\"written.md\""), "{requests}");
     let out = Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .args(["log", "--name-status", "--format=%s"])
         .current_dir(&env.root)
         .output()

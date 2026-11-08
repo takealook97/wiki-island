@@ -709,7 +709,9 @@ fn walker(root: &Path, directory: &Path) -> ignore::WalkBuilder {
                 .path()
                 .strip_prefix(&owned)
                 .map(|rel| {
-                    let rel = rel.to_string_lossy();
+                    let rel = rel
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/");
                     rel.is_empty() || !is_engine_internal(&rel)
                 })
                 .unwrap_or(false)
@@ -730,7 +732,7 @@ fn walked_file(root: &Path, entry: &ignore::DirEntry) -> Option<String> {
     if !entry.file_type().is_some_and(|t| t.is_file()) {
         return None;
     }
-    Some(entry.path().strip_prefix(root).ok()?.to_str()?.to_owned())
+    crate::paths::rel_string(entry.path().strip_prefix(root).ok()?)
 }
 
 /// Whether a note carries an agent label in either supported form:

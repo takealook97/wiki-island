@@ -96,6 +96,10 @@ pub fn generate(root: &Path, count: usize) -> Result<Corpus> {
 }
 
 pub fn command_text(program: &str, args: &[&str]) -> Result<String> {
+    #[cfg(windows)]
+    if matches!(program, "sysctl" | "uname" | "sw_vers" | "python3") {
+        return Ok("unknown".into());
+    }
     let output = Command::new(program).args(args).output()?;
     ensure!(
         output.status.success(),
@@ -169,10 +173,11 @@ pub struct Report {
 impl Report {
     pub fn markdown(&self) -> String {
         let mut out = format!(
-            "Machine: {}, {}, {} bytes RAM, macOS {}, {}. Corpus: {} / {} notes; {} lifecycle; bytes min/median/p95/max: {}/{}/{}/{}.\n\n| Metric | n | p50 | p95 | Unit | Target | Pass |\n| --- | ---: | ---: | ---: | --- | ---: | --- |\n",
+            "Machine: {}, {}, {} bytes RAM, {} {}, {}. Corpus: {} / {} notes; {} lifecycle; bytes min/median/p95/max: {}/{}/{}/{}.\n\n| Metric | n | p50 | p95 | Unit | Target | Pass |\n| --- | ---: | ---: | ---: | --- | ---: | --- |\n",
             self.machine.model,
             self.machine.arch,
             self.machine.memory_bytes,
+            if cfg!(windows) { "Windows" } else { "macOS" },
             self.machine.os,
             self.machine.rust,
             self.corpus.version,
@@ -229,6 +234,7 @@ pub fn prepare(root: &Path, cache: &Path, count: usize) -> Result<(Vault, Corpus
     let (vault, _) = Vault::init_with(root, options)?;
     let git = |args: &[&str]| -> Result<()> {
         let result = Command::new("git")
+            .args(["-c", "core.autocrlf=false"])
             .arg("-C")
             .arg(root)
             .args(args)
@@ -683,5 +689,18 @@ mod tests {
         assert_eq!(a.lifecycle_notes, 300);
         assert!(a.bytes_max > a.bytes_min * 10);
         assert!(generate(&dir.path().join("a"), 1000).is_err());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    #[test]
+    fn unavailable_machine_probes_are_explicitly_unknown() {
+        let machine = super::Machine::detect().unwrap();
+        assert_eq!(machine.model, "unknown");
+        assert_eq!(machine.arch, "unknown");
+        assert_eq!(machine.memory_bytes, "unknown");
+        assert_eq!(machine.os, "unknown");
+        assert!(machine.rust.starts_with("rustc "));
     }
 }

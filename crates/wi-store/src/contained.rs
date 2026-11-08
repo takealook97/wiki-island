@@ -212,7 +212,10 @@ impl Dir {
         if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
             return Ok(None);
         }
-        Ok(Some(u32::from(stat.st_mode) & 0o777))
+        // st_mode is u16 on Apple platforms and u32 on Linux.
+        #[allow(clippy::useless_conversion)]
+        let mode = u32::from(stat.st_mode);
+        Ok(Some(mode & 0o777))
     }
 
     /// Create `name` with `bytes` (failing if it exists) and barrier it.

@@ -58,15 +58,41 @@ pub(crate) fn validate_relative(path: &Path) -> Result<()> {
         || path
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))
-        || path.to_string_lossy().contains('\\')
+        || (!cfg!(windows) && path.to_string_lossy().contains('\\'))
     {
         return Err(Error::InvalidPath(path.into()));
     }
     Ok(())
 }
+fn path_key(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        path.components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().into_owned()
+    }
+}
+
+fn is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
 fn stamp(path: &Path) -> Result<Stamp> {
     let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
+    if !metadata.is_file() || is_link(&metadata) {
         return Err(Error::InvalidPath(path.into()));
     }
     let time = metadata.modified()?.duration_since(UNIX_EPOCH).map_or_else(
@@ -118,7 +144,7 @@ fn settings(root: &Path) -> Result<Settings> {
 fn skip(report: &mut SyncReport, path: impl Into<PathBuf>, error: impl std::fmt::Display) {
     let path: PathBuf = path.into();
     // Diagnostic paths must remain serializable even for unsupported byte names.
-    let path = PathBuf::from(path.to_string_lossy().into_owned());
+    let path = PathBuf::from(path_key(&path));
     report.skipped.push(path.clone());
     report.diagnostics.push(IndexDiagnostic {
         rel_path: path,
@@ -137,7 +163,7 @@ fn refresh_walk_meta(
 ) -> Result<()> {
     use rusqlite::OptionalExtension;
     let touched: BTreeSet<&str> = affected.iter().map(String::as_str).collect();
-    let is_touched = |p: &Path| touched.contains(p.to_string_lossy().as_ref());
+    let is_touched = |p: &Path| touched.contains(path_key(p).as_str());
     let read = |key: &str| -> Result<Option<String>> {
         Ok(tx
             .query_row("SELECT value FROM index_meta WHERE key=?1", [key], |r| {
@@ -184,7 +210,7 @@ fn reserved(path: &Path, ignored: &[PathBuf]) -> bool {
                 .is_some_and(|s| FOREIGN_DIRS.contains(&s.to_lowercase().as_str()))
         })
         || ignored.iter().any(|dir| path.starts_with(dir))
-        || wi_note::is_unindexed_engine_path(&path.to_string_lossy())
+        || wi_note::is_unindexed_engine_path(&path_key(path))
 }
 fn walk(root: &Path, ignored: Vec<PathBuf>, report: &mut SyncReport) -> BTreeMap<String, Stamp> {
     let root_owned = root.to_path_buf();
@@ -198,6 +224,10 @@ fn walk(root: &Path, ignored: Vec<PathBuf>, report: &mut SyncReport) -> BTreeMap
         .parents(false)
         .require_git(false)
         .filter_entry(move |entry| {
+            #[cfg(windows)]
+            if fs::symlink_metadata(entry.path()).is_ok_and(|m| is_link(&m)) {
+                return false;
+            }
             entry
                 .path()
                 .strip_prefix(&root_owned)
@@ -230,7 +260,7 @@ fn walk(root: &Path, ignored: Vec<PathBuf>, report: &mut SyncReport) -> BTreeMap
         let checked = validate_relative(relative).and_then(|()| stamp(entry.path()));
         match checked {
             Ok(stamp) => {
-                files.insert(relative.to_string_lossy().into_owned(), stamp);
+                files.insert(path_key(relative), stamp);
             }
             Err(e) => skip(report, relative, e),
         }
@@ -244,7 +274,7 @@ fn allowed(root: &Path, path: &Path, ignored: &[PathBuf]) -> Result<bool> {
     let mut ancestor = root.to_path_buf();
     for component in path.components() {
         ancestor.push(component);
-        if fs::symlink_metadata(&ancestor).is_ok_and(|m| m.file_type().is_symlink()) {
+        if fs::symlink_metadata(&ancestor).is_ok_and(|m| is_link(&m)) {
             return Err(Error::InvalidPath(path.into()));
         }
     }
@@ -411,7 +441,7 @@ fn prepare(
     let mut ancestor = root.to_path_buf();
     for part in Path::new(path).components() {
         ancestor.push(part);
-        if fs::symlink_metadata(&ancestor)?.file_type().is_symlink() {
+        if is_link(&fs::symlink_metadata(&ancestor)?) {
             return Err(Error::InvalidPath(full));
         }
     }
@@ -605,7 +635,7 @@ impl Index {
         for path in paths {
             let path = path.as_ref();
             validate_relative(path)?;
-            let text = path.to_string_lossy().into_owned();
+            let text = path_key(path);
             if !allowed(&self.vault_root, path, &settings.ignored)? {
                 removals.insert(text);
                 continue;
@@ -716,14 +746,11 @@ impl Index {
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let affected: Vec<_> = paths
-            .iter()
-            .map(|p| p.as_ref().to_string_lossy().into_owned())
-            .collect();
+        let affected: Vec<_> = paths.iter().map(|p| path_key(p.as_ref())).collect();
         let identities = affected_names(&tx, &affected)?;
         let mut count = 0;
-        for path in paths {
-            count += remove(&tx, &path.as_ref().to_string_lossy())?;
+        for path in &affected {
+            count += remove(&tx, path)?;
         }
         resolve_affected(&tx, &affected, &identities)?;
         refresh_walk_meta(&tx, &affected, &[], &[])?;

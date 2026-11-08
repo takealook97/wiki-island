@@ -1,6 +1,7 @@
 //! A held recovery intent blocks writes to its own paths only: writes to
 //! other paths are published, flushed, committed and searchable, and the
 //! held path settles by itself once readable again.
+#![cfg(unix)]
 
 mod common;
 

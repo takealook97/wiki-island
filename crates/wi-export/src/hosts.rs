@@ -117,13 +117,43 @@ impl HostId {
             Self::Gemini => 9,
         }]
     }
+    /// Resolve both discovery and configuration from the same platform roots.
+    pub fn paths(self, home: &Path, _app_data: Option<&Path>) -> (PathBuf, PathBuf) {
+        #[cfg(windows)]
+        {
+            let app_data = _app_data
+                .map(Path::to_path_buf)
+                .or_else(|| {
+                    // An empty or relative APPDATA is unset, never a path
+                    // under the working directory.
+                    std::env::var_os("APPDATA")
+                        .map(PathBuf::from)
+                        .filter(|path| path.is_absolute())
+                })
+                .unwrap_or_else(|| home.join("AppData/Roaming"));
+            let relative = match self {
+                Self::ClaudeDesktop => Some(("Claude", "Claude/claude_desktop_config.json")),
+                Self::Vscode => Some(("Code/User", "Code/User/mcp.json")),
+                Self::Zed => Some(("Zed", "Zed/settings.json")),
+                _ => None,
+            };
+            if let Some((detect, config)) = relative {
+                return (app_data.join(detect), app_data.join(config));
+            }
+        }
+        (
+            home.join(self.spec().detect_path),
+            home.join(self.spec().config_path),
+        )
+    }
+
     pub fn config_path(self, home: &Path, codex_home: Option<&Path>) -> PathBuf {
         if self == Self::Codex
             && let Some(root) = codex_home
         {
             return root.join("config.toml");
         }
-        let path = home.join(self.spec().config_path);
+        let path = self.paths(home, None).1;
         if self == Self::Opencode && !path.exists() && path.with_extension("jsonc").is_file() {
             return path.with_extension("jsonc");
         }
@@ -143,8 +173,48 @@ pub fn detect(home: &Path) -> Vec<HostId> {
     HOSTS
         .iter()
         .filter(|host| {
-            home.join(host.detect_path).is_dir() || home.join(host.config_path).is_file()
+            let (directory, config) = host.id.paths(home, None);
+            directory.is_dir() || config.is_file()
         })
         .map(|host| host.id)
         .collect()
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_paths_use_roaming_data_and_other_hosts_use_the_given_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("profile");
+        let roaming = temp.path().join("roaming");
+        for (host, directory, config) in [
+            (
+                HostId::ClaudeDesktop,
+                "Claude",
+                "Claude/claude_desktop_config.json",
+            ),
+            (HostId::Vscode, "Code/User", "Code/User/mcp.json"),
+            (HostId::Zed, "Zed", "Zed/settings.json"),
+        ] {
+            assert_eq!(
+                host.paths(&home, Some(&roaming)),
+                (roaming.join(directory), roaming.join(config))
+            );
+        }
+        for host in HOSTS
+            .iter()
+            .filter(|h| !matches!(h.id, HostId::ClaudeDesktop | HostId::Vscode | HostId::Zed))
+        {
+            assert_eq!(
+                host.id.paths(&home, Some(&roaming)),
+                (home.join(host.detect_path), home.join(host.config_path))
+            );
+        }
+        assert_eq!(
+            HostId::Codex.config_path(&home, Some(&roaming)),
+            roaming.join("config.toml")
+        );
+    }
 }

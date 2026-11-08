@@ -841,6 +841,8 @@ pub(crate) fn local_dir<P: LocalPlace + ?Sized>(vault: &P) -> Result<PathBuf, Er
     Ok(path)
 }
 fn record_path<P: LocalPlace + ?Sized>(vault: &P, target: &Path, extension: &str) -> PathBuf {
+    #[cfg(windows)]
+    let target: PathBuf = target.components().collect();
     let hash = wi_lifecycle::sha256(target.as_os_str().as_encoded_bytes());
     local_base(vault)
         .join("backups")
