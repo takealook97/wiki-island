@@ -53,7 +53,10 @@ fn folder_mode_commits_through_core_worktree_without_git_in_the_folder() {
     assert_eq!(vault.storage_mode(), StorageMode::Folder);
     assert!(!root.join(".git").exists());
     let git_dir = data.join("vaults/v-folder/git");
-    assert_eq!(vault.git_dir(), git_dir.canonicalize().unwrap());
+    assert_eq!(
+        vault.git_dir().canonicalize().unwrap(),
+        git_dir.canonicalize().unwrap()
+    );
     assert!(vault.wi_dir().starts_with(vault.git_dir()));
 
     save(&vault, "notes/a.md", b"a1\n", "cli", Some("op-1"));
@@ -104,8 +107,8 @@ fn moved_folder_vault_is_rebound_and_remembered_for_doctor() {
     let vault = Vault::init_folder(&root, Some(&data)).unwrap();
     save(&vault, "a.md", b"a\n", "cli", None);
     Flusher::flush(&vault).unwrap();
+    let old = vault.root().to_path_buf();
     drop(vault);
-    let old = root.canonicalize().unwrap();
     let moved = tmp.path().join("moved");
     std::fs::rename(&root, &moved).unwrap();
     let vault = Vault::open_in(&moved, Some(&data)).unwrap();

@@ -136,7 +136,7 @@ pub fn external_git_dir(root: &Path, data_root: Option<&Path>) -> Result<Option<
         return Ok(None);
     }
     Ok(Some(
-        dir.canonicalize().map_err(|e| HistoryError::io(&dir, e))?,
+        crate::vault::canonical(&dir).map_err(|e| HistoryError::io(&dir, e))?,
     ))
 }
 

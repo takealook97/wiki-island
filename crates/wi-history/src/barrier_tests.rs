@@ -101,7 +101,7 @@ fn init_barriers_git_metadata_before_git_becomes_visible() {
         };
         assert_before(&events, Kind::Dir, &path, rename);
     }
-    let canonical = root.canonicalize().unwrap();
+    let canonical = crate::vault::canonical(&root).unwrap();
     let root_barrier = events
         .iter()
         .rposition(|(k, p)| *k == Kind::Dir && p == &canonical)
@@ -126,7 +126,7 @@ fn init_retry_after_visible_rename_completes_the_root_barrier() {
     crate::durable::barrier_tree(&staging.join(".git"), crate::Durability::Standard).unwrap();
     std::fs::rename(staging.join(".git"), root.join(".git")).unwrap();
 
-    let canonical = root.canonicalize().unwrap();
+    let canonical = crate::vault::canonical(&root).unwrap();
     let (vault, events) = trace::capture(|| {
         let vault = Vault::init(&root).unwrap();
         save(&vault, "a.md", b"a", None);
@@ -298,7 +298,7 @@ fn every_append_barriers_its_blob_before_the_record() {
 #[test]
 fn folder_init_barriers_external_git_before_it_becomes_visible() {
     let dir = tempfile::tempdir().unwrap();
-    let base = dir.path().canonicalize().unwrap();
+    let base = crate::vault::canonical(dir.path()).unwrap();
     let root = base.join("vault");
     std::fs::create_dir_all(root.join(".wiki-island")).unwrap();
     std::fs::write(root.join(".wiki-island/config.toml"), "vault_id = \"v1\"\n").unwrap();
