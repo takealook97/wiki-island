@@ -580,3 +580,77 @@ fn an_oversized_ancestor_committed_elsewhere_blocks_upload_without_rewriting() {
         1
     );
 }
+
+#[test]
+fn a_note_that_grows_past_fifty_megabytes_is_never_deleted_on_any_device() {
+    let p = Pair::new();
+    let a = p.a.open();
+    write(&a, "big.md", "important small note\n");
+    a.sync().unwrap();
+    let b = p.b.open();
+    b.sync().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(p.b.root.join("big.md")).unwrap(),
+        "important small note\n"
+    );
+    let committed = git(&p.a.root, &["rev-parse", "HEAD:big.md"]);
+    let file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(p.a.root.join("big.md"))
+        .unwrap();
+    file.set_len(50 * 1024 * 1024 + 1).unwrap();
+    drop(file);
+    let report = a.sync().unwrap();
+    assert_eq!(report.excluded, ["big.md"]);
+    a.reconcile().unwrap();
+    a.flush().unwrap();
+    a.sync().unwrap();
+    // The tip keeps the last committed version; the new bytes stay local.
+    assert_eq!(git(&p.a.root, &["rev-parse", "HEAD:big.md"]), committed);
+    assert_eq!(git(&p.remote, &["rev-parse", "main:big.md"]), committed);
+    assert!(std::fs::metadata(p.a.root.join("big.md")).unwrap().len() > 50 * 1024 * 1024);
+    b.sync().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(p.b.root.join("big.md")).unwrap(),
+        "important small note\n"
+    );
+    assert_eq!(
+        a.work_requests()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path == "big.md")
+            .count(),
+        1
+    );
+    assert!(b.work_requests().unwrap().iter().all(|r| r.path != "big.md"));
+}
+
+#[test]
+fn an_ingested_file_over_fifty_megabytes_before_sync_setup_never_blocks_sync() {
+    let temp = TempDir::new().unwrap();
+    let remote = temp.path().join("remote.git");
+    git(
+        temp.path(),
+        &[
+            "init",
+            "--bare",
+            "--initial-branch=main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    let a = Device::at(temp.path(), "a");
+    let vault = a.init();
+    write(&vault, "note.md", "note\n");
+    let file = std::fs::File::create(a.root.join("big.dat")).unwrap();
+    file.set_len(50 * 1024 * 1024 + 1).unwrap();
+    drop(file);
+    vault.ingest_path("big.dat").unwrap();
+    vault.flush().unwrap();
+    let all = git(&a.root, &["rev-list", "--objects", "--all"]);
+    assert!(all.lines().all(|l| !l.ends_with(" big.dat")), "{all}");
+    vault.sync_setup(remote.to_str().unwrap()).unwrap();
+    assert!(vault.sync().unwrap().pushed);
+    let pushed = git(&remote, &["ls-tree", "-r", "--name-only", "main"]);
+    assert!(pushed.lines().any(|l| l == "note.md"), "{pushed}");
+    assert!(pushed.lines().all(|l| l != "big.dat"), "{pushed}");
+}

@@ -510,28 +510,9 @@ impl Vault {
                 )?);
             }
         }
-        // A tracked oversized file is removed from the synchronized tree,
-        // while its canonical working file remains untouched.
-        let removed: Vec<_> = after
-            .keys()
-            .filter(|p| excluded.contains(p))
-            .cloned()
-            .collect();
-        for path in &removed {
-            after.remove(path);
-        }
-        if !removed.is_empty() {
-            let parent = target
-                .as_deref()
-                .ok_or_else(|| invalid("Sync needs local history."))?;
-            target = Some(SyncRepo::merge(
-                &self.history,
-                &guard,
-                parent,
-                parent,
-                &after,
-            )?);
-        }
+        // A tracked file that grew past the limit keeps its last committed
+        // version in the synchronized tree: the new bytes stay local and
+        // out of history, and no device ever sees the note deleted.
         self.validate_sync_tree(&after)?;
         if let Some(blob) = after.get(wi_note::VAULT_CONFIG_PATH) {
             let bytes = self.history.read_blob(blob)?;
@@ -848,8 +829,8 @@ impl Vault {
                 large.push(path);
             }
         }
-        // Include already excluded tracked files when deciding to remove
-        // them from the remote tree on subsequent attempts.
+        // Tracked files that grew past the limit are reported too; their
+        // working bytes are never replaced by a remote version.
         if let Some(head) = SyncRepo::head(&self.history)? {
             for path in SyncRepo::tree(&self.history, Some(&head))?.keys() {
                 if std::fs::metadata(self.root().join(path)).is_ok_and(|m| m.len() > LIMIT)
