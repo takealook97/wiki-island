@@ -343,9 +343,7 @@ impl Vault {
         let name = rel.rsplit('/').next().unwrap_or(rel);
         let is_sync = name
             .rsplit_once(".wi-conflict-sync-")
-            .is_some_and(|(_, hex)| {
-                hex.len() == 12 && hex.bytes().all(|b| b.is_ascii_hexdigit())
-            });
+            .is_some_and(|(_, hex)| hex.len() == 12 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
         is_sync
             && History::head(&self.history)
                 .ok()

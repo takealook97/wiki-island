@@ -858,7 +858,10 @@ fn private_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     wi_history::durable::barrier_dir(parent, durability)?;
     Ok(())
 }
-fn load_config<P: LocalPlace + ?Sized>(vault: &P, target: &Path) -> Result<Option<SavedConfig>, Error> {
+fn load_config<P: LocalPlace + ?Sized>(
+    vault: &P,
+    target: &Path,
+) -> Result<Option<SavedConfig>, Error> {
     read_file(&record_path(vault, target, "json"))?
         .map(|bytes| serde_json::from_slice(&bytes).map_err(|e| Error::Config(e.to_string())))
         .transpose()

@@ -622,7 +622,12 @@ fn a_note_that_grows_past_fifty_megabytes_is_never_deleted_on_any_device() {
             .count(),
         1
     );
-    assert!(b.work_requests().unwrap().iter().all(|r| r.path != "big.md"));
+    assert!(
+        b.work_requests()
+            .unwrap()
+            .iter()
+            .all(|r| r.path != "big.md")
+    );
 }
 
 #[test]
@@ -759,10 +764,7 @@ fn a_peer_lists_a_sync_conflict_copy_read_only_without_a_doctor_warning() {
     a.sync().unwrap();
     let doctor = a.doctor().unwrap();
     assert!(
-        doctor
-            .checks
-            .iter()
-            .all(|c| c.name != "conflict-copies"),
+        doctor.checks.iter().all(|c| c.name != "conflict-copies"),
         "{:?}",
         doctor.checks
     );
@@ -774,7 +776,13 @@ fn a_peer_lists_a_sync_conflict_copy_read_only_without_a_doctor_warning() {
     assert_eq!(listed.status, "ok");
     assert!(listed.detail.contains(&copy), "{}", listed.detail);
     // The merging device owns the request and its item.
-    assert!(b.doctor().unwrap().checks.iter().all(|c| c.name != "conflict-copies"));
+    assert!(
+        b.doctor()
+            .unwrap()
+            .checks
+            .iter()
+            .all(|c| c.name != "conflict-copies")
+    );
     b.convert_work_requests().unwrap();
     b.flush().unwrap();
     b.sync().unwrap();

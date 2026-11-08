@@ -432,7 +432,11 @@ impl Vault {
         const NAME_MAX: usize = 255;
         // `.<name>.wi-conflict-sync-<12 hex>` is the longest sibling.
         const SIBLING: usize = 31;
-        const PATH_MAX: usize = if cfg!(target_os = "macos") { 1024 } else { 4096 };
+        const PATH_MAX: usize = if cfg!(target_os = "macos") {
+            1024
+        } else {
+            4096
+        };
         let mut parts = path.split('/').peekable();
         while let Some(part) = parts.next() {
             let limit = if parts.peek().is_some() {
