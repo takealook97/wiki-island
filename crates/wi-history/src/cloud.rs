@@ -155,6 +155,7 @@ mod tests {
         assert!(cloud_sync_warning(Path::new("/Users/x/Projects/vault")).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_missing_component_followed_by_dotdot_still_resolves_through_an_alias() {
         let tmp = std::env::temp_dir().join(format!("wi-cloud-dotdot-{}", std::process::id()));
@@ -171,6 +172,7 @@ mod tests {
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn dotdot_back_to_an_existing_folder_resolves_its_symlinked_child() {
         let tmp = std::env::temp_dir().join(format!("wi-cloud-hop-{}", std::process::id()));
@@ -187,6 +189,7 @@ mod tests {
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn missing_parent_then_symlink_then_parent_still_detects_cloud() {
         let t = tempfile::tempdir().unwrap();
@@ -206,6 +209,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn path_forms_resolve_physically() {
         let t = tempfile::tempdir().unwrap();

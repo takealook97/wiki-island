@@ -132,6 +132,7 @@ fn work_requests(env: &Env) -> String {
     std::fs::read_to_string(env.root.join(".git/wi/work-requests.jsonl")).unwrap_or_default()
 }
 
+#[cfg(unix)]
 fn unseen_check(out: &Output) -> Value {
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     report["checks"]

@@ -8,12 +8,17 @@ rust-version.workspace = true
 
 [dependencies]
 gix = { version = "0.90", default-features = false, features = ["sha1", "index"] }
-rustix = { version = "1", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 toml_edit = "0.23"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+wi-sys = { path = "../wi-sys" }
 
 [features]
 # Crash and race hooks driven by `WI_FAULT` (tests only).

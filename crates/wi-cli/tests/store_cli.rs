@@ -405,6 +405,7 @@ fn cli_reindex_after_index_deletion_returns_the_same_results() {
     assert_eq!(paths(&before), paths(&after));
 }
 
+#[cfg(unix)]
 #[test]
 fn recovery_never_touches_files_behind_a_changed_directory() {
     let env = Env::new();

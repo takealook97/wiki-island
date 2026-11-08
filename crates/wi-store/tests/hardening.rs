@@ -89,6 +89,7 @@ fn filesystem_equivalent_protected_names_are_refused_before_any_change() {
     assert!(fx.open().doctor().unwrap().healthy());
 }
 
+#[cfg(unix)]
 #[test]
 fn absolute_path_through_an_in_vault_symlink_is_refused() {
     let (_fx, vault) = Fixture::new();

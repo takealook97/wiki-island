@@ -226,6 +226,7 @@ fn no_conflict_copy_when_nothing_raced() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
+#[cfg(unix)]
 #[test]
 fn protected_paths_are_refused_and_change_nothing() {
     let (_fx, vault) = Fixture::new();
@@ -644,6 +645,7 @@ fn reconcile_ingests_offline_edits_and_commits_deleted_files() {
     assert!(vault.reconcile().unwrap().ingested.is_empty());
 }
 
+#[cfg(unix)]
 impl Fixture {
     fn open_existing(vault: &wi_store::Vault) -> wi_store::Vault {
         wi_store::Vault::open_with(vault.root(), wi_store::OpenOptions::default()).unwrap()

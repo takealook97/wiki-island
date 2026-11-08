@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use common::{Fixture, git};
 use wi_history::{Blob, IntentRecord, Manifest, PublisherLock, hash_bytes};
-use wi_store::{
-    Hooks, IngestOutcome, Ingress, MoveRequest, Vault, WatchTuning, WorkKind, WriteRequest,
-};
+#[cfg(unix)]
+use wi_store::MoveRequest;
+use wi_store::{Hooks, IngestOutcome, Ingress, Vault, WatchTuning, WorkKind, WriteRequest};
 
 fn skipped(vault: &Vault, rel: &str) -> bool {
     matches!(

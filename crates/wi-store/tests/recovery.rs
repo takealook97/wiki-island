@@ -5,6 +5,7 @@
 mod common;
 
 use common::Fixture;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::{fs, rc::Rc};
@@ -160,6 +161,7 @@ fn intent(vault: &Vault, path: &str, from: Option<&str>, old: Option<&[u8]>, new
     .unwrap()
 }
 
+#[cfg(unix)]
 #[test]
 fn unreadable_target_must_not_prevent_open() {
     let (fx, vault) = Fixture::new();
@@ -176,6 +178,7 @@ fn unreadable_target_must_not_prevent_open() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn unreadable_displaced_temp_must_not_prevent_open() {
     let (fx, vault) = Fixture::new();
@@ -209,6 +212,7 @@ fn conflict_rename_failure_must_not_prevent_open() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn unreadable_displaced_editor_bytes_must_survive_failed_write() {
     let (fx, mut vault) = Fixture::new();
@@ -327,6 +331,7 @@ fn crashed_move(vault: &Vault, from: &str, to: &str, bytes: &[u8]) -> u64 {
     fs::write(vault.root().join(to), bytes).unwrap();
     seq
 }
+#[cfg(unix)]
 #[test]
 fn probe_recovery_unreadable_target_must_open() {
     use std::os::unix::fs::PermissionsExt;
@@ -487,6 +492,7 @@ fn probe_index_repair_must_keep_identical_late_append() {
 fn probe_reindex_must_keep_identical_late_append() {
     identical_late_append(true);
 }
+#[cfg(unix)]
 #[test]
 fn probe_unreadable_move_source_is_work_request() {
     use std::os::unix::fs::PermissionsExt;
@@ -593,6 +599,7 @@ fn doctor_reports_scratch_directories() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn doctor_reports_scratch_symlinks_without_following_them() {
     let (_fx, vault) = Fixture::new();
@@ -623,6 +630,7 @@ fn doctor_reports_scratch_symlinks_without_following_them() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn held_intent_has_one_problem_and_settles_when_readable() {
     let (fx, vault) = Fixture::new();
@@ -668,6 +676,7 @@ fn held_intent_has_one_problem_and_settles_when_readable() {
         .expect("writes accepted again once the intent settled");
 }
 
+#[cfg(unix)]
 #[test]
 fn unreadable_displaced_temp_is_kept_and_settled_later() {
     let (fx, vault) = Fixture::new();
@@ -704,6 +713,7 @@ fn unreadable_displaced_temp_is_kept_and_settled_later() {
     assert_eq!(reopened.open_report().recovery.completed, vec![seq]);
 }
 
+#[cfg(unix)]
 #[test]
 fn unreadable_displaced_bytes_get_conflict_copy_request() {
     let (_fx, mut vault) = Fixture::new();

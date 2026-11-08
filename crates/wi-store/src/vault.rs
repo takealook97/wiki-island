@@ -1411,7 +1411,14 @@ fn derives_move_target(bytes: &[u8], from: &str, new_hash: &str) -> bool {
 }
 
 /// (device, inode) of `path`, when it exists.
+#[cfg(unix)]
 fn file_identity(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// No file identity is available on this platform yet.
+#[cfg(not(unix))]
+fn file_identity(_path: &Path) -> Option<(u64, u64)> {
+    None
 }

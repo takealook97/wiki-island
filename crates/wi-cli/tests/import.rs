@@ -213,6 +213,7 @@ fn real_local_tesseract_when_configured() {
     );
     assert_eq!(fs::read(tmp.path().join("vault/hello.bmp")).unwrap(), bmp);
 }
+#[cfg(unix)]
 #[test]
 fn import_directory_prunes_unreadable_ignored_directory() {
     use std::os::unix::fs::PermissionsExt;

@@ -2,7 +2,9 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -69,6 +71,7 @@ fn a_save_missed_in_an_unreadable_directory_reaches_history_by_repair() {
     assert!(recorded, "the repair scan recorded the missed save");
 }
 
+#[cfg(unix)]
 fn ingress_cache(fx: &Fixture) -> PathBuf {
     std::fs::read_dir(fx.cache.path())
         .unwrap()

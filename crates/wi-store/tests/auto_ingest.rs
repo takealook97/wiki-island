@@ -284,6 +284,7 @@ fn a_file_the_engine_wrote_is_stamped_and_not_hashed_again() {
 }
 
 /// The ingress-stat cache file next to the fixture's index database.
+#[cfg(unix)]
 fn stat_cache(vault: &Vault) -> std::path::PathBuf {
     let dir = vault.index_database().unwrap().unwrap();
     std::fs::read_dir(dir.parent().unwrap())

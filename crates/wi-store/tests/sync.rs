@@ -289,6 +289,7 @@ fn unavailable_remote_backs_off_and_explicit_retry_recovers() {
     assert_eq!(a.sync_status().unwrap().failures, 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn rejected_push_is_retried_without_losing_local_history() {
     use std::os::unix::fs::PermissionsExt;
@@ -972,6 +973,7 @@ fn a_valid_225_byte_remote_name_this_device_skips_is_never_deleted() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn an_editor_save_to_the_file_an_oversized_write_displaces_is_kept() {
     use std::os::unix::fs::{FileExt, MetadataExt};
@@ -1032,6 +1034,7 @@ fn an_editor_save_to_the_file_an_oversized_write_displaces_is_kept() {
     panic!("inconclusive scheduling: no editor write preceded unlink");
 }
 
+#[cfg(unix)]
 #[test]
 fn an_editor_save_to_the_file_a_small_attachment_write_displaces_is_kept() {
     use std::os::unix::fs::{FileExt, MetadataExt};
