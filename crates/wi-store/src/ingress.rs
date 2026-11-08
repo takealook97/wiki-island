@@ -398,25 +398,25 @@ impl Vault {
             }
             self.compare_file(&mut lookup, rel, stat, &mut survey)?;
         }
+        // Unsupported history names are absent here by design, not deletions.
         let mut gone = BTreeSet::new();
         if let Some(cache) = &cache {
             gone.extend(
                 cache
                     .stamps
                     .keys()
-                    .filter(|p| !is_present(p) && !filter.excludes(p))
+                    .filter(|p| {
+                        !is_present(p) && !filter.excludes(p) && crate::paths::host_can_name(p)
+                    })
                     .cloned(),
             );
         }
         // A tip this cache did not verify (or no cache) may hold committed
         // paths that were never stamped; check the ones that are gone.
         if scope == Scope::StatChanged && (cache.is_none() || tip_moved) && survey.head.is_some() {
-            gone.extend(
-                lookup
-                    .tree_paths()?
-                    .into_iter()
-                    .filter(|p| !is_present(p) && !filter.excludes(p)),
-            );
+            gone.extend(lookup.tree_paths()?.into_iter().filter(|p| {
+                !is_present(p) && !filter.excludes(p) && crate::paths::host_can_name(p)
+            }));
         }
         survey.gone = gone.into_iter().collect();
         survey.cache_current = cache

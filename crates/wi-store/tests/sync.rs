@@ -760,6 +760,9 @@ fn remote_name_is_skipped_and_kept(long: String) {
     let names = git(&p.remote, &["ls-tree", "-r", "--name-only", "main"]);
     assert!(names.lines().any(|l| l == "later.md"), "{names}");
     assert!(names.lines().any(|l| l == long), "kept for other devices");
+    let ingress = b.auto_ingest().unwrap();
+    assert!(ingress.failed.is_empty(), "{long}: {ingress:?}");
+    assert!(!ingress.missing.contains(&long), "{long}: {ingress:?}");
     b.reconcile().unwrap();
     b.flush().unwrap();
     write(&b, "after.md", "after\n");
