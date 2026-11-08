@@ -48,6 +48,7 @@ fn bad_files_are_skipped_without_losing_previous_rows_or_valid_hits() {
     fs::write(root.path().join("bad.md"), "previous hello").unwrap();
     index.sync(root.path()).unwrap();
     fs::write(root.path().join("bad.md"), [255, 254]).unwrap();
+    #[cfg(unix)]
     fs::write(root.path().join("back\\slash.md"), "invalid path").unwrap();
     fs::write(
         root.path().join("malformed.md"),
@@ -88,6 +89,7 @@ fn bad_files_are_skipped_without_losing_previous_rows_or_valid_hits() {
     let literal = literal_search(root.path(), &Query::text("hello")).unwrap();
     assert_eq!(literal.hits.len(), 2);
     assert!(literal.skipped.contains(&"bad.md".into()));
+    #[cfg(unix)]
     assert!(literal.skipped.contains(&"back\\slash.md".into()));
     assert!(
         literal

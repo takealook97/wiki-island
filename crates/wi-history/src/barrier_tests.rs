@@ -12,6 +12,7 @@ type Trace = Vec<(Kind, PathBuf)>;
 
 fn git(root: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .arg("-C")
         .arg(root)
         .args(args)

@@ -113,7 +113,8 @@ fn main() -> Result<()> {
                 (0..runs)
                     .map(|run| {
                         let current = fresh_run(&base, &wi)?;
-                        let path = PathBuf::from(format!("/tmp/wi-bench-current-{run}.json"));
+                        let path =
+                            std::env::temp_dir().join(format!("wi-bench-current-{run}.json"));
                         write_report(&current, &path)?;
                         Ok(current)
                     })
@@ -125,7 +126,10 @@ fn main() -> Result<()> {
                     .collect::<Result<Vec<_>>>()?
             };
             let candidate = median_report(&reports)?;
-            write_report(&candidate, &PathBuf::from("/tmp/wi-bench-current.json"))?;
+            write_report(
+                &candidate,
+                &std::env::temp_dir().join("wi-bench-current.json"),
+            )?;
             check(&base, &candidate)?;
             println!(
                 "PASS: median p95 of {} run(s) within regression thresholds for every metric",
@@ -138,11 +142,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// One fresh complete measurement (library + process) in a new /tmp scratch.
+/// One fresh complete measurement (library + process) in a new temporary scratch directory.
 fn fresh_run(base: &wi_bench::Report, wi: &std::path::Path) -> Result<wi_bench::Report> {
     let scratch = tempfile::Builder::new()
         .prefix("wi-bench-")
-        .tempdir_in("/tmp")?;
+        .tempdir_in(std::env::temp_dir())?;
     let root = scratch.path().join("vault");
     let cache = scratch.path().join("cache");
     std::fs::create_dir_all(&cache)?;
@@ -153,24 +157,36 @@ fn fresh_run(base: &wi_bench::Report, wi: &std::path::Path) -> Result<wi_bench::
         .ok_or_else(|| anyhow::anyhow!("baseline missing save_standard"))?
         .n;
     let report = measure(&root, &index, base.corpus.notes, samples)?;
-    let process_root = scratch.path().join("process-vault");
-    let process_cache = scratch.path().join("process-cache");
-    let process_corpus =
-        wi_bench::prepare_process_corpus(&process_root, &process_cache, base.corpus.notes)?;
-    anyhow::ensure!(process_corpus == report.corpus, "process corpus differs");
-    let output = scratch.path().join("current.json");
-    write_report(&report, &output)?;
-    let status = std::process::Command::new("python3")
-        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/processes.py"))
-        .arg("--wi")
-        .arg(std::fs::canonicalize(wi)?)
-        .arg("--root")
-        .arg(&process_root)
-        .arg("--cache")
-        .arg(&process_cache)
-        .arg("--report")
-        .arg(&output)
-        .status()?;
-    anyhow::ensure!(status.success(), "process measurement failed");
-    read_report(&output)
+    #[cfg(windows)]
+    {
+        let _ = wi;
+        let mut report = report;
+        report
+            .method
+            .push_str("; process metrics: unknown on Windows (Python process probes unavailable)");
+        Ok(report)
+    }
+    #[cfg(not(windows))]
+    {
+        let process_root = scratch.path().join("process-vault");
+        let process_cache = scratch.path().join("process-cache");
+        let process_corpus =
+            wi_bench::prepare_process_corpus(&process_root, &process_cache, base.corpus.notes)?;
+        anyhow::ensure!(process_corpus == report.corpus, "process corpus differs");
+        let output = scratch.path().join("current.json");
+        write_report(&report, &output)?;
+        let status = std::process::Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/processes.py"))
+            .arg("--wi")
+            .arg(std::fs::canonicalize(wi)?)
+            .arg("--root")
+            .arg(&process_root)
+            .arg("--cache")
+            .arg(&process_cache)
+            .arg("--report")
+            .arg(&output)
+            .status()?;
+        anyhow::ensure!(status.success(), "process measurement failed");
+        read_report(&output)
+    }
 }

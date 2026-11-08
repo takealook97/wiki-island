@@ -34,6 +34,18 @@ pub fn cloud_service(path: &Path) -> Option<&'static str> {
         .map(|(_, service)| *service)
 }
 
+fn is_alias(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
 /// Symlink hops followed by [`resolve_path`] before it gives up and treats
 /// the rest of the path lexically (the usual `MAXSYMLINKS`).
 const MAX_SYMLINK_HOPS: usize = 40;
@@ -95,7 +107,7 @@ pub fn resolve_path(path: &Path) -> PathBuf {
                 }
                 let joined = resolved.join(&name);
                 match std::fs::symlink_metadata(&joined) {
-                    Ok(meta) if meta.file_type().is_symlink() => {
+                    Ok(meta) if is_alias(&meta) => {
                         let target = match std::fs::read_link(&joined) {
                             Ok(target) if hops < MAX_SYMLINK_HOPS => target,
                             _ => {
@@ -143,6 +155,37 @@ pub fn cloud_sync_warning(git_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    fn junction(target: impl AsRef<Path>, link: impl AsRef<Path>) -> std::io::Result<()> {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link.as_ref())
+            .arg(target.as_ref())
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_roots_and_unc_paths_remain_absolute() {
+        for root in [r"C:\", r"\\server\share\"] {
+            assert_eq!(resolve_path(Path::new(root)), PathBuf::from(root));
+            assert_eq!(
+                resolve_path(&PathBuf::from(root).join("..")),
+                PathBuf::from(root)
+            );
+        }
+        assert_eq!(
+            cloud_service(Path::new(r"C:\Users\fixture\Dropbox\vault")),
+            Some("Dropbox")
+        );
+    }
 
     #[test]
     fn warns_for_known_sync_folders() {
@@ -197,6 +240,59 @@ mod tests {
         std::fs::create_dir_all(t.path().join("plain")).unwrap();
         std::os::unix::fs::symlink(t.path().join("Dropbox/child"), t.path().join("plain/hop"))
             .unwrap();
+        let path = t.path().join("plain/missing/../hop/../vault");
+        assert_eq!(cloud_service(&path), Some("Dropbox"), "{}", path.display());
+        assert_eq!(
+            resolve_path(&path),
+            t.path()
+                .join("Dropbox")
+                .canonicalize()
+                .unwrap()
+                .join("vault")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_missing_component_followed_by_dotdot_still_resolves_through_an_alias() {
+        let tmp = std::env::temp_dir().join(format!("wi-cloud-dotdot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("Dropbox")).unwrap();
+        junction(tmp.join("Dropbox"), tmp.join("alias-one")).unwrap();
+        junction(tmp.join("alias-one"), tmp.join("alias-two")).unwrap();
+        let path = tmp.join("alias-two/missing/./deeper/../../vault");
+        assert_eq!(cloud_service(&path), Some("Dropbox"));
+        assert_eq!(
+            resolve_path(&path),
+            tmp.join("Dropbox").canonicalize().unwrap().join("vault")
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dotdot_back_to_an_existing_folder_resolves_its_symlinked_child() {
+        let tmp = std::env::temp_dir().join(format!("wi-cloud-hop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("Dropbox")).unwrap();
+        std::fs::create_dir_all(tmp.join("plain")).unwrap();
+        junction(tmp.join("Dropbox"), tmp.join("plain/hop")).unwrap();
+        let path = tmp.join("plain/missing/../hop/vault");
+        assert_eq!(cloud_service(&path), Some("Dropbox"));
+        assert_eq!(
+            resolve_path(&path),
+            tmp.join("Dropbox").canonicalize().unwrap().join("vault")
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_parent_then_symlink_then_parent_still_detects_cloud() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t.path().join("Dropbox/child")).unwrap();
+        std::fs::create_dir_all(t.path().join("plain")).unwrap();
+        junction(t.path().join("Dropbox/child"), t.path().join("plain/hop")).unwrap();
         let path = t.path().join("plain/missing/../hop/../vault");
         assert_eq!(cloud_service(&path), Some("Dropbox"), "{}", path.display());
         assert_eq!(

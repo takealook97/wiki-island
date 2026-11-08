@@ -78,6 +78,7 @@ pub fn ingest(vault: &Vault, path: &str, bytes: &[u8], batch: Option<(&str, bool
 
 pub fn git(root: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .arg("-C")
         .arg(root)
         .args(args)
@@ -142,6 +143,7 @@ pub fn all_seqs(root: &Path) -> Vec<Seq> {
 
 pub fn show(root: &Path, commit: &str, path: &str) -> Vec<u8> {
     let out = Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .arg("-C")
         .arg(root)
         .args(["show", &format!("{commit}:{path}")])

@@ -21,6 +21,7 @@ fn folder_vault(id: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path::
 
 fn git_external(git_dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .arg("--git-dir")
         .arg(git_dir)
         .args(args)
@@ -32,6 +33,17 @@ fn git_external(git_dir: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8(out.stdout).unwrap()
+}
+
+fn git_worktree_path(text: &str) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        Path::new(text.trim()).canonicalize().unwrap()
+    }
+    #[cfg(not(windows))]
+    {
+        Path::new(text.trim()).to_path_buf()
+    }
 }
 
 #[test]
@@ -50,7 +62,7 @@ fn folder_mode_commits_through_core_worktree_without_git_in_the_folder() {
     assert_eq!(git_external(&git_dir, &["show", "HEAD:notes/a.md"]), "a1\n");
     // The system git agrees the working tree is the notes folder.
     let top = git_external(&git_dir, &["rev-parse", "--show-toplevel"]);
-    assert_eq!(Path::new(top.trim()), root.canonicalize().unwrap());
+    assert_eq!(git_worktree_path(&top), root.canonicalize().unwrap());
     let status = git_external(&git_dir, &["status", "--porcelain", "--", "notes"]);
     assert!(status.is_empty(), "{status}");
 
@@ -104,7 +116,7 @@ fn moved_folder_vault_is_rebound_and_remembered_for_doctor() {
         &data.join("vaults/v-move/git"),
         &["rev-parse", "--show-toplevel"],
     );
-    assert_eq!(Path::new(top.trim()), moved.canonicalize().unwrap());
+    assert_eq!(git_worktree_path(&top), moved.canonicalize().unwrap());
     drop(vault);
     // The notice stays visible to later opens.
     let vault = Vault::open_in(&moved, Some(&data)).unwrap();

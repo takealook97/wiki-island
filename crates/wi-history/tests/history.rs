@@ -730,11 +730,17 @@ fn merged_history_keeps_operations_and_losses_from_every_parent_once() {
     save_record(&vault, second, b"second\n");
     Flusher::flush(&vault).unwrap();
     git(vault.root(), &["checkout", &branch]);
+    #[cfg(windows)]
+    let hooks = tempfile::tempdir().unwrap();
+    #[cfg(windows)]
+    let hooks_arg = format!("core.hooksPath={}", hooks.path().display());
+    #[cfg(not(windows))]
+    let hooks_arg = String::from("core.hooksPath=/dev/null");
     git(
         vault.root(),
         &[
             "-c",
-            "core.hooksPath=/dev/null",
+            hooks_arg.as_str(),
             "-c",
             "user.name=Test",
             "-c",
