@@ -400,3 +400,32 @@ fn init_through_a_missing_parent_a_symlink_and_its_parent_into_cloud_chooses_fol
     assert_eq!(vault.storage_mode(), StorageMode::Folder);
     assert!(!cloud.join("vault/.git").exists());
 }
+
+#[test]
+fn init_through_a_dangling_symlink_and_its_parent_is_detected_as_cloud_and_fails_cleanly() {
+    // `plain/link -> Dropbox/missing`: the OS cannot walk `link/..` while
+    // the target is missing, so init must fail; detection still sees the
+    // synced folder and nothing is created on either side of the link.
+    let tmp = TempDir::new().unwrap();
+    let cloud = tmp.path().join("Dropbox");
+    std::fs::create_dir(&cloud).unwrap();
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    std::os::unix::fs::symlink(cloud.join("missing"), plain.join("link")).unwrap();
+    let root = plain.join("link/../vault");
+    assert_eq!(wi_history::cloud_service(&root), Some("Dropbox"));
+    let result = Vault::init_placed(
+        &root,
+        OpenOptions {
+            index_path: Some(tmp.path().join("index.sqlite3")),
+        },
+        Placement {
+            data_root: Some(tmp.path().join("data")),
+            storage: None,
+        },
+    );
+    assert!(result.is_err());
+    assert!(!cloud.join("vault").exists());
+    assert!(!cloud.join("missing").exists());
+    assert!(!plain.join("vault").exists());
+}

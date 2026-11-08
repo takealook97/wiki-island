@@ -34,47 +34,87 @@ pub fn cloud_service(path: &Path) -> Option<&'static str> {
         .map(|(_, service)| *service)
 }
 
+/// Symlink hops followed by [`resolve_path`] before it gives up and treats
+/// the rest of the path lexically (the usual `MAXSYMLINKS`).
+const MAX_SYMLINK_HOPS: usize = 40;
+
 /// `path` resolved physically, like `realpath`: components are walked left
 /// to right against a resolved prefix. `.` is skipped; `..` takes the parent
-/// of the resolved prefix (so `link/..` is the parent of the link target);
-/// a name that exists is joined and canonicalized, following symlinks. Once
+/// of the resolved prefix (so `link/..` is the parent of the link target).
+/// A name that is a symlink, dangling or not, is replaced by its target's
+/// components (an absolute target restarts from its root; a relative one
+/// continues from the resolved prefix); after [`MAX_SYMLINK_HOPS`] hops the
+/// remainder is treated lexically. A plain name that exists is joined. Once
 /// a name does not exist it and the rest form a missing tail in which `..`
 /// pops lexically; popping the whole tail resumes physical resolution. A
 /// relative `path` starts from the canonical working directory.
 pub fn resolve_path(path: &Path) -> PathBuf {
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
     use std::path::Component;
+
+    enum Part {
+        Root(OsString),
+        Parent,
+        Name(OsString),
+    }
+    fn parts(path: &Path) -> impl Iterator<Item = Part> + '_ {
+        path.components().filter_map(|component| match component {
+            Component::Prefix(_) | Component::RootDir => {
+                Some(Part::Root(component.as_os_str().to_os_string()))
+            }
+            Component::CurDir => None,
+            Component::ParentDir => Some(Part::Parent),
+            Component::Normal(name) => Some(Part::Name(name.to_os_string())),
+        })
+    }
+
     let mut resolved = PathBuf::new();
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    let mut components = path.components().peekable();
-    if !matches!(
-        components.peek(),
-        Some(Component::Prefix(_) | Component::RootDir)
-    ) {
+    if !path.has_root() {
         match std::env::current_dir().and_then(|d| d.canonicalize()) {
             Ok(cwd) => resolved = cwd,
             Err(_) => return path.to_path_buf(),
         }
     }
-    for component in components {
-        match component {
-            Component::Prefix(_) | Component::RootDir => {
-                resolved.push(component.as_os_str());
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
+    let mut tail: Vec<OsString> = Vec::new();
+    let mut pending: VecDeque<Part> = parts(path).collect();
+    let mut hops = 0;
+    let mut lexical = false;
+    while let Some(part) = pending.pop_front() {
+        match part {
+            Part::Root(root) => resolved.push(root),
+            Part::Parent => {
                 if tail.pop().is_none() {
                     resolved.pop();
                 }
             }
-            Component::Normal(name) => {
-                if !tail.is_empty() {
-                    tail.push(name.to_os_string());
+            Part::Name(name) => {
+                if lexical || !tail.is_empty() {
+                    tail.push(name);
                     continue;
                 }
-                let joined = resolved.join(name);
-                match joined.canonicalize() {
-                    Ok(real) => resolved = real,
-                    Err(_) => tail.push(name.to_os_string()),
+                let joined = resolved.join(&name);
+                match std::fs::symlink_metadata(&joined) {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        let target = match std::fs::read_link(&joined) {
+                            Ok(target) if hops < MAX_SYMLINK_HOPS => target,
+                            _ => {
+                                lexical = true;
+                                tail.push(name);
+                                continue;
+                            }
+                        };
+                        hops += 1;
+                        if target.has_root() {
+                            resolved = PathBuf::new();
+                        }
+                        let spliced: Vec<Part> = parts(&target).collect();
+                        for part in spliced.into_iter().rev() {
+                            pending.push_front(part);
+                        }
+                    }
+                    Ok(_) => resolved = joined,
+                    Err(_) => tail.push(name),
                 }
             }
         }
@@ -174,6 +214,11 @@ mod tests {
         std::fs::create_dir_all(base.join("plain/sub")).unwrap();
         std::os::unix::fs::symlink(base.join("Dropbox/child"), base.join("plain/hop")).unwrap();
         std::os::unix::fs::symlink(base.join("plain/hop"), base.join("chain")).unwrap();
+        std::os::unix::fs::symlink(base.join("Dropbox/missing"), base.join("plain/dangling"))
+            .unwrap();
+        std::os::unix::fs::symlink("../Dropbox/gone", base.join("plain/relative")).unwrap();
+        std::os::unix::fs::symlink("loop-b", base.join("loop-a")).unwrap();
+        std::os::unix::fs::symlink("loop-a", base.join("loop-b")).unwrap();
         let dropbox = base.join("Dropbox");
         let cases: &[(&str, PathBuf)] = &[
             ("plain", base.join("plain")),
@@ -190,6 +235,10 @@ mod tests {
             ("plain/a/b/../../hop/../x/./y", dropbox.join("x/y")),
             ("plain/sub/../hop/missing/../../v", dropbox.join("v")),
             ("missing/../../", base.parent().unwrap().to_path_buf()),
+            ("plain/dangling", dropbox.join("missing")),
+            ("plain/dangling/../vault", dropbox.join("vault")),
+            ("plain/relative/../vault", dropbox.join("vault")),
+            ("loop-a/x/../y", base.join("loop-a/y")),
         ];
         for (form, expected) in cases {
             assert_eq!(&resolve_path(&base.join(form)), expected, "{form}");
