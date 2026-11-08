@@ -384,7 +384,10 @@ impl Vault {
         Ok(report)
     }
 
-    fn validate_sync_tree(&self, tree: &SyncTree) -> Result<()> {
+    /// Refuse protected or colliding paths. Returns the paths this device's
+    /// file system cannot create (see [`Vault::creatable`]): they stay in
+    /// history and on other devices, and sync goes on without them here.
+    fn validate_sync_tree(&self, tree: &SyncTree) -> Result<BTreeSet<String>> {
         let mut identities = BTreeSet::new();
         for path in tree.keys() {
             let normalized = crate::paths::normalize(self.root(), path)?;
@@ -413,7 +416,42 @@ impl Vault {
                 }
             }
         }
-        Ok(())
+        Ok(tree
+            .keys()
+            .filter(|path| !self.creatable(path))
+            .cloned()
+            .collect())
+    }
+
+    /// Whether `path` fits this device's file system under the vault root,
+    /// with room for the sibling staging and conflict-copy names sync uses:
+    /// every folder name at most 255 bytes, the file name at most 224, the
+    /// whole path under the platform path limit, and no name the file
+    /// system rejects outright.
+    fn creatable(&self, path: &str) -> bool {
+        const NAME_MAX: usize = 255;
+        // `.<name>.wi-conflict-sync-<12 hex>` is the longest sibling.
+        const SIBLING: usize = 31;
+        const PATH_MAX: usize = if cfg!(target_os = "macos") { 1024 } else { 4096 };
+        let mut parts = path.split('/').peekable();
+        while let Some(part) = parts.next() {
+            let limit = if parts.peek().is_some() {
+                NAME_MAX
+            } else {
+                NAME_MAX - SIBLING
+            };
+            if part.is_empty() || part.len() > limit {
+                return false;
+            }
+        }
+        let full = self.root().join(path);
+        if full.as_os_str().len() + SIBLING >= PATH_MAX {
+            return false;
+        }
+        !matches!(
+            std::fs::symlink_metadata(&full),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidFilename
+        )
     }
 
     fn apply_remote(&self, remote: Option<&str>, excluded: Vec<String>) -> Result<SyncReport> {
@@ -433,7 +471,19 @@ impl Vault {
         let mut target = local.clone();
         if let Some(remote) = remote {
             let theirs = SyncRepo::tree(&self.history, Some(remote))?;
-            self.validate_sync_tree(&theirs)?;
+            let unwritable = self.validate_sync_tree(&theirs)?;
+            for path in &unwritable {
+                if before.get(path) != theirs.get(path) {
+                    crate::work::record(
+                        &self.history,
+                        &WorkRequest::new(
+                            WorkKind::RecoveryProblem,
+                            path,
+                            "This device cannot create this file name (too long or not allowed here); it stays in history and on other devices, and sync continues without it.",
+                        ),
+                    )?;
+                }
+            }
             if let Some(blob) = theirs.get(wi_note::VAULT_CONFIG_PATH) {
                 let bytes = self.history.read_blob(blob)?;
                 let text = std::str::from_utf8(&bytes).map_err(|_| invalid("The remote notes configuration is unreadable; local notes were left unchanged."))?;
@@ -546,7 +596,10 @@ impl Vault {
         };
         let mut updates = Vec::new();
         for path in before.keys().chain(after.keys()).collect::<BTreeSet<_>>() {
-            if before.get(path) == after.get(path) || excluded.contains(path) {
+            if before.get(path) == after.get(path)
+                || excluded.contains(path)
+                || !self.creatable(path)
+            {
                 continue;
             }
             let old = before.get(path).cloned();

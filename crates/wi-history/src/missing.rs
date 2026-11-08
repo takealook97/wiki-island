@@ -42,6 +42,9 @@ impl Missing {
             match std::fs::symlink_metadata(&on_disk) {
                 Ok(_) => continue,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // A name this file system cannot hold (synced from another
+                // device) is not a deletion.
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidFilename => continue,
                 Err(e) => return Err(HistoryError::io(on_disk, e)),
             }
             if queued(&path) {

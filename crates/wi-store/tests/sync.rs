@@ -654,3 +654,94 @@ fn an_ingested_file_over_fifty_megabytes_before_sync_setup_never_blocks_sync() {
     assert!(pushed.lines().any(|l| l == "note.md"), "{pushed}");
     assert!(pushed.lines().all(|l| l != "big.dat"), "{pushed}");
 }
+
+#[test]
+fn a_remote_file_name_this_device_cannot_create_is_skipped_and_sync_continues() {
+    let p = Pair::new();
+    let long = format!("{}.md", "a".repeat(300));
+    // A careless peer commits a name no local file system can hold.
+    let blob = {
+        let mut child = Command::new("git")
+            .arg("--git-dir")
+            .arg(&p.remote)
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(b"x\n").unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let listing = git(&p.remote, &["ls-tree", "main^{tree}"]);
+    let tree = {
+        let mut child = Command::new("git")
+            .arg("--git-dir")
+            .arg(&p.remote)
+            .arg("mktree")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        let input = format!("{listing}100644 blob {blob}\t{long}\n");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let parent = git(&p.remote, &["rev-parse", "main"]);
+    let commit = git(
+        &p.remote,
+        &[
+            "-c",
+            "user.name=peer",
+            "-c",
+            "user.email=peer@example.invalid",
+            "commit-tree",
+            &tree,
+            "-p",
+            parent.trim(),
+            "-m",
+            "long name",
+        ],
+    );
+    git(&p.remote, &["update-ref", "refs/heads/main", commit.trim()]);
+    let b = p.b.open();
+    write(&b, "later.md", "later\n");
+    assert!(b.sync().unwrap().pushed);
+    let names = git(&p.remote, &["ls-tree", "-r", "--name-only", "main"]);
+    assert!(names.lines().any(|l| l == "later.md"), "{names}");
+    assert!(names.lines().any(|l| l == long), "kept for other devices");
+    b.reconcile().unwrap();
+    b.flush().unwrap();
+    write(&b, "after.md", "after\n");
+    assert!(b.sync().unwrap().pushed);
+    let names = git(&p.remote, &["ls-tree", "-r", "--name-only", "main"]);
+    assert!(names.lines().any(|l| l == "after.md"), "{names}");
+    assert!(names.lines().any(|l| l == long), "never deleted: {names}");
+    assert_eq!(
+        b.work_requests()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path == long)
+            .count(),
+        1
+    );
+    b.doctor().unwrap();
+    let a = p.a.open();
+    a.sync().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(p.a.root.join("later.md")).unwrap(),
+        "later\n"
+    );
+}
