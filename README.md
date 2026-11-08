@@ -40,7 +40,7 @@ This removes the background service and every AI-app connection and skill that W
 ## Where your data lives
 
 - **Notes:** `~/WikiIsland` (or the folder you chose). Plain Markdown files you can open with anything.
-- **Settings and backups:** the hidden `.wiki-island` folder inside the notes folder, which also holds the files generated for AI apps. Copies of AI-app settings files taken before any change are in `.wiki-island/local/backups/`. In Finder press Cmd+Shift+. to show hidden folders.
+- **Settings and backups:** the hidden `.wiki-island` folder inside the notes folder, which also holds the files generated for AI apps. Copies of AI-app settings files taken before any change are in `.wiki-island/local/backups/` (for notes in iCloud Drive or a similar synced folder: in `~/Library/Application Support/wiki-island/vaults/<id>/local/backups/`). In Finder press Cmd+Shift+. to show hidden folders.
 - **Search index:** a disposable cache outside the notes folder, one per device. Deleting it loses nothing.
 
 ## Privacy
@@ -61,7 +61,7 @@ wi maintain                 # run one maintenance pass now
 
 ## Advanced
 
-- **Sync between devices** is optional: the notes folder is a git repository, so you can add a private remote and push. Do not put its `.git` inside iCloud Drive or Google Drive. Details: [operations](docs/OPERATIONS.md#git-history-and-sync).
+- **Sync between devices** is optional: the notes folder is a git repository, so you can add a private remote and push. A notes folder inside iCloud Drive or a similar synced folder works too: `wi setup` then keeps its history on each device, outside the synced folder, and one device (`wi setup --primary`) runs note maintenance. Details: [operations](docs/OPERATIONS.md#git-history-and-sync).
 - **Settings** are in `.wiki-island/config.toml` inside the notes folder ([format](docs/FORMAT.md)).
 - **Manual install:** with [rustup](https://rustup.rs) available, run `cargo install --path crates/wi-cli --locked` and then `wi setup`.
 

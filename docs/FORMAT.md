@@ -4,7 +4,7 @@ This defines the files. Lifecycle behavior is in [KNOWLEDGE](KNOWLEDGE.md); the 
 
 ## Vault layout and config
 
-A vault is one directory that is also a git repository ([DESIGN](DESIGN.md#storage-and-history)). Any folder of Markdown notes is a valid vault.
+A vault is one directory of notes with git history, either in `<vault>/.git` (git mode) or in an external git directory in the per-device data directory (folder mode, for a vault in a file-synced folder; [DESIGN](DESIGN.md#storage-and-history)). Any folder of Markdown notes is a valid vault.
 
 ```text
 <vault>/
@@ -12,15 +12,22 @@ A vault is one directory that is also a git repository ([DESIGN](DESIGN.md#stora
   <file>.pdf, <file>.pdf.md original and its import sidecar
   document-ingestion-runs/  import run notes
   archive/                  archived notes, original relative path kept
-  .wiki-island/exports/     generated rules fragments (hidden, still synced)
+  .wiki-island/exports/     generated rules fragments (hidden, still synced; no wall-clock field)
   .wiki-island/
-    config.toml             vault config, tracked
+    config.toml             vault config, tracked (`vault_id`, `primary_device`, ...)
     work/                   work items (engine-owned)
     captures/               capture notes
     procedures/             built-in maintenance procedure (engine-owned)
-    local/                  per-device state, gitignored
+    local/                  per-device state, gitignored (git mode only)
   .obsidian/, .trash/       editor folders: ignored, never read or modified
+
+<data_dir>/wiki-island/     per device ($WI_DATA_DIR; macOS ~/Library/Application Support/wiki-island)
+  device-id                 this device's random id
+  vaults/<vault_id>/git/    folder-mode history (core.worktree = the vault); ignore rules in info/exclude
+  vaults/<vault_id>/local/  folder-mode per-device state (what git mode keeps in .wiki-island/local)
 ```
+
+In folder mode the engine writes no `.gitignore` into the vault; its ignore lines go to `<git dir>/info/exclude`, which ingest, the watcher and the index walk honour after `.ignore` and `.gitignore` files.
 
 The SQLite index is not in this tree: it lives in the platform cache, one per device. Folder names carry no permission. Any folder of Markdown notes, including an Obsidian vault, is a valid vault; its `.obsidian/` and `.trash/` folders are treated as engine-internal by ingest, the index walk and `wi doctor`.
 
@@ -87,7 +94,7 @@ skill_id: null              # stable id for kind=procedure
 
 - **Plain notes.** A note whose `type` is not `memory`, `capture` or `work` is a plain note, labelled `lifecycle: none` and never trusted memory. A `status` key on it is ignored for trust.
 - For agent-origin notes the engine may lower a claimed `observed_at` to the evidence time of the pinned sources ([KNOWLEDGE](KNOWLEDGE.md#freshness)); a user-origin `observed_at` must not be in the future.
-- `origin` says who authored the current claim content (`summary`, `sources`, `applicability`, `kind`, `claim_kind`, `observed_at`, `entities`, `scope`, `slot`, `value` and, for `type: memory`, the Markdown body). Ingress sets it: direct file edit or CLI → `user`, MCP call → `agent`, import → `file` or `url` ([AUTHORITY](AUTHORITY.md)). A file-ingress change to claim content sets `user` and resets the note to `candidate`; MCP never changes claim content in place ([KNOWLEDGE](KNOWLEDGE.md#adoption)).
+- `origin` says who authored the current claim content (`summary`, `sources`, `applicability`, `kind`, `claim_kind`, `observed_at`, `entities`, `scope`, `slot`, `value` and, for `type: memory`, the Markdown body). Writes set it: CLI → `user`, MCP call → `agent`, import → `file` or `url` ([AUTHORITY](AUTHORITY.md)). File ingress reads it from the note itself: a note without `origin` (new, or one whose agent label the owner removed) gets `user`; a written `origin` stays as written. A file-ingress change to claim content resets the note to `candidate`; MCP never changes claim content in place ([KNOWLEDGE](KNOWLEDGE.md#adoption)).
 - Engine-owned, never writable through `wi_edit` or `wi_write`: `status`, `adoption`, `check`, `conflict_with`, `origin`, `excluded`, the work and queue keys `work`, `deferred`, `work_id` and `work_kind`, and `restores` except at creation. The engine also refuses every engine write to a note with `locked: true`.
 - `conditions` use the grammar `[{key, op: eq|in, values: [..]}]`, a conjunction; `eq` has one value, `in` a non-empty sorted set. `from` is inclusive and `until` exclusive; `null` bounds are unbounded.
 - `slot` and `value` drive model-free conflict detection; without `slot` there is none ([KNOWLEDGE](KNOWLEDGE.md#adoption)). `adoption.literal` is set by the literal gate. `adoption.gates` holds one `fail: <reason>` per failed gate and is written only on failure; a passing adoption omits it. Keys the engine filled for a user-origin note are listed in `adoption.completed`, and defaulted keys are omitted.

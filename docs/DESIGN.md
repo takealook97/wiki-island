@@ -33,12 +33,16 @@ Structure:
 
 ## Storage and history
 
-- The vault is one directory, and that directory is a git repository. Markdown notes and attachments are the canonical content.
+- The vault is one directory of Markdown notes and attachments; they are the canonical content. History is a git repository in one of two storage modes:
+  - **git mode**: history in `<vault>/.git` (a vault outside file-synced folders).
+  - **folder mode**: history in an external git directory `<data_dir>/wiki-island/vaults/<vault_id>/git` whose `core.worktree` names the vault, so the folder holds only notes and `.wiki-island/`. Used for a vault inside a file-synced folder (iCloud Drive, Obsidian Sync, Dropbox and similar). History and per-device state are then private to each device.
+- On open, `<vault>/.git` means git mode; otherwise an external git directory registered for the vault's `vault_id` means folder mode. `wi init` and `wi setup` choose folder mode inside a known file-synced folder and git mode elsewhere. A folder-mode vault moved on the same device is re-bound under a lock and reported by `wi doctor`; a second copy with the same `vault_id` is refused, never silently taken over.
 - The current state is the durable working-tree file, identified by its content hash. Git holds coalesced history: engine writes are flushed in batches, one commit per acknowledged operation; the watcher commits external editor changes after a debounce; `wi commit` commits by hand. A revert is a new commit ([OPERATIONS](OPERATIONS.md#git-history-and-sync)).
 - Until its commit, every acknowledged engine save is kept as a git blob named in a fsynced pending manifest. Intermediate external-editor saves the engine never saw are not preserved.
 - Git is embedded (pure Rust); no git binary is needed. Local commits need no daemon and no network.
 - Sync is an optional git remote, used through push and pull. Merge conflicts are never resolved automatically.
-- **Never put the vault's `.git` directory inside an iCloud Drive or Google Drive sync folder.** Those services sync files one by one and can deliver git's objects and refs partly or out of order; the likely result is a corrupt repository. Use a git remote. The engine cannot reliably detect such a folder.
+- **Never put a git directory inside an iCloud Drive or Google Drive sync folder.** Those services sync files one by one and can deliver git's objects and refs partly or out of order; the likely result is a corrupt repository. Folder mode keeps history out of the synced folder; `wi doctor` warns when the history folder itself looks synced (detection is heuristic).
+- In folder mode only the primary device (`primary_device` in `.wiki-island/config.toml`, a random per-device id kept in the data directory) runs lifecycle-mutating maintenance; the first setup records it and `wi setup --primary` takes over. Other devices still index, search, serve MCP, capture, ingest owner edits and keep their own history.
 - Originals stay in the repository by default; `wi doctor` advises considering Git LFS above an unmeasured 20 MiB threshold. No automatic LFS setup ([OPERATIONS](OPERATIONS.md#attachments)).
 
 ## Write path
