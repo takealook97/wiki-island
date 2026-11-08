@@ -1,6 +1,6 @@
 # Dependencies
 
-Versions are manifest ranges; `Cargo.lock` records exact resolved versions. Everything is local runtime code: no model or network service sits on any engine path, and crate downloads are build-time only. Each crate declares its own dependencies. A new dependency needs a written reason here: what it does, what it costs, what the alternative was. Release builds use thin LTO, one codegen unit and symbol stripping; panic behavior stays Rust's default because a workspace-wide abort would also affect libraries.
+Versions are manifest ranges; `Cargo.lock` records exact resolved versions. Capture, search, reads and MCP use local runtime code only. The isolated publication library uses the network only when explicitly called outside engine locks; crate downloads are build-time only. Each crate declares its own dependencies. A new dependency needs a written reason here: what it does, what it costs, what the alternative was. Release builds use thin LTO, one codegen unit and symbol stripping; panic behavior stays Rust's default because a workspace-wide abort would also affect libraries.
 
 ## wi-note
 
@@ -72,6 +72,18 @@ Reuses `wi-note`, `wi-store`, `wi-history`, `serde`, `serde_json`, `thiserror` a
 | `tempfile` | 3 | Private OCR input snapshots, so a concurrently changing source cannot affect OCR. |
 
 Extractor dependencies are pinned because their behavior contributes to run identity. A dependency or normalization change must update the extractor version or pipeline identity before existing runs are reused. Tesseract and poppler are optional preinstalled executables, not dependencies; no model or network is involved.
+
+## wi-notion
+
+Reuses `wi-note` for canonical note parsing, `wi-history` for atomic durable map
+replacement, `pulldown-cmark` for structured Markdown mapping, `serde` and
+`serde_json` for blocks and device-local state, `sha2` for publication hashes,
+`thiserror` for sanitized errors, and `tempfile` (dev) for isolated fixtures.
+
+| Crate | Range | Reason and alternative |
+| --- | --- | --- |
+| `ureq` | 3 (defaults off; `rustls`, `json`) | Synchronous HTTPS requests for the optional publisher, with timeouts and redirects disabled. Adds HTTP parsing, root certificates and rustls TLS dependencies; no async runtime. An async HTTP client would add runtime coupling to a thread-based caller; a hand-written TLS client is not suitable. |
+| `rustls` (transitive) | 0.23 | Certificate-verified TLS via ureq, without a platform TLS binding. The alternative is native TLS with platform-specific dependencies. |
 
 ## wi-export
 
