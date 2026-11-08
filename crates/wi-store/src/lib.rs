@@ -8,7 +8,10 @@
 
 #[cfg(unix)]
 mod contained;
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[path = "contained_windows.rs"]
+mod contained;
+#[cfg(not(any(unix, windows)))]
 #[path = "contained_unsupported.rs"]
 mod contained;
 mod doctor;

@@ -158,7 +158,30 @@ impl Vault {
         })
     }
 
-    #[cfg(not(unix))]
+    /// Check containment, readability and regular-file kind without reading
+    /// bytes, through the same checked handles as a full read.
+    #[cfg(windows)]
+    pub fn name_stat(&self, path: &str) -> Result<NameStat> {
+        let target = resolve_readable(self.root(), path)?;
+        let (dir, name) = crate::contained::Dir::open_parent(self.root(), &target.rel)?
+            .ok_or_else(|| StoreError::NotFound {
+                path: target.rel.clone(),
+            })?;
+        let file = dir
+            .open_regular(&name)?
+            .ok_or_else(|| StoreError::NotFound {
+                path: target.rel.clone(),
+            })?;
+        let stat = wi_sys::fs::stamp(&file).map_err(|e| StoreError::io(&target.abs, e))?;
+        let modified = file.metadata().ok().and_then(|m| m.modified().ok());
+        Ok(NameStat {
+            size: stat.size,
+            mtime_ns: crate::contained::filetime_ns(stat.last_write),
+            modified,
+        })
+    }
+
+    #[cfg(not(any(unix, windows)))]
     pub fn name_stat(&self, _path: &str) -> Result<NameStat> {
         Err(StoreError::UnsupportedPlatform)
     }
