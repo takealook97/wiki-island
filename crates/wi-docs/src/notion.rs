@@ -197,10 +197,18 @@ fn zip_preflight(bytes: &[u8]) -> Result<()> {
 fn source_path(root: &Path, source: &str) -> Result<PathBuf> {
     let path = Path::new(source);
     if path.is_absolute() {
-        if path
-            .components()
-            .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
-        {
+        if path.components().any(|part| match part {
+            Component::RootDir | Component::Normal(_) => false,
+            #[cfg(windows)]
+            Component::Prefix(prefix) => !matches!(
+                prefix.kind(),
+                std::path::Prefix::Disk(_)
+                    | std::path::Prefix::VerbatimDisk(_)
+                    | std::path::Prefix::UNC(..)
+                    | std::path::Prefix::VerbatimUNC(..)
+            ),
+            _ => true,
+        }) {
             return Err(invalid("unsafe export source path"));
         }
         if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
@@ -293,6 +301,8 @@ fn load_zip(
 /// Lightweight name-based detection for callers which expand directory inputs.
 /// Does not follow symlinks. Import repeats all containment and size checks.
 pub fn is_export(root: &Path, source: &str) -> bool {
+    let input = super::source_input(source);
+    let source = input.as_ref();
     let Ok(full) = source_path(root, source) else {
         return false;
     };
@@ -1122,4 +1132,35 @@ pub(crate) fn import(vault: &Vault, source: &str) -> Result<ImportReport> {
         diagnostics: diagnostics.into_iter().collect(),
         unchanged,
     })
+}
+
+#[cfg(all(test, windows))]
+mod windows_paths {
+    use super::*;
+
+    #[test]
+    fn external_absolute_sources_accept_windows_prefixes_and_refuse_devices() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().to_str().unwrap();
+        assert_eq!(
+            source_path(temp.path(), path).unwrap(),
+            std::fs::canonicalize(temp.path()).unwrap()
+        );
+        assert!(source_path(temp.path(), r"C:relative").is_err());
+        assert!(source_path(temp.path(), r"\\.\NUL").is_err());
+        assert!(source_path(temp.path(), r"\\?\GLOBALROOT\Device\HarddiskVolume1").is_err());
+    }
+
+    #[test]
+    fn export_detection_accepts_native_relative_separators() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("docs/export");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("Page 11111111111111111111111111111111.md"),
+            "body",
+        )
+        .unwrap();
+        assert!(is_export(temp.path(), r"docs\export"));
+    }
 }

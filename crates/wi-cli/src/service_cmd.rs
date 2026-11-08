@@ -9,9 +9,7 @@ use wi_export::service::{self, SystemLaunchctl};
 use super::{Output, ServiceCommand, Session};
 
 fn home() -> Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("HOME is unset")
+    super::setup_cmd::integration_home()
 }
 
 pub(crate) fn run(vault: &Session, command: ServiceCommand) -> Result<Output> {

@@ -141,13 +141,22 @@ fn github_with(
     Ok("Private remote sync is connected; background care will synchronize your notes.".into())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
     fn output(ok: bool, text: &str) -> Option<std::process::Output> {
         Some(std::process::Output {
-            status: std::process::ExitStatus::from_raw(if ok { 0 } else { 256 }),
+            status: std::process::ExitStatus::from_raw(if ok {
+                0
+            } else if cfg!(unix) {
+                256
+            } else {
+                1
+            }),
             stdout: text.as_bytes().to_vec(),
             stderr: vec![],
         })

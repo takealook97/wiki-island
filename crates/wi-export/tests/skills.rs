@@ -198,10 +198,22 @@ fn colliding_titles_have_unique_names_and_duplicate_skill_ids_are_omitted() {
     assert_eq!(dirs.len(), 2);
     assert!(dirs.iter().all(|name| name.starts_with("wi-same-title-")));
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn skill_export_never_follows_directory_marker_or_skill_symlinks() {
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    fn symlink(
+        source: impl AsRef<std::path::Path>,
+        target: impl AsRef<std::path::Path>,
+    ) -> std::io::Result<()> {
+        if source.as_ref().is_dir() {
+            std::os::windows::fs::symlink_dir(source, target)
+        } else {
+            std::os::windows::fs::symlink_file(source, target)
+        }
+    }
     let f = Fixture::new();
     f.seed("proc.md", "demo.read", "Read a note", json!({}));
     let home = f.home();
@@ -222,7 +234,10 @@ fn skill_export_never_follows_directory_marker_or_skill_symlinks() {
         std::fs::read_to_string(outside.join("SKILL.md")).unwrap(),
         "private"
     );
+    #[cfg(unix)]
     std::fs::remove_file(&dir).unwrap();
+    #[cfg(windows)]
+    std::fs::remove_dir(&dir).unwrap();
     skills::sync(&f.vault, &home, &[SkillTarget::Agents], true).unwrap();
     std::fs::remove_file(dir.join("SKILL.md")).unwrap();
     symlink(outside.join("SKILL.md"), dir.join("SKILL.md")).unwrap();

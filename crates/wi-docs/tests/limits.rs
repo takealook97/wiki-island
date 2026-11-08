@@ -99,6 +99,9 @@ fn child(mode: &str, budget: &str) {
         .env("WI_IMPORT_BUDGET_MS", budget)
         .env("PATH", dir.path())
         .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path())
+        .env("APPDATA", dir.path())
+        .env("LOCALAPPDATA", dir.path())
         .env("WI_VAULT", dir.path().join("vault"))
         .output()
         .unwrap();
@@ -244,6 +247,9 @@ fn failed_retry_preserves_the_prior_raw_revision_and_can_retry_again() {
             .env("WI_DOCS_RETRY_STEP", step)
             .env("WI_VAULT", &root)
             .env("HOME", dir.path())
+            .env("USERPROFILE", dir.path())
+            .env("APPDATA", dir.path())
+            .env("LOCALAPPDATA", dir.path())
             .env("PATH", dir.path())
             .env_remove("WI_IMPORT_BUDGET_MS")
             .env_remove("WI_TOOL_TIMEOUT_MS");
@@ -305,6 +311,7 @@ fn isolated_tool_cache_child() {
     };
     let head = || {
         let output = Command::new("git")
+            .args(["-c", "core.autocrlf=false"])
             .env("PATH", std::env::var_os("WI_DOCS_TEST_PATH").unwrap())
             .arg("-C")
             .arg(vault.root())
@@ -413,6 +420,9 @@ fn missing_tool_is_cached_until_installed_or_upgraded() {
         .env("WI_DOCS_TEST_PATH", std::env::var_os("PATH").unwrap())
         .env("PATH", dir.path().join("bin"))
         .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path())
+        .env("APPDATA", dir.path())
+        .env("LOCALAPPDATA", dir.path())
         .env_remove("WI_IMPORT_BUDGET_MS")
         .env_remove("WI_TOOL_TIMEOUT_MS")
         .output()
@@ -441,6 +451,9 @@ fn unknown_tool_discovery_retries_until_resolved() {
             )
             .env("PATH", dir.path().join("bin"))
             .env("HOME", dir.path())
+            .env("USERPROFILE", dir.path())
+            .env("APPDATA", dir.path())
+            .env("LOCALAPPDATA", dir.path())
             .env(
                 "WI_IMPORT_BUDGET_MS",
                 if case == "budget" { "1" } else { "10000" },

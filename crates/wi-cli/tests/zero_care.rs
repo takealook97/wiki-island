@@ -35,6 +35,9 @@ impl Env {
             .env("WI_CACHE_DIR", self.cache.path())
             .env("WI_VAULT", &self.root)
             .env("HOME", self.home.path())
+            .env("USERPROFILE", self.home.path())
+            .env("APPDATA", self.home.path())
+            .env("LOCALAPPDATA", self.home.path())
             .env_remove("WI_FAULT")
             .output()
             .unwrap()
@@ -51,6 +54,7 @@ impl Env {
 
     fn git_log(&self) -> String {
         let out = Command::new("git")
+            .args(["-c", "core.autocrlf=false"])
             .args(["log", "--name-only", "--format=%s"])
             .current_dir(&self.root)
             .output()
@@ -192,6 +196,7 @@ fn deleting_a_just_written_note_is_committed_without_work() {
     let requests = work_requests(&env);
     assert!(!requests.contains("\"written.md\""), "{requests}");
     let out = Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .args(["log", "--name-status", "--format=%s"])
         .current_dir(&env.root)
         .output()

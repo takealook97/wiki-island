@@ -534,16 +534,20 @@ fn doctor_advises_lfs_for_large_originals_without_configuration_changes() {
     assert!(!vault.root().join(".gitattributes").exists());
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn import_refuses_symlink_sources_and_existing_sidecars() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file as symlink;
     let (tmp, vault) = setup();
     fs::write(tmp.path().join("outside.csv"), "a,b\n").unwrap();
-    std::os::unix::fs::symlink(tmp.path().join("outside.csv"), vault.root().join("a.csv")).unwrap();
+    symlink(tmp.path().join("outside.csv"), vault.root().join("a.csv")).unwrap();
     assert!(import(&vault, "a.csv", options()).is_err());
     fs::remove_file(vault.root().join("a.csv")).unwrap();
     fs::write(vault.root().join("a.csv"), "a,b\n").unwrap();
-    std::os::unix::fs::symlink(
+    symlink(
         tmp.path().join("outside.csv"),
         vault.root().join("a.csv.md"),
     )
@@ -630,6 +634,7 @@ fn import_publishes_through_the_lifecycle_path_without_triggering_adoption() {
     // engine write inside the import commit.
     assert!(!vault.root().join("work").exists());
     let log = std::process::Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .arg("-C")
         .arg(vault.root())
         .args(["log", "-1", "--format=%B"])
@@ -1036,6 +1041,7 @@ fn import_reloads_index_bound_for_a_long_lived_vault() {
 
 fn git(vault: &Vault, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
+        .args(["-c", "core.autocrlf=false"])
         .arg("-C")
         .arg(vault.root())
         .args(args)
@@ -1141,4 +1147,16 @@ fn import_commit_subject_counts_changed_files_not_records() {
         subject.trim_end().ends_with(&format!("({changed} files)")),
         "{subject} vs {changed} changed files"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn native_separators_import_the_same_document_and_keep_portable_sidecar_paths() {
+    let (_temp, vault) = setup();
+    fs::create_dir_all(vault.root().join("docs")).unwrap();
+    fs::write(vault.root().join("docs/table.csv"), "a,b\n").unwrap();
+    let first = import(&vault, r"docs\table.csv", options()).unwrap();
+    assert_eq!(first.sidecar_path, "docs/table.csv.md");
+    let again = import(&vault, "docs/table.csv", options()).unwrap();
+    assert!(again.unchanged);
 }

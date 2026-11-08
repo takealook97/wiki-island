@@ -1,5 +1,4 @@
 use serde_json::{Value, json};
-use std::path::Path;
 use tempfile::TempDir;
 use wi_export::{
     hosts::{self, Format, HOSTS, HostId},
@@ -7,14 +6,17 @@ use wi_export::{
 };
 #[test]
 fn every_installed_host_is_detected_registered_idempotently_and_removed() {
+    if isolated("every_installed_host_is_detected_registered_idempotently_and_removed") {
+        return;
+    }
     let temp = TempDir::new().unwrap();
     let home = temp.path();
     assert!(hosts::detect(home).is_empty());
     let vault_path = home.join("vault");
     let vault = vault_path.as_path();
     for host in HOSTS {
-        std::fs::create_dir_all(home.join(host.detect_path)).unwrap();
-        let path = home.join(host.config_path);
+        let (directory, path) = host.id.paths(home, None);
+        std::fs::create_dir_all(directory).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let initial = match host.format {
             Format::Toml => {
@@ -26,7 +28,14 @@ fn every_installed_host_is_detected_registered_idempotently_and_removed() {
             ),
         };
         std::fs::write(&path, &initial).unwrap();
-        let plan = install::plan_host(host.id, home, None, Path::new("/bin/wi"), vault).unwrap();
+        let plan = install::plan_host(
+            host.id,
+            home,
+            None,
+            &std::env::temp_dir().join("wi-test-bin"),
+            vault,
+        )
+        .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), initial);
         plan.apply().unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
@@ -41,25 +50,41 @@ fn every_installed_host_is_detected_registered_idempotently_and_removed() {
                 match host.id {
                     HostId::Zed => assert_eq!(
                         entry["command"],
-                        json!({"path":"/bin/wi","args":["mcp","--vault",vault]})
+                        json!({"path":std::env::temp_dir().join("wi-test-bin"),"args":["mcp","--vault",vault]})
                     ),
                     HostId::Opencode => assert_eq!(
                         entry["command"],
-                        json!(["/bin/wi", "mcp", "--vault", vault])
+                        json!([
+                            std::env::temp_dir().join("wi-test-bin"),
+                            "mcp",
+                            "--vault",
+                            vault
+                        ])
                     ),
                     _ => assert_eq!(entry["args"], json!(["mcp", "--vault", vault])),
                 }
             }
         }
         assert!(
-            !install::plan_host(host.id, home, None, Path::new("/bin/wi"), vault)
-                .unwrap()
-                .changed
+            !install::plan_host(
+                host.id,
+                home,
+                None,
+                &std::env::temp_dir().join("wi-test-bin"),
+                vault
+            )
+            .unwrap()
+            .changed
         );
         assert!(
-            install::plan_remove(host.id, home, None, Path::new("/another/vault"))
-                .unwrap()
-                .is_none()
+            install::plan_remove(
+                host.id,
+                home,
+                None,
+                &std::env::temp_dir().join("another-vault")
+            )
+            .unwrap()
+            .is_none()
         );
         install::plan_remove(host.id, home, None, vault)
             .unwrap()
@@ -79,9 +104,17 @@ fn every_installed_host_is_detected_registered_idempotently_and_removed() {
 }
 #[test]
 fn uninstall_retains_unrelated_json_bytes_for_first_middle_last_and_only_members() {
+    if isolated("uninstall_retains_unrelated_json_bytes_for_first_middle_last_and_only_members") {
+        return;
+    }
     let temp = TempDir::new().unwrap();
     let path = temp.path().join(".claude.json");
-    let owned = r#""wiki-island" : {"command":"/bin/wi","args":["mcp","--vault","/vault"]}"#;
+    let vault = temp.path().join("vault");
+    let owned = format!(
+        r#""wiki-island" : {{"command":{},"args":["mcp","--vault",{}]}}"#,
+        json!(temp.path().join("wi.exe")),
+        json!(&vault)
+    );
     for members in [
         owned.to_owned(),
         format!("{owned}, \"keep\" : 1e02"),
@@ -93,7 +126,7 @@ fn uninstall_retains_unrelated_json_bytes_for_first_middle_last_and_only_members
             format!("{{\"mcpServers\":{{ {members} }},\"outside\": [1, 2]}}\n"),
         )
         .unwrap();
-        install::plan_remove(HostId::Claude, temp.path(), None, Path::new("/vault"))
+        install::plan_remove(HostId::Claude, temp.path(), None, &vault)
             .unwrap()
             .unwrap()
             .apply()
@@ -109,12 +142,15 @@ fn uninstall_retains_unrelated_json_bytes_for_first_middle_last_and_only_members
 
 #[test]
 fn jsonc_comments_trailing_commas_and_existing_opencode_jsonc_survive() {
+    if isolated("jsonc_comments_trailing_commas_and_existing_opencode_jsonc_survive") {
+        return;
+    }
     let temp = TempDir::new().unwrap();
     for host in [HostId::Opencode, HostId::Vscode, HostId::Zed] {
         let path = if host == HostId::Opencode {
             temp.path().join(".config/opencode/opencode.jsonc")
         } else {
-            temp.path().join(host.spec().config_path)
+            host.config_path(temp.path(), None)
         };
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let Format::Json(key) = host.spec().format else {
@@ -132,7 +168,7 @@ fn jsonc_comments_trailing_commas_and_existing_opencode_jsonc_survive() {
                 host,
                 temp.path(),
                 None,
-                Path::new("/bin/wi"),
+                &std::env::temp_dir().join("wi-test-bin"),
                 &temp.path().join("vault"),
             )
             .unwrap();
@@ -148,7 +184,7 @@ fn jsonc_comments_trailing_commas_and_existing_opencode_jsonc_survive() {
                     host,
                     temp.path(),
                     None,
-                    Path::new("/bin/wi"),
+                    &std::env::temp_dir().join("wi-test-bin"),
                     &temp.path().join("vault")
                 )
                 .unwrap()
@@ -173,6 +209,9 @@ fn jsonc_comments_trailing_commas_and_existing_opencode_jsonc_survive() {
 
 #[test]
 fn gemini_cli_settings_are_registered_in_addition_to_the_ide() {
+    if isolated("gemini_cli_settings_are_registered_in_addition_to_the_ide") {
+        return;
+    }
     let temp = TempDir::new().unwrap();
     std::fs::create_dir_all(temp.path().join(".gemini")).unwrap();
     for host in hosts::detect(temp.path()) {
@@ -180,7 +219,7 @@ fn gemini_cli_settings_are_registered_in_addition_to_the_ide() {
             host,
             temp.path(),
             None,
-            Path::new("/bin/wi"),
+            &std::env::temp_dir().join("wi-test-bin"),
             &temp.path().join("vault"),
         )
         .unwrap()
@@ -193,6 +232,9 @@ fn gemini_cli_settings_are_registered_in_addition_to_the_ide() {
 
 #[test]
 fn uninstall_after_binary_upgrade_preserves_intervening_user_settings() {
+    if isolated("uninstall_after_binary_upgrade_preserves_intervening_user_settings") {
+        return;
+    }
     let temp = TempDir::new().unwrap();
     let vault = temp.path().join("vault");
     for host in [HostId::Claude, HostId::Codex, HostId::Cursor] {
@@ -204,18 +246,30 @@ fn uninstall_after_binary_upgrade_preserves_intervening_user_settings() {
             "{\"theme\":\"first\"}\n"
         };
         std::fs::write(&path, original).unwrap();
-        install::plan_host(host, temp.path(), None, Path::new("/bin/old-wi"), &vault)
-            .unwrap()
-            .apply()
-            .unwrap();
+        install::plan_host(
+            host,
+            temp.path(),
+            None,
+            &std::env::temp_dir().join("wi-test-old-bin"),
+            &vault,
+        )
+        .unwrap()
+        .apply()
+        .unwrap();
         let edited = std::fs::read_to_string(&path)
             .unwrap()
             .replace("first", "second");
         std::fs::write(&path, edited).unwrap();
-        install::plan_host(host, temp.path(), None, Path::new("/bin/new-wi"), &vault)
-            .unwrap()
-            .apply()
-            .unwrap();
+        install::plan_host(
+            host,
+            temp.path(),
+            None,
+            &std::env::temp_dir().join("wi-test-new-bin"),
+            &vault,
+        )
+        .unwrap()
+        .apply()
+        .unwrap();
         install::plan_remove(host, temp.path(), None, &vault)
             .unwrap()
             .unwrap()
@@ -230,6 +284,9 @@ fn uninstall_after_binary_upgrade_preserves_intervening_user_settings() {
 
 #[test]
 fn codex_tables_allow_later_servers_and_convert_inline_settings() {
+    if isolated("codex_tables_allow_later_servers_and_convert_inline_settings") {
+        return;
+    }
     let temp = TempDir::new().unwrap();
     let path = temp.path().join(".codex/config.toml");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -242,7 +299,7 @@ fn codex_tables_allow_later_servers_and_convert_inline_settings() {
             HostId::Codex,
             temp.path(),
             None,
-            Path::new("/bin/wi"),
+            &std::env::temp_dir().join("wi-test-bin"),
             &temp.path().join("vault"),
         )
         .unwrap();
@@ -263,4 +320,25 @@ fn codex_tables_allow_later_servers_and_convert_inline_settings() {
             assert_eq!(parsed["model"].as_str(), Some("chosen"));
         }
     }
+}
+
+// Process-local environment isolation also permits tests to run in parallel.
+fn isolated(_name: &str) -> bool {
+    #[cfg(windows)]
+    if std::env::var("WI_HOST_TEST_CHILD").as_deref() != Ok(_name) {
+        let temp = TempDir::new().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", _name, "--nocapture"])
+            .env("WI_HOST_TEST_CHILD", _name)
+            .env("HOME", temp.path())
+            .env("USERPROFILE", temp.path())
+            .env("APPDATA", temp.path().join("roaming"))
+            .env("LOCALAPPDATA", temp.path().join("local"))
+            .env_remove("CODEX_HOME")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return true;
+    }
+    false
 }
