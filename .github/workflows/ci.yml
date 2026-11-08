@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, windows-support, 'win/**']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -31,11 +31,16 @@ jobs:
       - id: matrix
         env:
           SELECTED_OS: ${{ inputs.os || 'all' }}
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+        shell: bash
         run: |
-          if [ "$SELECTED_OS" = all ]; then
-            echo 'os=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
-          else
+          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$SELECTED_OS" != all ]; then
             echo "os=[\"$SELECTED_OS\"]" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" != workflow_dispatch ] && [[ "$GIT_REF" == refs/heads/win/* ]]; then
+            echo 'os=["windows-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'os=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
           fi
 
   gate:
@@ -50,10 +55,13 @@ jobs:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
-        run: rustup show
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2
       - name: Check formatting
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast
