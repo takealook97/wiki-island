@@ -46,6 +46,21 @@ fn git_worktree_path(text: &str) -> std::path::PathBuf {
     }
 }
 
+/// The canonical form of `path` without the verbatim prefix, as the vault
+/// stores its paths on Windows.
+#[cfg(windows)]
+fn plain_canonical(path: &Path) -> std::path::PathBuf {
+    let canonical = path.canonicalize().unwrap();
+    let text = canonical.to_str().unwrap();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => std::path::PathBuf::from(rest),
+        None => canonical,
+    }
+}
+
 #[test]
 fn folder_mode_commits_through_core_worktree_without_git_in_the_folder() {
     let (_tmp, root, data) = folder_vault("v-folder");
@@ -53,10 +68,10 @@ fn folder_mode_commits_through_core_worktree_without_git_in_the_folder() {
     assert_eq!(vault.storage_mode(), StorageMode::Folder);
     assert!(!root.join(".git").exists());
     let git_dir = data.join("vaults/v-folder/git");
-    assert_eq!(
-        vault.git_dir().canonicalize().unwrap(),
-        git_dir.canonicalize().unwrap()
-    );
+    #[cfg(not(windows))]
+    assert_eq!(vault.git_dir(), git_dir.canonicalize().unwrap());
+    #[cfg(windows)]
+    assert_eq!(vault.git_dir(), plain_canonical(&git_dir));
     assert!(vault.wi_dir().starts_with(vault.git_dir()));
 
     save(&vault, "notes/a.md", b"a1\n", "cli", Some("op-1"));
@@ -107,8 +122,11 @@ fn moved_folder_vault_is_rebound_and_remembered_for_doctor() {
     let vault = Vault::init_folder(&root, Some(&data)).unwrap();
     save(&vault, "a.md", b"a\n", "cli", None);
     Flusher::flush(&vault).unwrap();
-    let old = vault.root().to_path_buf();
     drop(vault);
+    #[cfg(not(windows))]
+    let old = root.canonicalize().unwrap();
+    #[cfg(windows)]
+    let old = plain_canonical(&root);
     let moved = tmp.path().join("moved");
     std::fs::rename(&root, &moved).unwrap();
     let vault = Vault::open_in(&moved, Some(&data)).unwrap();
