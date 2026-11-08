@@ -33,8 +33,24 @@ fn nodes<'a>(events: &mut impl Iterator<Item = Event<'a>>) -> Vec<Node<'a>> {
 }
 
 /// Maps a note without changing its canonical bytes. Known wikilinks are page
-/// mentions; unknown targets and local links remain visible text.
+/// mentions; unknown targets and local links remain visible text. Relative
+/// wikilinks (`./x`, `../x`) are not resolved; see [`map_markdown_at`].
 pub fn map_markdown(bytes: &[u8], known_pages: &BTreeMap<String, String>) -> Result<MappedNote> {
+    map_markdown_at(bytes, "", known_pages)
+}
+
+/// [`map_markdown`] for the note at vault path `source`: a relative wikilink
+/// (`./x`, `../x`) names the note at that path from the source's folder, as
+/// the vault index reads it.
+pub fn map_markdown_at(
+    bytes: &[u8],
+    source: &str,
+    known_pages: &BTreeMap<String, String>,
+) -> Result<MappedNote> {
+    let known = Links {
+        pages: known_pages,
+        source,
+    };
     let note = wi_note::Note::parse(bytes).map_err(|_| Error::Utf8)?;
     let mut warnings: Vec<String> = note
         .diagnostics()
@@ -62,7 +78,7 @@ pub fn map_markdown(bytes: &[u8], known_pages: &BTreeMap<String, String>) -> Res
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_WIKILINKS;
     let tree = nodes(&mut Parser::new_ext(note.body(), options));
-    blocks.extend(render(&tree, known_pages, &mut warnings)?);
+    blocks.extend(render(&tree, &known, &mut warnings)?);
     Ok(MappedNote { blocks, warnings })
 }
 
@@ -102,7 +118,7 @@ fn text_blocks(kind: &str, rich_text: Vec<Value>) -> Vec<Value> {
 
 fn inline(
     nodes: &[Node<'_>],
-    known: &BTreeMap<String, String>,
+    known: &Links<'_>,
     annotations: &Value,
     link: Option<&str>,
     warnings: &mut Vec<String>,
@@ -140,7 +156,7 @@ fn inline(
                 ..
             }) => {
                 if matches!(link_type, LinkType::WikiLink { .. }) {
-                    if let Some(page) = known.get(&wikilink_name(dest_url)) {
+                    if let Some(page) = known.resolve(dest_url) {
                         output.push(json!({"type":"mention", "mention":{"type":"page", "page":{"id":page}}, "annotations":style}));
                         continue;
                     }
@@ -181,11 +197,7 @@ fn inline(
     output
 }
 
-fn rich(
-    nodes: &[Node<'_>],
-    known: &BTreeMap<String, String>,
-    warnings: &mut Vec<String>,
-) -> Vec<Value> {
+fn rich(nodes: &[Node<'_>], known: &Links<'_>, warnings: &mut Vec<String>) -> Vec<Value> {
     inline(nodes, known, &json!({}), None, warnings)
 }
 
@@ -197,11 +209,7 @@ fn task(nodes: &[Node<'_>]) -> Option<bool> {
     })
 }
 
-fn render(
-    nodes: &[Node<'_>],
-    known: &BTreeMap<String, String>,
-    warnings: &mut Vec<String>,
-) -> Result<Vec<Value>> {
+fn render(nodes: &[Node<'_>], known: &Links<'_>, warnings: &mut Vec<String>) -> Result<Vec<Value>> {
     let mut output = Vec::new();
     let mut loose = Vec::new();
     for node in nodes {
@@ -237,9 +245,17 @@ fn render(
                     }
                     _ => "plain text",
                 };
-                for mut value in
-                    text_blocks("code", rich(&node.children, &BTreeMap::new(), warnings))
-                {
+                for mut value in text_blocks(
+                    "code",
+                    rich(
+                        &node.children,
+                        &Links {
+                            pages: &BTreeMap::new(),
+                            source: "",
+                        },
+                        warnings,
+                    ),
+                ) {
                     value["code"]["language"] = json!(language);
                     output.push(value);
                 }
@@ -297,7 +313,7 @@ fn container(
     kind: &str,
     nodes: &[Node<'_>],
     checked: Option<bool>,
-    known: &BTreeMap<String, String>,
+    known: &Links<'_>,
     warnings: &mut Vec<String>,
 ) -> Result<Value> {
     let mut children = render(nodes, known, warnings)?;
@@ -317,6 +333,42 @@ fn container(
         value[kind]["children"] = json!(children);
     }
     Ok(value)
+}
+
+/// Published pages by note name, and the vault path of the note being mapped.
+pub(crate) struct Links<'a> {
+    pages: &'a BTreeMap<String, String>,
+    source: &'a str,
+}
+
+impl Links<'_> {
+    /// The page a wikilink target names, if it is published and unambiguous.
+    fn resolve(&self, target: &str) -> Option<&String> {
+        if target.starts_with("./") || target.starts_with("../") {
+            return relative_path(self.source, target).and_then(|path| self.pages.get(&path));
+        }
+        self.pages.get(&wikilink_name(target))
+    }
+}
+
+/// `target` (`./x` or `../x`) read from the folder of the note at `from`;
+/// `None` when it climbs above the vault root or `from` is unknown.
+fn relative_path(from: &str, target: &str) -> Option<String> {
+    if from.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<&str> = from.split('/').collect();
+    parts.pop();
+    for part in target.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
 }
 
 /// The note name a wikilink target refers to: `project::x` names `project/x`,

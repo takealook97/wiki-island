@@ -8,7 +8,7 @@ mod mapstore;
 mod publish;
 mod token;
 
-pub use mapper::{MappedNote, map_markdown};
+pub use mapper::{MappedNote, map_markdown, map_markdown_at};
 pub use mapstore::{MapEntry, MapStore};
 pub use publish::{
     NoteSource, PublishFailure, PublishNote, PublishOptions, PublishReport, publish,

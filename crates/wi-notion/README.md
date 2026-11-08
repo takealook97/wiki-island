@@ -31,6 +31,7 @@ renders frontmatter as a properties paragraph, headings (levels above three use
 level three), paragraphs, styled inline text, lists, tasks, code, quotes, dividers,
 tables and web links. A wikilink that names a published note by path (with or
 without `.md`), permalink or title, `project::x` included, becomes a page mention;
+a relative wikilink (`./x.md`, `../dir/x.md`) is read from the source note's folder;
 unknown targets and names shared by several notes remain text. Files are not uploaded. HTML, images and unsupported local links are
 rendered as text with warnings. Unknown code languages use plain text. Canonical
 note bytes are never edited. Existing vaults and indexes need no migration.

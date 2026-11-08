@@ -1,4 +1,6 @@
-use crate::{Error, MapEntry, MapStore, Result, TokenSource, client::Client, map_markdown};
+use crate::{
+    Error, MapEntry, MapStore, Result, TokenSource, client::Client, map_markdown, map_markdown_at,
+};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -151,7 +153,7 @@ pub fn publish(
         .filter(|n| !n.archived && !failed.contains(&n.permalink))
     {
         let result: Result<()> = (|| {
-            let mapped = map_markdown(&note.bytes, &known)?;
+            let mapped = map_markdown_at(&note.bytes, &note.rel_path, &known)?;
             crate::client::validate_blocks(&mapped.blocks)?;
             crate::client::title_text(&note.title)?;
             let mut digest = Sha256::new();

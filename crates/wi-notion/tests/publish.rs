@@ -504,3 +504,43 @@ fn wikilinks_by_title_path_or_permalink_become_mentions_unless_ambiguous() {
         .expect("source note appended");
     assert_eq!(source.matches("\"mention\":").count(), 4, "{source}");
 }
+
+#[test]
+fn relative_wikilinks_resolve_from_the_source_notes_folder() {
+    let mock = Mock::new(|request, _| success(request));
+    let dir = tempfile::tempdir().unwrap();
+    let mut map = MapStore::open(dir.path().join("map.json")).unwrap();
+    let note = |rel: &str, permalink: &str, title: &str, body: &str| PublishNote {
+        rel_path: rel.into(),
+        bytes: body.as_bytes().to_vec(),
+        permalink: permalink.into(),
+        title: title.into(),
+        archived: false,
+    };
+    let notes = Source(vec![
+        note("notes/target.md", "notes/target", "Target", "target"),
+        note("other/peer.md", "other/peer", "Peer", "peer"),
+        note(
+            "notes/source.md",
+            "notes/source",
+            "Source",
+            "[[./target.md]] [[../notes/target.md]] [[./target]] [[../other/peer.md]] \
+             [[./missing.md]] [[../../outside.md]] relative-marker",
+        ),
+    ]);
+    let report = publish(&notes, &Token, &mut map, &mock.options()).unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let appended: Vec<String> = mock
+        .log()
+        .iter()
+        .filter(|r| r.method == "PATCH" && r.path.contains("/blocks/"))
+        .map(|r| r.body.to_string())
+        .collect();
+    let source = appended
+        .iter()
+        .find(|b| b.contains("relative-marker"))
+        .expect("source note appended");
+    assert_eq!(source.matches("\"mention\":").count(), 4, "{source}");
+    assert!(source.contains("./missing.md"), "{source}");
+    assert!(source.contains("../../outside.md"), "{source}");
+}
