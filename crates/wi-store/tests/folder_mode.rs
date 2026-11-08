@@ -257,3 +257,76 @@ fn init_through_a_symlink_to_a_synced_folder_chooses_folder_mode() {
     assert_eq!(vault.storage_mode(), StorageMode::Folder);
     assert!(!cloud.join("new-vault/.git").exists());
 }
+
+/// Sizes of every object reachable from any ref in `git_dir`.
+fn reachable_sizes(git_dir: &Path) -> Vec<u64> {
+    let list = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["rev-list", "--objects", "--all"])
+        .output()
+        .unwrap();
+    assert!(list.status.success());
+    let mut check = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["cat-file", "--batch-check=%(objectsize)"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let ids: String = String::from_utf8(list.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| format!("{}\n", l.split(' ').next().unwrap()))
+        .collect();
+    std::io::Write::write_all(check.stdin.as_mut().unwrap(), ids.as_bytes()).unwrap();
+    let out = check.wait_with_output().unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| l.parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn no_path_adds_a_file_over_fifty_megabytes_to_history_without_a_remote() {
+    const LIMIT: u64 = 50 * 1024 * 1024;
+    let f = Folder::new();
+    let vault = f.init();
+    let git_dir = f.data.join("vaults").join(vault.vault_id()).join("git");
+    // Ingest: an editor or file sync drops a large file into the folder.
+    let file = std::fs::File::create(f.root.join("video.mov")).unwrap();
+    file.set_len(LIMIT + 1).unwrap();
+    vault.reconcile().unwrap();
+    // Capture and `wi write` both reach the engine write path.
+    let big = "word ".repeat((LIMIT / 5 + 2) as usize);
+    let _ = vault.capture(
+        &wi_store::CaptureInput {
+            text: big.clone(),
+            title: Some("Big capture".into()),
+            no_memory_reason: None,
+            snapshot: None,
+            proposals: vec![],
+        },
+        Ingress::Cli,
+    );
+    write(&vault, "big.md", &big);
+    write(&vault, "small.md", "# small\n");
+    vault.flush().unwrap();
+    vault.reconcile().unwrap();
+    vault.flush().unwrap();
+    assert!(f.root.join("big.md").is_file());
+    assert_eq!(vault.history("small.md").unwrap().len(), 1);
+    assert!(vault.history("big.md").unwrap().is_empty());
+    assert!(vault.history("video.mov").unwrap().is_empty());
+    assert!(reachable_sizes(&git_dir).iter().all(|&s| s <= LIMIT));
+    let exclude = std::fs::read_to_string(git_dir.join("info/exclude")).unwrap();
+    for rule in ["/video.mov", "/big.md"] {
+        assert!(exclude.lines().any(|l| l == rule), "{exclude}");
+    }
+    let requests = vault.work_requests().unwrap();
+    for path in ["video.mov", "big.md"] {
+        assert_eq!(requests.iter().filter(|r| r.path == path).count(), 1);
+    }
+}

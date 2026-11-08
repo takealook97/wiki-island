@@ -489,26 +489,77 @@ fn a_different_vault_identity_is_refused_without_replacing_the_remote_config() {
 }
 
 #[test]
-fn an_oversized_engine_write_cannot_be_uploaded_through_an_ancestor_commit() {
+fn an_oversized_engine_write_stays_in_the_folder_and_out_of_history() {
     let p = Pair::new();
     let a = p.a.open();
-    let remote_before = git(&p.remote, &["rev-parse", "main"]);
+    let result = a
+        .write(wi_store::WriteRequest {
+            path: "large.md".into(),
+            content: vec![b'x'; 50 * 1024 * 1024 + 1],
+            expected_checksum: None,
+            op_id: None,
+            ingress: wi_store::Ingress::Cli,
+        })
+        .unwrap();
+    a.flush().unwrap();
+    assert!(std::fs::metadata(p.a.root.join("large.md")).unwrap().len() > 50 * 1024 * 1024);
+    // A replacement against the returned checksum also stays local.
     a.write(wi_store::WriteRequest {
         path: "large.md".into(),
-        content: vec![b'x'; 50 * 1024 * 1024 + 1],
-        expected_checksum: None,
+        content: vec![b'y'; 50 * 1024 * 1024 + 2],
+        expected_checksum: Some(result.checksum),
         op_id: None,
         ingress: wi_store::Ingress::Cli,
     })
     .unwrap();
+    a.auto_ingest().unwrap();
     a.flush().unwrap();
-    let saved = git(&p.a.root, &["rev-parse", "HEAD"]);
+    assert!(a.sync().unwrap().pushed);
+    for root in [&p.a.root, &p.remote] {
+        let all = git(root, &["rev-list", "--objects", "--all"]);
+        assert!(all.lines().all(|l| !l.ends_with(" large.md")), "{all}");
+    }
     assert!(
-        a.sync().is_err(),
-        "exclusion cannot hide an ancestral blob from push"
+        std::fs::read_to_string(p.a.root.join(".git/info/exclude"))
+            .unwrap()
+            .lines()
+            .any(|l| l == "/large.md")
     );
+    a.sync().unwrap();
+    assert_eq!(
+        a.work_requests()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path == "large.md")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn an_oversized_ancestor_committed_elsewhere_blocks_upload_without_rewriting() {
+    let p = Pair::new();
+    let a = p.a.open();
+    let remote_before = git(&p.remote, &["rev-parse", "main"]);
+    let file = std::fs::File::create(p.a.root.join("large.dat")).unwrap();
+    file.set_len(50 * 1024 * 1024 + 1).unwrap();
+    // Another git tool committed the file before the engine saw it.
+    git(&p.a.root, &["add", "-f", "large.dat"]);
+    git(
+        &p.a.root,
+        &[
+            "-c",
+            "user.name=other",
+            "-c",
+            "user.email=other@example.invalid",
+            "commit",
+            "-qm",
+            "other tool",
+        ],
+    );
+    let saved = git(&p.a.root, &["rev-parse", "HEAD"]);
+    assert!(a.sync().is_err(), "exclusion cannot hide an ancestral blob");
     assert_eq!(git(&p.remote, &["rev-parse", "main"]), remote_before);
-    assert!(a.read("large.md").unwrap().bytes.len() > 50 * 1024 * 1024);
     assert!(
         git(
             &p.a.root,
@@ -516,9 +567,6 @@ fn an_oversized_engine_write_cannot_be_uploaded_through_an_ancestor_commit() {
         )
         .is_empty()
     );
-    assert!(a.work_requests().unwrap().iter().any(|request| request.kind
-        == wi_store::WorkKind::RecoveryProblem
-        && request.path == "large.md"));
     a.sync().unwrap_err();
     assert_eq!(
         a.work_requests()
@@ -526,7 +574,7 @@ fn an_oversized_engine_write_cannot_be_uploaded_through_an_ancestor_commit() {
             .iter()
             .filter(
                 |request| request.kind == wi_store::WorkKind::RecoveryProblem
-                    && request.path == "large.md"
+                    && request.path == "large.dat"
             )
             .count(),
         1

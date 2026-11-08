@@ -117,7 +117,9 @@ impl Vault {
             return Some("engine-internal path".into());
         }
         match self.sync_exclude_oversize(rel) {
-            Ok(true) => return Some("larger than 50 MB; kept locally outside remote sync".into()),
+            Ok(true) => {
+                return Some("larger than 50 MB; kept in the folder outside history".into());
+            }
             Err(_) => {
                 return Some("large-file exclusion is waiting to be saved; it will retry".into());
             }

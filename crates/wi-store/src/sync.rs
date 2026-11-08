@@ -20,7 +20,8 @@ use crate::work::{WorkKind, WorkRequest};
 const CONFIG: &str = "sync-config.json";
 const STATE: &str = "sync-state.json";
 const INTENT: &str = "sync-intent.json";
-const LIMIT: u64 = 50 * 1024 * 1024;
+/// Files above this size never enter history (capture, writes, ingest).
+pub(crate) const LIMIT: u64 = 50 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -865,20 +866,18 @@ impl Vault {
         Ok(large)
     }
 
-    /// Configured remote sync also protects watcher and CLI ingress, so
-    /// an intervening read cannot commit a newly discovered large file.
+    /// Watcher and CLI ingress never commit a file larger than the limit,
+    /// in either storage mode and with or without a remote: the file stays
+    /// in the folder, gets a managed exclude rule and is reported once.
     pub(crate) fn sync_exclude_oversize(&self, rel: &str) -> Result<bool> {
-        if self.storage_mode() != wi_history::StorageMode::Git
-            || !self.sync_file(CONFIG).is_file()
-            || !std::fs::metadata(self.root().join(rel)).is_ok_and(|m| m.len() > LIMIT)
-        {
+        if !std::fs::metadata(self.root().join(rel)).is_ok_and(|m| m.len() > LIMIT) {
             return Ok(false);
         }
         self.persist_large_excludes(&[rel.to_owned()])?;
         Ok(true)
     }
 
-    fn persist_large_excludes(&self, large: &[String]) -> Result<()> {
+    pub(crate) fn persist_large_excludes(&self, large: &[String]) -> Result<()> {
         let _guard = PublisherLock::acquire(&self.history)?;
         let path = self.history.exclude_file();
         let mut text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -906,7 +905,7 @@ impl Vault {
                 &WorkRequest::new(
                     WorkKind::IngestFailed,
                     rel,
-                    "This file is larger than 50 MB and stays on this device; remote sync excludes it.",
+                    "This file is larger than 50 MB; it stays in the folder and is kept out of history and remote sync.",
                 ),
             )?;
         }

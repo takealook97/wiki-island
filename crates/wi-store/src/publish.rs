@@ -270,6 +270,9 @@ impl Vault {
                 message: "This work item belongs to another device and is read-only here.".into(),
             });
         }
+        if change.bytes.len() as u64 > crate::sync::LIMIT {
+            return self.publish_oversize(&change);
+        }
         for attempt in 0..2 {
             match self.publish_once(&change, attempt == 0) {
                 Err(StoreError::History(HistoryError::OpenIntent { .. })) if attempt == 0 => {
@@ -280,6 +283,61 @@ impl Vault {
             }
         }
         Err(StoreError::Invalid("write retry exhausted".into()))
+    }
+
+    /// A file larger than the history limit is placed in the folder only:
+    /// no blob, intent or commit. Its managed exclude rule and one work
+    /// request are durable before the bytes land, so no later ingest can
+    /// add it to history. History keeps any earlier version as is.
+    fn publish_oversize(&self, change: &Change) -> Result<WriteResult> {
+        if change.moved_from.is_some() {
+            return Err(StoreError::Invalid(
+                "Files larger than 50 MB stay out of history; move this one in the folder.".into(),
+            ));
+        }
+        let mode = self.history.durability();
+        let target = &change.target;
+        self.persist_large_excludes(std::slice::from_ref(&target.rel))?;
+        let (dir, name) = Dir::create_parent(self.root(), &target.rel, mode)?;
+        let permissions = dir.permissions(&name)?;
+        let temp = TempFile::create(&dir, &name, &change.bytes, mode, permissions)?;
+        let new_hash = hash_bytes(&change.bytes);
+        let guard = PublisherLock::acquire(&self.history)?;
+        if self.history.wi_dir().join("sync-intent.json").exists() {
+            return Err(StoreError::Invalid(
+                "Sync recovery is finishing; retry this save.".into(),
+            ));
+        }
+        let old_hash = check_preconditions(change, &dir, &name, None)?;
+        if old_hash.as_deref() != Some(new_hash.as_str()) {
+            // An exchange leaves the checked old bytes under the temp name;
+            // dropping the temp removes them.
+            place(&dir, &temp.name, &name, old_hash.as_deref()).map_err(|e| match e {
+                StoreError::Stale {
+                    expected, current, ..
+                } => StoreError::Stale {
+                    path: target.rel.clone(),
+                    expected,
+                    current,
+                },
+                other => other,
+            })?;
+            dir.barrier(mode)?;
+        }
+        drop(guard);
+        drop(temp);
+        Ok(WriteResult {
+            path: target.rel.clone(),
+            checksum: new_hash,
+            previous_checksum: old_hash,
+            seq: 0,
+            generation: self.generation()?,
+            index: IndexState::Ok,
+            replayed: false,
+            conflict_copy: None,
+            moved_from: None,
+            lifecycle: None,
+        })
     }
 
     fn publish_once(&self, change: &Change, may_recover: bool) -> Result<WriteResult> {
