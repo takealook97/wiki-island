@@ -227,12 +227,11 @@ fn sync_status_and_setup_do_not_contact_the_remote() {
 }
 
 #[test]
-fn an_editor_save_after_a_sync_crash_is_preserved_during_replay() {
+fn an_editor_save_after_a_sync_crash_stays_visible_and_is_saved_over_the_remote_version() {
     let e = Env::new();
     e.edit("a", "remote version\n");
     e.ok("a", &["write", "extra.md", "--content", "extra\n"]);
     e.ok("a", &["sync"]);
-    let remote = std::fs::read(e.base.join("a/base.md")).unwrap();
     let crashed = e
         .command("b", &["sync"])
         .env("WI_FAULT", "sync_after_file")
@@ -241,23 +240,24 @@ fn an_editor_save_after_a_sync_crash_is_preserved_during_replay() {
     assert!(!crashed.status.success());
     std::fs::write(e.base.join("b/base.md"), "editor version\n").unwrap();
     e.ok("b", &["read", "base.md"]);
-    assert_eq!(std::fs::read(e.base.join("b/base.md")).unwrap(), remote);
+    assert_eq!(
+        std::fs::read(e.base.join("b/base.md")).unwrap(),
+        b"editor version\n"
+    );
     let copies: Vec<_> = std::fs::read_dir(e.base.join("b"))
         .unwrap()
         .flatten()
-        .filter(|f| {
-            f.file_name()
-                .to_string_lossy()
-                .contains(".wi-conflict-sync-")
-        })
+        .filter(|f| f.file_name().to_string_lossy().contains(".wi-conflict-"))
         .collect();
-    assert_eq!(copies.len(), 1);
-    assert_eq!(
-        std::fs::read(copies[0].path()).unwrap(),
-        b"editor version\n"
+    assert!(copies.is_empty(), "{copies:?}");
+    e.ok("b", &["sync"]);
+    let b = e.base.join("b");
+    assert_eq!(e.git(&b, &["show", "HEAD:base.md"]), "editor version\n");
+    // The remote version stays in history, one commit below the edit.
+    assert!(
+        e.git(&b, &["show", "HEAD~1:base.md"])
+            .ends_with("remote version\n")
     );
-    let requests = std::fs::read_to_string(e.base.join("b/.git/wi/work-requests.jsonl")).unwrap();
-    assert!(requests.contains("editor version preserved"));
 }
 
 #[cfg(unix)]
@@ -421,6 +421,56 @@ fn large_file_exclusion_survives_a_crash_and_intervening_cli_reads() {
         assert_eq!(
             requests.lines().filter(|l| l.contains("big.dat")).count(),
             1
+        );
+    }
+}
+
+#[test]
+fn an_edit_made_while_a_sync_intent_is_pending_stays_visible_and_is_saved() {
+    for remote_deletes in [true, false] {
+        let e = Env::new();
+        e.ok("a", &["write", "keep.md", "--content", "keep\n"]);
+        e.ok("a", &["write", "other.md", "--content", "other\n"]);
+        e.ok("a", &["sync"]);
+        e.ok("b", &["sync"]);
+        if remote_deletes {
+            std::fs::remove_file(e.base.join("a/other.md")).unwrap();
+        } else {
+            std::fs::write(e.base.join("a/other.md"), "remote change\n").unwrap();
+        }
+        e.ok("a", &["sync"]);
+        let crashed = e
+            .command("b", &["sync"])
+            .env("WI_FAULT", "sync_after_intent")
+            .output()
+            .unwrap();
+        assert!(!crashed.status.success());
+        std::fs::write(e.base.join("b/other.md"), "OWNER EDIT precious\n").unwrap();
+        // Opening replays the intent.
+        e.ok("b", &["read", "keep.md"]);
+        assert_eq!(
+            std::fs::read_to_string(e.base.join("b/other.md")).unwrap(),
+            "OWNER EDIT precious\n",
+            "remote deletes: {remote_deletes}"
+        );
+        let hidden: Vec<_> = std::fs::read_dir(e.base.join("b"))
+            .unwrap()
+            .filter_map(|d| d.ok())
+            .filter(|d| d.file_name().to_string_lossy().contains("wi-conflict"))
+            .collect();
+        assert!(hidden.is_empty(), "{hidden:?}");
+        e.ok("b", &["sync"]);
+        e.ok("a", &["sync"]);
+        for device in ["a", "b"] {
+            assert_eq!(
+                e.git(&e.base.join(device), &["show", "HEAD:other.md"]),
+                "OWNER EDIT precious\n",
+                "{device}, remote deletes: {remote_deletes}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(e.base.join("a/other.md")).unwrap(),
+            "OWNER EDIT precious\n"
         );
     }
 }

@@ -50,6 +50,9 @@ pub struct SyncReport {
     pub excluded: Vec<String>,
     pub pushed: bool,
     pub deferred: bool,
+    /// Notes edited on this device while sync was applying: the edit stays
+    /// visible and is saved as a follow-up local change.
+    pub kept_local: Vec<String>,
     pub status: SyncStatus,
 }
 
@@ -348,6 +351,13 @@ impl Vault {
         // Private temporary ref only; never a branch or a user's ref.
         let _ = std::fs::remove_file(self.history.git_dir().join(&fetch_ref));
         let mut report = applied?;
+        if !report.kept_local.is_empty() {
+            self.save_kept_edits(&report.kept_local)?;
+            let flushed = self.flush()?;
+            if flushed.remaining != 0 {
+                return Err(invalid("Some saves are still finishing; sync will retry."));
+            }
+        }
         crate::fault::abort_at("sync_before_push");
         if let Some(head) = SyncRepo::head(&self.history)? {
             let large =
@@ -570,9 +580,15 @@ impl Vault {
         };
         self.save_sync(INTENT, &intent)?;
         crate::fault::abort_at("sync_after_intent");
-        self.replay_sync_locked(&guard, &intent)?;
+        let kept_local = self.replay_sync_locked(&guard, &intent)?;
         Ok(SyncReport {
-            changed: intent.updates.iter().map(|u| u.path.clone()).collect(),
+            changed: intent
+                .updates
+                .iter()
+                .map(|u| u.path.clone())
+                .filter(|p| !kept_local.contains(p))
+                .collect(),
+            kept_local,
             conflicts: intent
                 .conflicts
                 .iter()
@@ -636,19 +652,33 @@ impl Vault {
         if !self.sync_file(INTENT).exists() {
             return Ok(());
         }
-        let _flush = FlushLock::acquire(&self.history)?;
-        let guard = PublisherLock::acquire(&self.history)?;
-        if let Some(intent) = self.load_sync::<Intent>(INTENT)? {
-            self.replay_sync_locked(&guard, &intent)?;
+        let kept = {
+            let _flush = FlushLock::acquire(&self.history)?;
+            let guard = PublisherLock::acquire(&self.history)?;
+            match self.load_sync::<Intent>(INTENT)? {
+                Some(intent) => self.replay_sync_locked(&guard, &intent)?,
+                None => Vec::new(),
+            }
+        };
+        self.save_kept_edits(&kept)
+    }
+
+    /// Save edits that sync left in place as ordinary local changes. Runs
+    /// without engine locks; the intent is already retired.
+    fn save_kept_edits(&self, kept: &[String]) -> Result<()> {
+        for path in kept {
+            self.ingest_path(path)?;
         }
         Ok(())
     }
 
+    /// Apply a durable sync intent. Returns the paths whose working file
+    /// no longer held the expected old bytes: they were left in place.
     fn replay_sync_locked(
         &self,
         guard: &wi_history::PublisherGuard,
         intent: &Intent,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         if intent.actor != crate::Ingress::Sync {
             return Err(invalid("Sync recovery refused an unknown ingress."));
         }
@@ -693,14 +723,18 @@ impl Vault {
             Manifest::publish_sync(&self.history, guard, intent.seq)?;
             let paths: Vec<_> = intent.updates.iter().map(|u| u.path.as_str()).collect();
             self.index_update(&paths);
-            return self.retire_sync_intent();
+            self.retire_sync_intent()?;
+            return Ok(Vec::new());
         }
+        let mut kept = Vec::new();
         for update in &intent.updates {
             crate::paths::normalize(self.root(), &update.path)?;
             if sync_internal(&update.path) {
                 return Err(invalid("Sync recovery refused a protected path."));
             }
-            self.apply_sync_update(update, &intent.target)?;
+            if !self.apply_sync_update(update, &intent.target)? {
+                kept.push(update.path.clone());
+            }
             crate::fault::abort_at("sync_after_file");
         }
         for (path, copy) in &intent.conflicts {
@@ -728,7 +762,8 @@ impl Vault {
         let paths: Vec<_> = intent.updates.iter().map(|u| u.path.as_str()).collect();
         self.index_update(&paths);
         crate::fault::abort_at("sync_after_index");
-        self.retire_sync_intent()
+        self.retire_sync_intent()?;
+        Ok(kept)
     }
 
     fn retire_sync_intent(&self) -> Result<()> {
@@ -738,12 +773,20 @@ impl Vault {
         Ok(())
     }
 
-    fn apply_sync_update(&self, update: &Update, target: &str) -> Result<()> {
+    /// Bring one working file to the intent's new version. Returns false
+    /// when the file holds neither the old nor the new version: an editor
+    /// changed it after the intent was prepared, so it stays in place.
+    fn apply_sync_update(&self, update: &Update, target: &str) -> Result<bool> {
         let mode = self.history.durability();
         let (dir, name) = Dir::create_parent(self.root(), &update.path, mode)?;
         let temp = format!(".{name}.wi-tmp-sync-{}", &target[..12]);
         let current = dir.read_regular(&name)?;
         let current_blob = current.as_deref().map(wi_history::blob_id_of).transpose()?;
+        if current_blob != update.old && current_blob != update.new {
+            // Only staging bytes this intent wrote are retired.
+            self.settle_sync_temp(&dir, &temp, &name, update)?;
+            return Ok(false);
+        }
         // A deterministic staging name makes both the swap and its displaced
         // bytes recoverable after a process dies between any two syscalls.
         if current_blob != update.new {
@@ -786,7 +829,7 @@ impl Vault {
             }
         }
         self.settle_sync_temp(&dir, &temp, &name, update)?;
-        Ok(())
+        Ok(true)
     }
 
     fn settle_sync_temp(&self, dir: &Dir, temp: &str, name: &str, update: &Update) -> Result<()> {
