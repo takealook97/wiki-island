@@ -130,25 +130,37 @@ impl SecretStore for KeychainStore {
 
 /// Read the token from piped standard input, or a hidden terminal prompt.
 fn read_token() -> Result<String> {
-    let mut text = String::new();
     if std::io::stdin().is_terminal() {
         eprint!("Notion integration token (hidden): ");
-        let hidden = std::process::Command::new("/bin/stty")
-            .arg("-echo")
-            .status()
-            .is_ok_and(|s| s.success());
-        let read = std::io::stdin().read_line(&mut text);
-        if hidden {
-            let _ = std::process::Command::new("/bin/stty").arg("echo").status();
-        }
+        let stty = |mode: &str| {
+            std::process::Command::new("/bin/stty")
+                .arg(mode)
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        let text = read_hidden(|| stty("-echo"), &mut std::io::stdin().lock());
+        stty("echo");
         eprintln!();
-        read?;
-    } else {
-        std::io::stdin()
-            .take(4096)
-            .read_to_string(&mut text)
-            .map_err(|_| anyhow!("The token could not be read from standard input."))?;
+        return text;
     }
+    let mut text = String::new();
+    std::io::stdin()
+        .take(4096)
+        .read_to_string(&mut text)
+        .map_err(|_| anyhow!("The token could not be read from standard input."))?;
+    Ok(text.trim().to_owned())
+}
+
+/// Read one line only once `hide` has turned terminal echo off; a
+/// credential the terminal would echo back is never read.
+fn read_hidden(hide: impl FnOnce() -> bool, input: &mut impl std::io::BufRead) -> Result<String> {
+    if !hide() {
+        bail!(
+            "The token prompt could not hide your typing; pipe the token on standard input instead."
+        );
+    }
+    let mut text = String::new();
+    input.read_line(&mut text)?;
     Ok(text.trim().to_owned())
 }
 
@@ -162,7 +174,11 @@ pub(crate) fn parse_parent(input: &str) -> Result<String> {
         .next()
         .unwrap_or_default();
     let hex: String = last.chars().filter(|c| *c != '-').collect();
-    let tail = hex.len().checked_sub(32).map(|start| &hex[start..]);
+    // `get` refuses a cut inside a multibyte character instead of panicking.
+    let tail = hex
+        .len()
+        .checked_sub(32)
+        .and_then(|start| hex.get(start..));
     let Some(id) = tail.filter(|t| t.bytes().all(|b| b.is_ascii_hexdigit())) else {
         bail!("Use the Notion page link or its 32-character page id.");
     };
@@ -232,6 +248,17 @@ pub(crate) fn setup_with(
         );
     }
     let dir = state_dir(vault)?;
+    std::fs::create_dir_all(&dir)?;
+    // The publisher's device lock: a publish in progress may be about to
+    // record its parent in the map, so the parent cannot change under it.
+    let lock = File::create(dir.join("lock"))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            bail!("A Notion publish is running on this device; set up again when it finishes.")
+        }
+        Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+    }
     if let Some(config) = read_json(&dir.join("config.json"))?
         && config["parent_page_id"] != parent.as_str()
         && dir.join("map.json").exists()

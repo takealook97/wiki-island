@@ -314,3 +314,48 @@ fn background_thread_publishes_after_the_tip_settles_and_stops() {
     handle.stop();
     assert_eq!(mock.posts(), 1);
 }
+
+#[test]
+fn a_parent_with_multibyte_characters_is_refused_without_panicking() {
+    assert!(parse_parent(&format!("위키{}", "1".repeat(30))).is_err());
+    assert!(parse_parent("페이지-é").is_err());
+    let id = "0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        parse_parent(&format!("https://www.notion.so/위키-{id}")).unwrap(),
+        "01234567-89ab-cdef-0123-456789abcdef"
+    );
+}
+
+#[test]
+fn setup_cannot_switch_the_parent_while_a_first_publish_is_running() {
+    let f = fixture();
+    let mock = Mock::new();
+    setup_with(&f.vault, PARENT, TOKEN, &Memory::default()).unwrap();
+    save(&f.vault, "a.md", "# A\n");
+    struct Switch<'a>(&'a Vault, std::cell::Cell<bool>);
+    impl TokenSource for Switch<'_> {
+        fn token(&self) -> wi_notion::Result<String> {
+            let other = "33333333-3333-3333-3333-333333333333";
+            let refused = setup_with(self.0, other, TOKEN, &Memory::default()).is_err();
+            self.1.set(refused);
+            Ok(TOKEN.to_owned())
+        }
+    }
+    let switch = Switch(&f.vault, std::cell::Cell::new(false));
+    let first = publish_now(&f.vault, &switch, Some(&mock.base), false).unwrap();
+    assert_eq!(first["failed"], json!([]));
+    assert!(switch.1.get(), "setup changed the parent during a publish");
+    assert_eq!(configured(&f.vault).unwrap().as_deref(), Some(PARENT));
+    save(&f.vault, "a.md", "# A changed\n");
+    let retry = publish_now(&f.vault, &Token, Some(&mock.base), false);
+    assert!(retry.is_ok(), "{retry:?}");
+}
+
+#[test]
+fn the_token_prompt_never_reads_when_echo_cannot_be_turned_off() {
+    let mut input = std::io::Cursor::new(format!("{TOKEN}\n"));
+    assert!(read_hidden(|| false, &mut input).is_err());
+    assert_eq!(input.position(), 0, "the token was read while echo was on");
+    let mut input = std::io::Cursor::new(format!("{TOKEN}\n"));
+    assert_eq!(read_hidden(|| true, &mut input).unwrap(), TOKEN);
+}
