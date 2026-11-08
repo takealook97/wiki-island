@@ -152,7 +152,7 @@ impl Vault {
     /// [`crate::data_root`]).
     pub fn open_in(root: impl AsRef<Path>, data_root: Option<&Path>) -> Result<Self> {
         let root = root.as_ref();
-        let root = root.canonicalize().map_err(|e| HistoryError::io(root, e))?;
+        let root = canonical(root).map_err(|e| HistoryError::io(root, e))?;
         let git_dir = root.join(".git");
         if git_dir.is_dir() {
             let repo = gix::open(&root).map_err(HistoryError::git)?;
@@ -188,7 +188,7 @@ impl Vault {
             let repo = gix::open(dir).map_err(HistoryError::git)?;
             Ok(repo
                 .workdir()
-                .map(|w| w.canonicalize().unwrap_or_else(|_| w.to_path_buf())))
+                .map(|w| canonical(w).unwrap_or_else(|_| w.to_path_buf())))
         };
         if bound(git_dir)?.as_deref() == Some(root) {
             return Ok(None);
@@ -290,7 +290,7 @@ impl Vault {
     /// it is renamed to `git` and the parent is barriered on open.
     pub fn init_folder(root: impl AsRef<Path>, data_root: Option<&Path>) -> Result<Self> {
         let root = root.as_ref();
-        let root = root.canonicalize().map_err(|e| HistoryError::io(root, e))?;
+        let root = canonical(root).map_err(|e| HistoryError::io(root, e))?;
         if root.join(".git").is_dir() || storage::external_git_dir(&root, data_root)?.is_some() {
             return Self::open_in(&root, data_root);
         }
@@ -475,4 +475,22 @@ pub fn publication_state(vault: &Vault) -> Result<(u64, Option<u64>)> {
         snap.open_intent().map(|e| e.seq)
     };
     Ok((snap.generation, open))
+}
+
+/// `std::fs::canonicalize`. On Windows the verbatim prefix is removed
+/// (`\\?\C:\x` becomes `C:\x`, `\\?\UNC\s\x` becomes `\\s\x`) so the
+/// vault root can be joined with `/`-separated vault paths; std re-adds the
+/// prefix itself for long paths.
+pub(crate) fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical = path.canonicalize()?;
+    #[cfg(windows)]
+    if let Some(text) = canonical.to_str() {
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return Ok(PathBuf::from(format!(r"\\{rest}")));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return Ok(PathBuf::from(rest));
+        }
+    }
+    Ok(canonical)
 }
