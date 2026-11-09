@@ -69,10 +69,10 @@ jobs:
       - name: Package
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
           REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "$EVENT_NAME" = push ]; then
+          if [[ "$GIT_REF" == refs/tags/v* ]]; then
             version="$REF_NAME"
           else
             version="dev-$(git rev-parse --short HEAD)"
