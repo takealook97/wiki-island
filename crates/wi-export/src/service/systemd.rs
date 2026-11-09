@@ -385,18 +385,10 @@ impl ServicePlan {
         crate::install::local_dir(&self.vault)?;
         let _lock = lock(&self.vault, &self.label)?;
         let recorded = load_record(&self.vault, &self.label)?;
-        let failure = match self.change(systemctl, &recorded) {
-            Ok(intent) => return self.finish(systemctl, &intent),
-            Err(failure) => failure,
-        };
-        // Keep every recorded path, plus this one while this vault's unit file remains here.
-        let kept = match holds_unit(&self.unit_path, &self.marker) {
-            true => with_path(&recorded, &self.unit_path),
-            false => recorded,
-        };
-        match write_record(&self.vault, &kept) {
-            Ok(()) => Err(failure),
-            Err(error) => Err(Error::Service(format!("{failure}; {error}"))),
+        // A failure keeps the intent record written before the change; only success rewrites it.
+        match self.change(systemctl, &recorded) {
+            Ok(intent) => self.finish(systemctl, &intent),
+            Err(failure) => Err(failure),
         }
     }
 

@@ -701,18 +701,26 @@ fn failed_setup_at_a_new_config_home_keeps_the_previous_record() {
     fake.fail.replace(vec!["daemon-reload"]);
     assert!(plan_other(&e).apply(&fake).is_err());
     assert!(!other_unit(&e).exists());
-    assert_eq!(recorded_units(&e.vault, UNIT).unwrap(), [unit_file(&e)]);
+    // The failed apply keeps its intent: the new path stays recorded next to the old one.
+    assert_eq!(
+        recorded_units(&e.vault, UNIT).unwrap(),
+        [unit_file(&e), other_unit(&e)]
+    );
     assert!(uninstall_recorded_at(&other_config(&e), &e.vault, ID, &fake).unwrap());
     assert!(!unit_file(&e).exists());
     assert!(std::fs::symlink_metadata(&wants).is_err());
 }
 
 #[test]
-fn failed_first_install_records_nothing() {
+fn failed_first_install_keeps_its_intent() {
     let e = env();
     let fake = Fake::failing(&["restart"]);
     assert!(do_plan(&e).apply(&fake).is_err());
+    assert_eq!(recorded_units(&e.vault, UNIT).unwrap(), [unit_file(&e)]);
+    // Uninstall with the record and no files present succeeds, then drops record and lock.
+    uninstall_recorded_at(&other_config(&e), &e.vault, ID, &Fake::default()).unwrap();
     assert!(!record_path(&e.vault).exists());
+    assert!(!lock_path(&e.vault, UNIT).exists());
 }
 
 #[test]
@@ -765,7 +773,10 @@ fn restart_failure_at_a_new_path_restarts_the_recorded_unit() {
     );
     assert!(fake.fake.enabled.get());
     assert!(unit_file(&e).exists() && !other_unit(&e).exists());
-    assert_eq!(recorded_units(&e.vault, UNIT).unwrap(), [unit_file(&e)]);
+    assert_eq!(
+        recorded_units(&e.vault, UNIT).unwrap(),
+        [unit_file(&e), other_unit(&e)]
+    );
 }
 
 fn bad_records(e: &Env) -> usize {
@@ -871,4 +882,44 @@ fn refused_apply_does_not_record_a_foreign_unit() {
     write_foreign(&e);
     assert!(plan.apply(&fake).is_err());
     assert!(!record_path(&e.vault).exists());
+}
+
+#[test]
+fn review3_failed_link_cleanup_keeps_intent() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    struct LeaveLink(PathBuf);
+    impl Systemctl for LeaveLink {
+        fn run(&self, args: &[&str]) -> std::io::Result<Output> {
+            match args[0] {
+                "is-enabled" => Ok(answer(1, "disabled\n", "")),
+                "is-active" => Ok(answer(3, "inactive\n", "")),
+                "restart" => {
+                    let wants = self.0.parent().unwrap().join(WANTS_DIR);
+                    std::fs::create_dir_all(&wants).unwrap();
+                    symlink(&self.0, wants.join(UNIT)).unwrap();
+                    std::fs::set_permissions(&wants, std::fs::Permissions::from_mode(0o555))
+                        .unwrap();
+                    Ok(output(1, "Failed to restart."))
+                }
+                _ => Ok(output(0, "")),
+            }
+        }
+    }
+    let e = env();
+    let path = unit_file(&e);
+    let result = do_plan(&e).apply(&LeaveLink(path.clone()));
+    let wants = path.parent().unwrap().join(WANTS_DIR);
+    std::fs::set_permissions(&wants, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(result.is_err());
+    assert!(!path.exists());
+    assert!(
+        std::fs::symlink_metadata(wants.join(UNIT)).is_ok(),
+        "fixture: link cleanup should have failed"
+    );
+    let kept = recorded_units(&e.vault, UNIT).unwrap();
+    uninstall_recorded_at(&other_config(&e), &e.vault, ID, &Fake::default()).unwrap();
+    assert!(
+        std::fs::symlink_metadata(wants.join(UNIT)).is_err(),
+        "uninstall left an unrecorded enablement link; record after failed apply: {kept:?}"
+    );
 }
