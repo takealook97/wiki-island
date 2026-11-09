@@ -2,11 +2,11 @@
 use std::cell::RefCell;
 #[cfg(target_os = "macos")]
 use std::collections::VecDeque;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::process::Output;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 use wi_export::install::Error;
 use wi_export::service::plan;
 #[cfg(target_os = "macos")]
@@ -485,7 +485,7 @@ mod macos {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 #[test]
 fn plan_is_unsupported_without_a_service_backend() {
     let err = plan(
@@ -519,6 +519,37 @@ fn linux_plan_renders_a_systemd_user_unit_under_the_config_home() {
         home.join("bin/wi").display(),
         home.join("vault").display()
     )));
+}
+
+// Planning only reads Task Scheduler: it asks for the current user and an existing task.
+#[cfg(windows)]
+#[test]
+fn windows_plan_renders_a_logon_task_for_the_current_user() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    let plan = plan(
+        &home,
+        &home.join("bin/wi.exe"),
+        &home.join("vault"),
+        "proof-id",
+    )
+    .unwrap();
+    assert_eq!(plan.task_name, "wiki-island-proof-id");
+    assert!(plan.existing.is_none());
+    assert!(!plan.contents.contains(r"\\?\"), "{}", plan.contents);
+    assert!(
+        plan.contents
+            .contains("<LogonType>InteractiveToken</LogonType>")
+    );
+    assert!(
+        plan.contents.contains("<UserId>S-1-5-"),
+        "{}",
+        plan.contents
+    );
+    assert!(
+        plan.contents
+            .contains("Managed by wiki-island. Vault proof-id.")
+    );
 }
 
 #[cfg(target_os = "macos")]

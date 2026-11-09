@@ -158,8 +158,6 @@ jobs:
       - run: cargo build -p wiki-island --bin wi
       - name: Register, run, query and remove a logon task as a standard user
         shell: pwsh
-        env:
-          WI_PROOF_WI: "0"
         run: |
           $ErrorActionPreference = "Stop"
           # net user asks for confirmation above 14 characters, so stay at 14.
@@ -174,12 +172,11 @@ jobs:
           New-Item -ItemType Directory -Force $work | Out-Null
           icacls $work /grant "wiproof:(OI)(CI)F" | Out-Null
           Copy-Item .github/scripts/windows-standard-user.ps1 $work
-          $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$work\windows-standard-user.ps1", "-Work", $work)
-          if ($env:WI_PROOF_WI -eq "1") {
-            New-Item -ItemType Directory -Force "$work\bin" | Out-Null
-            Copy-Item target\debug\wi.exe "$work\bin\wi.exe"
-            $arguments += @("-Wi", "$work\bin\wi.exe")
-          }
+          # A program folder with a space and a vault with a space and an ampersand.
+          New-Item -ItemType Directory -Force "$work\wi bin" | Out-Null
+          Copy-Item target\debug\wi.exe "$work\wi bin\wi.exe"
+          $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$work\windows-standard-user.ps1",
+            "-Work", $work, "-Wi", "`"$work\wi bin\wi.exe`"", "-Vault", "`"$work\notes & more`"", "-Standard")
           $credential = New-Object System.Management.Automation.PSCredential("wiproof", (ConvertTo-SecureString $password -AsPlainText -Force))
           $process = Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments `
             -Credential $credential -LoadUserProfile -WorkingDirectory $work -Wait -PassThru `
@@ -188,3 +185,16 @@ jobs:
           Get-Content "$work\err.txt"
           Write-Output "proof exit code: $($process.ExitCode)"
           exit $process.ExitCode
+      - name: Setup, doctor and uninstall with a running watcher as the runner user
+        shell: pwsh
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP "wi task"
+          New-Item -ItemType Directory -Force "$work\bin" | Out-Null
+          Copy-Item target\debug\wi.exe "$work\bin\wi.exe"
+          # App settings go to a scratch profile; the task still runs as the runner user.
+          $env:USERPROFILE = Join-Path $work "profile"
+          $env:APPDATA = Join-Path $work "roaming"
+          $env:LOCALAPPDATA = Join-Path $work "local"
+          & ./.github/scripts/windows-standard-user.ps1 -Work $work -Wi "$work\bin\wi.exe" `
+            -Vault "$work\notes & more" -ExpectRunning
+          exit $LASTEXITCODE

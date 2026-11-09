@@ -1,9 +1,14 @@
-# Runs as a newly created standard (non-administrator) local user. Proves that a per-user
-# Task Scheduler logon task can be registered, started, queried, stopped and deleted
-# without elevation, then runs the same roundtrip through `wi setup` and `wi uninstall`.
+# Proves the per-user Task Scheduler logon task: a raw schtasks register/run/query/end/delete
+# roundtrip, then the same roundtrip through `wi setup`, `wi doctor` and `wi uninstall`.
+# -Standard asserts the caller is not an administrator. -ExpectRunning asserts the task's
+# program runs; an interactive-token task runs only inside the user's desktop session, which a
+# credential logon without a desktop does not have.
 param(
     [Parameter(Mandatory = $true)][string]$Work,
-    [string]$Wi = ""
+    [string]$Wi = "",
+    [string]$Vault = "",
+    [switch]$Standard,
+    [switch]$ExpectRunning
 )
 $ErrorActionPreference = "Continue"
 $failed = $false
@@ -29,7 +34,7 @@ Write-Host "== identity"
 whoami
 $groups = whoami /groups /fo csv /nh | Out-String
 Write-Host $groups.TrimEnd()
-if ($groups -match "S-1-5-32-544") { Fail "the proof user belongs to Administrators" }
+if ($Standard -and $groups -match "S-1-5-32-544") { Fail "the proof user belongs to Administrators" }
 $sid = ((whoami /user /fo csv /nh) | ConvertFrom-Csv -Header Name, Sid).Sid
 Write-Host "sid $sid"
 
@@ -58,7 +63,7 @@ if ((Run schtasks.exe @("/Run", "/TN", $name)).Code -ne 0) { Fail "raw /Run" }
 Start-Sleep -Seconds 3
 $state = TaskStatus $name
 Write-Host "raw status: $state"
-if ($state -ne "Running") { Fail "raw task is not running" }
+if ($ExpectRunning -and $state -ne "Running") { Fail "raw task is not running" }
 [void](Run schtasks.exe @("/End", "/TN", $name))
 if ((Run schtasks.exe @("/Delete", "/TN", $name, "/F")).Code -ne 0) { Fail "raw /Delete" }
 if ((TaskStatus $name) -ne "absent") { Fail "raw task still exists" }
@@ -66,6 +71,7 @@ if ((TaskStatus $name) -ne "absent") { Fail "raw task still exists" }
 if ($Wi) {
     Write-Host "== wi setup roundtrip"
     $env:WI_CACHE_DIR = Join-Path $Work "cache"
+    if ($Vault) { $env:WI_VAULT = $Vault }
     if ((Run $Wi @("setup")).Code -ne 0) { Fail "wi setup" }
     $tasks = & schtasks.exe /Query /FO CSV /NH 2>$null | ConvertFrom-Csv -Header Name, Next, Status |
         Where-Object { $_.Name -like "\wiki-island-*" }
@@ -76,12 +82,16 @@ if ($Wi) {
     Start-Sleep -Seconds 5
     $state = TaskStatus $task
     Write-Host "task status: $state"
-    if ($state -ne "Running") { Fail "wi task is not running" }
     $watchers = @(Get-Process -Name wi -ErrorAction SilentlyContinue)
     Write-Host "wi processes: $($watchers.Count)"
-    if ($watchers.Count -lt 1) { Fail "no watcher process" }
     $doctor = Run $Wi @("doctor")
-    if ($doctor.Text -notmatch "\[ok\] service:") { Fail "doctor does not report the service as ok" }
+    if ($ExpectRunning) {
+        if ($state -ne "Running") { Fail "wi task is not running" }
+        if ($watchers.Count -lt 1) { Fail "no watcher process" }
+        if ($doctor.Text -notmatch "\[ok\] service: Background care is running") { Fail "doctor does not report the service as running" }
+    } elseif ($doctor.Text -notmatch "\[warn\] service: Background care is not running") {
+        Fail "doctor does not report the registered but stopped service"
+    }
     if ((Run $Wi @("uninstall")).Code -ne 0) { Fail "wi uninstall" }
     Start-Sleep -Seconds 2
     if ((TaskStatus $task) -ne "absent") { Fail "wi task still exists" }

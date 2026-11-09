@@ -1,5 +1,6 @@
 //! `wi service`: install, remove and inspect the per-vault background service
-//! (a LaunchAgent on macOS, a systemd user unit on Linux).
+//! (a LaunchAgent on macOS, a systemd user unit on Linux, a Task Scheduler logon task on
+//! Windows).
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +49,8 @@ pub(crate) fn run(vault: &Session, command: ServiceCommand) -> Result<Output> {
                     "Nothing to remove: the service is not installed.".into()
                 } else if cfg!(target_os = "linux") {
                     "Service stopped and its unit removed.".into()
+                } else if cfg!(windows) {
+                    "Service stopped and its scheduled task removed.".into()
                 } else {
                     "Service unloaded and its plist removed.".into()
                 },
@@ -66,7 +69,7 @@ pub(crate) fn run(vault: &Session, command: ServiceCommand) -> Result<Output> {
 
 /// Explicit service commands report a missing user manager as one plain sentence.
 fn ensure_manager(runner: &service::Runner) -> Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     if !service::available(runner) {
         return Err(
             wi_export::install::Error::Unsupported(service::unavailable_message().into()).into(),
@@ -76,12 +79,12 @@ fn ensure_manager(runner: &service::Runner) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn binary() -> Result<PathBuf> {
     super::setup_cmd::executable().context("locate the wi binary")
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn binary() -> Result<PathBuf> {
     std::fs::canonicalize(std::env::current_exe()?).context("locate the wi binary")
 }
@@ -90,7 +93,7 @@ fn yes_no(value: bool, yes: &'static str, no: &'static str) -> &'static str {
     if value { yes } else { no }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn install_output(plan: &service::ServicePlan, yes: bool) -> Output {
     let diff = plan.diff();
     let human = if yes {
@@ -150,7 +153,7 @@ fn install_output(plan: &service::ServicePlan, yes: bool) -> Output {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn status_text(status: &service::ServiceStatus) -> String {
     format!(
         "{}: {}, {}\nplist: {}\nlog: {}",
@@ -174,23 +177,62 @@ fn status_text(status: &service::ServiceStatus) -> String {
     )
 }
 
+#[cfg(windows)]
+fn install_output(plan: &service::ServicePlan, yes: bool) -> Output {
+    let diff = plan.diff();
+    let human = if yes {
+        format!(
+            "{diff}Registered the scheduled task {} and started it.",
+            plan.task_name
+        )
+    } else if plan.is_noop() {
+        format!(
+            "No change: the scheduled task {} already matches. Pass --yes to (re)start it.",
+            plan.task_name
+        )
+    } else {
+        format!("{diff}Preview only; pass --yes to apply.")
+    };
+    Output {
+        json: json!({
+            "applied": yes,
+            "changed": !plan.is_noop(),
+            "label": plan.label,
+            "task_name": plan.task_name,
+            "diff": diff,
+        }),
+        human,
+    }
+}
+
+#[cfg(windows)]
+fn status_text(status: &service::ServiceStatus) -> String {
+    format!(
+        "{}: {}, {}\ntask: {}",
+        status.label,
+        yes_no(status.installed, "registered", "not registered"),
+        yes_no(status.running, "running", "not running"),
+        status.task_name
+    )
+}
+
 /// Whether the service is set up and its watcher is running right now.
 pub(crate) fn running(home: &Path, vault_id: &str, runner: &service::Runner) -> Result<bool> {
     let status = service::status(home, vault_id, runner)?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     let running = status.configured() && status.running;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     let running = status.loaded;
     Ok(running)
 }
 
 /// Whether this target has a service backend that can be used now.
 pub(crate) fn ready(runner: &service::Runner) -> bool {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     {
         service::available(runner)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = runner;
         cfg!(target_os = "macos")
@@ -199,15 +241,20 @@ pub(crate) fn ready(runner: &service::Runner) -> bool {
 
 /// The doctor's service check, or `None` on a target without a service backend.
 pub(crate) fn doctor_check(vault_id: &str) -> Option<wi_store::Check> {
-    if !cfg!(any(target_os = "macos", target_os = "linux")) {
+    if !cfg!(any(target_os = "macos", target_os = "linux", windows)) {
         return None;
     }
     let runner = service::default_runner();
-    if cfg!(target_os = "linux") && !ready(runner) {
+    if cfg!(any(target_os = "linux", windows)) && !ready(runner) {
         return Some(wi_store::Check {
             name: "service",
             status: "warn",
-            detail: "Background care needs a systemd user session; until you log in to one, run wi watch to keep your notes up to date.".into(),
+            detail: if cfg!(windows) {
+                "Background care needs Windows Task Scheduler, which is not available on this computer; run wi watch to keep your notes up to date."
+            } else {
+                "Background care needs a systemd user session; until you log in to one, run wi watch to keep your notes up to date."
+            }
+            .into(),
             fix: None,
         });
     }
