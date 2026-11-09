@@ -26,48 +26,35 @@ const UNRUNNABLE_BINARY: &str = "The wi program path contains a quote or backsla
 /// Where setup records the installed unit paths, one per line, inside the vault's local backup
 /// folder.
 const RECORD: &str = "backups/systemd-unit-path";
+const LOCK_FAILED: &str =
+    "wiki-island could not lock this vault's service record; run wi setup again";
+/// Lock attempts while uninstalls keep removing the lock file.
+const LOCK_TRIES: usize = 100;
+
+type Answer = std::io::Result<Output>;
 
 /// Runs `systemctl --user` with the given arguments. Tests substitute a fake.
+#[rustfmt::skip]
 pub trait Systemctl {
-    fn run(&self, args: &[&str]) -> std::io::Result<Output>;
+    fn run(&self, args: &[&str]) -> Answer;
 
-    fn show_environment(&self) -> std::io::Result<Output> {
-        self.run(&["show-environment"])
-    }
-    fn daemon_reload(&self) -> std::io::Result<Output> {
-        self.run(&["daemon-reload"])
-    }
-    fn enable(&self, unit: &str) -> std::io::Result<Output> {
-        self.run(&["enable", unit])
-    }
-    fn disable(&self, unit: &str) -> std::io::Result<Output> {
-        self.run(&["disable", unit])
-    }
-    fn disable_now(&self, unit: &str) -> std::io::Result<Output> {
-        self.run(&["disable", "--now", unit])
-    }
-    fn start(&self, unit: &str) -> std::io::Result<Output> {
-        self.run(&["start", unit])
-    }
-    fn stop(&self, unit: &str) -> std::io::Result<Output> {
-        self.run(&["stop", unit])
-    }
-    fn restart(&self, unit: &str) -> std::io::Result<Output> {
-        self.run(&["restart", unit])
-    }
-    fn is_enabled(&self, unit: &str) -> std::io::Result<Output> {
-        self.run(&["is-enabled", unit])
-    }
-    fn is_active(&self, unit: &str) -> std::io::Result<Output> {
-        self.run(&["is-active", unit])
-    }
+    fn show_environment(&self) -> Answer { self.run(&["show-environment"]) }
+    fn daemon_reload(&self) -> Answer { self.run(&["daemon-reload"]) }
+    fn enable(&self, unit: &str) -> Answer { self.run(&["enable", unit]) }
+    fn disable(&self, unit: &str) -> Answer { self.run(&["disable", unit]) }
+    fn disable_now(&self, unit: &str) -> Answer { self.run(&["disable", "--now", unit]) }
+    fn start(&self, unit: &str) -> Answer { self.run(&["start", unit]) }
+    fn stop(&self, unit: &str) -> Answer { self.run(&["stop", unit]) }
+    fn restart(&self, unit: &str) -> Answer { self.run(&["restart", unit]) }
+    fn is_enabled(&self, unit: &str) -> Answer { self.run(&["is-enabled", unit]) }
+    fn is_active(&self, unit: &str) -> Answer { self.run(&["is-active", unit]) }
 }
 
 /// Executes `WI_SYSTEMCTL --user`, or `systemctl --user` from PATH when unset.
 pub struct SystemSystemctl;
 
 impl Systemctl for SystemSystemctl {
-    fn run(&self, args: &[&str]) -> std::io::Result<Output> {
+    fn run(&self, args: &[&str]) -> Answer {
         std::process::Command::new(
             std::env::var_os("WI_SYSTEMCTL").unwrap_or_else(|| SYSTEMCTL.into()),
         )
@@ -140,6 +127,28 @@ fn is_owned(text: &str, marker: &str) -> bool {
     text.lines().next() == Some(marker)
 }
 
+/// Refuses unit text that does not carry this vault's marker.
+fn check_owned(text: Option<&str>, marker: &str, label: &str) -> Result<(), Error> {
+    match text {
+        Some(text) if !is_owned(text, marker) => Err(foreign(label)),
+        _ => Ok(()),
+    }
+}
+
+/// `path` holds this vault's unit file.
+fn holds_unit(path: &Path, marker: &str) -> bool {
+    matches!(read_file(path), Ok(Some(text)) if is_owned(&text, marker))
+}
+
+/// `paths` plus `path` when it is missing.
+fn with_path(paths: &[PathBuf], path: &Path) -> Vec<PathBuf> {
+    let mut all = paths.to_vec();
+    if !all.iter().any(|known| known == path) {
+        all.push(path.to_path_buf());
+    }
+    all
+}
+
 fn foreign(label: &str) -> Error {
     Error::Config(format!(
         "A different service unit named {label} already exists; rename or remove it, then run wi setup again"
@@ -158,16 +167,15 @@ fn exec_path(text: &str) -> String {
     format!("\"{}\"", text.replace('%', "%%"))
 }
 
-/// One ExecStart argument: quoted, with `\` and `"` escaped and `$` and `%` doubled so systemd
-/// passes the text literally.
-fn exec_word(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
+/// Quotes `text` with `\` and `"` escaped and `%` doubled; `$` is doubled where systemd would
+/// otherwise substitute it.
+fn quote(text: &str, double_dollar: bool) -> String {
+    let mut out = String::from('"');
     for c in text.chars() {
         match c {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
-            '$' => out.push_str("$$"),
+            '$' if double_dollar => out.push_str("$$"),
             '%' => out.push_str("%%"),
             c => out.push(c),
         }
@@ -176,19 +184,14 @@ fn exec_word(text: &str) -> String {
     out
 }
 
-/// One Environment= assignment: quoted as a whole, `%` doubled; `$` is literal there.
+/// One ExecStart argument, passed literally.
+fn exec_word(text: &str) -> String {
+    quote(text, true)
+}
+
+/// One Environment= assignment, quoted as a whole; `$` is literal there.
 fn env_assignment(name: &str, value: &str) -> String {
-    let mut out = format!("\"{name}=");
-    for c in value.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '%' => out.push_str("%%"),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    quote(&format!("{name}={value}"), false)
 }
 
 fn render(vault_id: &str, binary: &str, vault: &str, home: &str) -> String {
@@ -248,12 +251,7 @@ fn plan_at(
     let vault = absolute_str(vault_root, "vault root")?;
     let marker = marker(vault_id);
     let existing = read_file(&unit_path)?;
-    if existing
-        .as_deref()
-        .is_some_and(|text| !is_owned(text, &marker))
-    {
-        return Err(foreign(&label));
-    }
+    check_owned(existing.as_deref(), &marker, &label)?;
     ensure_writable(unit_path.parent())?;
     Ok(ServicePlan {
         contents: render(vault_id, binary, vault, home_text),
@@ -265,7 +263,7 @@ fn plan_at(
     })
 }
 
-fn succeeded(result: std::io::Result<Output>) -> bool {
+fn succeeded(result: Answer) -> bool {
     matches!(result, Ok(out) if out.status.success())
 }
 
@@ -312,10 +310,7 @@ fn parse_active(out: &Output) -> Option<bool> {
     }
 }
 
-fn probe(
-    result: std::io::Result<Output>,
-    parse: fn(&Output) -> Option<bool>,
-) -> Result<bool, Error> {
+fn probe(result: Answer, parse: fn(&Output) -> Option<bool>) -> Result<bool, Error> {
     result
         .ok()
         .as_ref()
@@ -332,11 +327,7 @@ fn snapshot(systemctl: &dyn Systemctl, unit: &str) -> Result<Snapshot, Error> {
 }
 
 /// Turns a systemctl result into an error naming the operation.
-fn check(
-    result: std::io::Result<Output>,
-    what: &str,
-    tolerate_not_loaded: bool,
-) -> Result<(), Error> {
+fn check(result: Answer, what: &str, tolerate_not_loaded: bool) -> Result<(), Error> {
     match result {
         Ok(out) if out.status.success() => Ok(()),
         Ok(out) if tolerate_not_loaded && is_not_loaded(&out) => Ok(()),
@@ -383,33 +374,48 @@ impl ServicePlan {
 
     /// Writes, enables and (re)starts the unit. Identical content that is already enabled and
     /// active is left alone. Any failure restores the previous file, enablement and running state.
+    /// The vault's service lock is held throughout, and this path is recorded before any change.
     pub fn apply(&self, systemctl: &dyn Systemctl) -> Result<(), Error> {
         let parent = self.parent()?;
-        let durability = wi_history::durable::Durability::Standard;
         crate::install::record_created_dirs(
             &self.vault,
             &[parent.to_path_buf(), parent.join(WANTS_DIR)],
         )?;
-        wi_history::durable::create_dir_durable(parent, durability)?;
+        wi_history::durable::create_dir_durable(parent, wi_history::durable::Durability::Standard)?;
+        crate::install::local_dir(&self.vault)?;
+        let _lock = lock(&self.vault, &self.label)?;
+        let recorded = load_record(&self.vault, &self.label)?;
+        // A failure keeps the intent record written before the change; only success rewrites it.
+        match self.change(systemctl, &recorded) {
+            Ok(intent) => self.finish(systemctl, &intent),
+            Err(failure) => Err(failure),
+        }
+    }
+
+    /// Validates, records this path as intent and changes the unit; returns the intent record.
+    fn change(
+        &self,
+        systemctl: &dyn Systemctl,
+        recorded: &[PathBuf],
+    ) -> Result<Vec<PathBuf>, Error> {
+        let parent = self.parent()?;
+        let durability = wi_history::durable::Durability::Standard;
         // Validate the live destination before any systemctl call, noop or not.
         let live = read_file(&self.unit_path)?;
         if live != self.existing {
             return Err(Error::Stale);
         }
-        if live
-            .as_deref()
-            .is_some_and(|text| !is_owned(text, &self.marker))
-        {
-            return Err(foreign(&self.label));
-        }
+        check_owned(live.as_deref(), &self.marker, &self.label)?;
         let prior = snapshot(systemctl, &self.label)?;
         // A running unit with no file here is ours only when it comes from a recorded install.
-        if live.is_none() && prior.active && !self.recorded_elsewhere()? {
+        if live.is_none() && prior.active && !self.recorded_elsewhere(recorded) {
             return Err(foreign_running(&self.label));
         }
+        let intent = with_path(recorded, &self.unit_path);
+        write_record(&self.vault, &intent)?;
         let changed = !self.is_noop();
         if !changed && prior.enabled && prior.active {
-            return self.finish(systemctl);
+            return Ok(intent);
         }
         if changed {
             if let Some(old) = &self.existing {
@@ -423,7 +429,7 @@ impl ServicePlan {
             wi_history::durable::barrier_dir(parent, durability)?;
         }
         let Err(failure) = self.activate(systemctl, changed || prior.active) else {
-            return self.finish(systemctl);
+            return Ok(intent);
         };
         match self.rollback(systemctl, changed, prior) {
             Ok(()) => Err(failure),
@@ -434,28 +440,25 @@ impl ServicePlan {
     }
 
     /// Another recorded path still holds this vault's unit.
-    fn recorded_elsewhere(&self) -> Result<bool, Error> {
-        Ok(recorded_units(&self.vault, &self.label)?
+    fn recorded_elsewhere(&self, recorded: &[PathBuf]) -> bool {
+        recorded
             .iter()
             .filter(|path| **path != self.unit_path)
-            .any(|path| matches!(read_file(path), Ok(Some(text)) if is_owned(&text, &self.marker))))
+            .any(|path| holds_unit(path, &self.marker))
     }
 
     /// After a successful apply: records this path and retires this vault's units at every other
     /// recorded path. A path that could not be retired stays recorded for uninstall.
-    fn finish(&self, systemctl: &dyn Systemctl) -> Result<(), Error> {
+    fn finish(&self, systemctl: &dyn Systemctl, recorded: &[PathBuf]) -> Result<(), Error> {
         let mut kept = vec![self.unit_path.clone()];
         let mut errors = Vec::new();
         let mut retired = false;
-        for path in recorded_units(&self.vault, &self.label)? {
-            if path == self.unit_path {
-                continue;
-            }
-            match retire(&self.label, &path, &self.marker) {
+        for path in recorded.iter().filter(|path| **path != self.unit_path) {
+            match retire(&self.label, path, &self.marker) {
                 Ok(removed) => retired |= removed,
                 Err(error) => {
                     errors.push(error.to_string());
-                    kept.push(path);
+                    kept.push(path.clone());
                 }
             }
         }
@@ -476,11 +479,8 @@ impl ServicePlan {
     fn activate(&self, systemctl: &dyn Systemctl, restart: bool) -> Result<(), Error> {
         check(systemctl.daemon_reload(), "daemon-reload", false)?;
         check(systemctl.enable(&self.label), "enable", false)?;
-        if restart {
-            check(systemctl.restart(&self.label), "restart", false)
-        } else {
-            check(systemctl.start(&self.label), "start", false)
-        }
+        let verb = if restart { "restart" } else { "start" };
+        check(systemctl.run(&[verb, &self.label]), verb, false)
     }
 
     /// Restores the previous file, enablement and running state; reports every failed step.
@@ -490,18 +490,14 @@ impl ServicePlan {
         changed: bool,
         prior: Snapshot,
     ) -> Result<(), Error> {
-        let Snapshot {
-            enabled: was_enabled,
-            active: was_active,
-        } = prior;
         let unit = self.label.as_str();
         let mut steps = Vec::new();
         if self.existing.is_none() {
             // Undo while the unit file still exists.
-            if !was_active {
+            if !prior.active {
                 steps.push(check(systemctl.stop(unit), "stop", true));
             }
-            if !was_enabled {
+            if !prior.enabled {
                 steps.push(check(systemctl.disable(unit), "disable", true));
             }
             if changed {
@@ -510,7 +506,7 @@ impl ServicePlan {
             }
             steps.push(check(systemctl.daemon_reload(), "daemon-reload", false));
             // Only a recorded install elsewhere can be running here; bring it back.
-            if was_active {
+            if prior.active {
                 steps.push(check(systemctl.start(unit), "start", false));
             }
         } else {
@@ -518,12 +514,12 @@ impl ServicePlan {
                 steps.push(self.restore());
             }
             steps.push(check(systemctl.daemon_reload(), "daemon-reload", false));
-            steps.push(if was_enabled {
+            steps.push(if prior.enabled {
                 check(systemctl.enable(unit), "enable", false)
             } else {
                 check(systemctl.disable(unit), "disable", true)
             });
-            steps.push(if was_active {
+            steps.push(if prior.active {
                 check(systemctl.restart(unit), "restart", false)
             } else {
                 check(systemctl.stop(unit), "stop", true)
@@ -580,18 +576,20 @@ fn uninstall_recorded_at(
     systemctl: &dyn Systemctl,
 ) -> Result<bool, Error> {
     let (label, current) = unit_path(config_home, vault_id)?;
-    let mut paths = recorded_units(vault_root, &label)?;
-    if !paths.contains(&current) {
-        paths.push(current);
-    }
+    let record = record_path(vault_root);
+    // Without the record folder nothing was ever recorded, so there is nothing to lock.
+    let held = (record.parent().is_some_and(Path::is_dir))
+        .then(|| lock(vault_root, &label))
+        .transpose()?;
+    let paths = with_path(&load_record(vault_root, &label)?, &current);
     let marker = marker(vault_id);
     let mut removed = false;
     for path in &paths {
         removed |= uninstall_unit(&label, path, &marker, systemctl)?;
     }
-    match std::fs::remove_file(record_path(vault_root)) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-        _ => {}
+    remove_if_present(&record)?;
+    if held.is_some() {
+        remove_if_present(&lock_path(vault_root, &label))?;
     }
     Ok(removed)
 }
@@ -626,12 +624,7 @@ fn uninstall_unit(
     systemctl: &dyn Systemctl,
 ) -> Result<bool, Error> {
     let existing = read_file(path)?;
-    if existing
-        .as_deref()
-        .is_some_and(|text| !is_owned(text, marker))
-    {
-        return Err(foreign(label));
-    }
+    check_owned(existing.as_deref(), marker, label)?;
     let present = existing.is_some();
     if !available(systemctl) {
         remove_owned_wants_link(path, label)?;
@@ -659,13 +652,67 @@ fn record_path(vault_root: &Path) -> PathBuf {
     local_base(vault_root).join(RECORD)
 }
 
-/// Records the installed unit paths; rewrites only when they changed.
-fn write_record(vault_root: &Path, paths: &[PathBuf]) -> Result<(), Error> {
-    let mut text = String::new();
-    for path in paths {
-        text.push_str(absolute_str(path, "unit path")?);
-        text.push('\n');
+fn remove_if_present(path: &Path) -> Result<(), Error> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
     }
+}
+
+fn lock_path(vault_root: &Path, label: &str) -> PathBuf {
+    record_path(vault_root).with_file_name(Path::new(label).with_extension("lock"))
+}
+
+/// Takes the vault's exclusive service lock, waiting for another setup or uninstall to finish.
+/// The lock is released when the returned file is dropped.
+fn lock(vault_root: &Path, label: &str) -> Result<std::fs::File, Error> {
+    use std::os::unix::fs::MetadataExt;
+    let path = lock_path(vault_root, label);
+    let failed = |_: std::io::Error| Error::Service(LOCK_FAILED.into());
+    for _ in 0..LOCK_TRIES {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(failed)?;
+        file.lock().map_err(failed)?;
+        let held = file.metadata().map_err(failed)?;
+        // An uninstall may have removed the file while this call waited; retry on the new one.
+        match std::fs::symlink_metadata(&path) {
+            Ok(live) if (live.dev(), live.ino()) == (held.dev(), held.ino()) => return Ok(file),
+            Ok(live) if live.file_type().is_symlink() => break,
+            _ => {}
+        }
+    }
+    Err(Error::Service(LOCK_FAILED.into()))
+}
+
+/// The recorded unit paths; an unreadable record is set aside as `<record>.bad-<unix-seconds>`.
+fn load_record(vault_root: &Path, label: &str) -> Result<Vec<PathBuf>, Error> {
+    match recorded_units(vault_root, label) {
+        Err(Error::Config(_)) => {
+            let path = record_path(vault_root);
+            let seconds = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            std::fs::rename(&path, path.with_extension(format!("bad-{seconds}")))?;
+            Ok(Vec::new())
+        }
+        other => other,
+    }
+}
+
+/// Records the unit paths, or removes the record when there are none; rewrites only on change.
+fn write_record(vault_root: &Path, paths: &[PathBuf]) -> Result<(), Error> {
+    if paths.is_empty() {
+        return remove_if_present(&record_path(vault_root));
+    }
+    let lines: Vec<&str> = paths
+        .iter()
+        .map(|path| absolute_str(path, "unit path"))
+        .collect::<Result<_, _>>()?;
+    let text = format!("{}\n", lines.join("\n"));
     let path = record_path(vault_root);
     if read_file(&path)?.as_deref() == Some(text.as_str()) {
         return Ok(());
