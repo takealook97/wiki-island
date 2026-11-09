@@ -23,7 +23,8 @@ const UNAVAILABLE: &str =
     "Background care needs a systemd user session; run wi watch to keep this vault up to date";
 const UNEXPECTED: &str = "The systemd user manager gave an answer wiki-island does not understand; run wi setup again later";
 const UNRUNNABLE_BINARY: &str = "The wi program path contains a quote or backslash, which systemd cannot run; install wi in a folder without those characters";
-/// Where setup records the installed unit path, inside the vault's local backup folder.
+/// Where setup records the installed unit paths, one per line, inside the vault's local backup
+/// folder.
 const RECORD: &str = "backups/systemd-unit-path";
 
 /// Runs `systemctl --user` with the given arguments. Tests substitute a fake.
@@ -142,6 +143,12 @@ fn is_owned(text: &str, marker: &str) -> bool {
 fn foreign(label: &str) -> Error {
     Error::Config(format!(
         "A different service unit named {label} already exists; rename or remove it, then run wi setup again"
+    ))
+}
+
+fn foreign_running(label: &str) -> Error {
+    Error::Config(format!(
+        "A different service unit named {label} is running without a unit file wiki-island knows; stop it, then run wi setup again"
     ))
 }
 
@@ -396,11 +403,14 @@ impl ServicePlan {
             return Err(foreign(&self.label));
         }
         let prior = snapshot(systemctl, &self.label)?;
+        // A running unit with no file here is ours only when it comes from a recorded install.
+        if live.is_none() && prior.active && !self.recorded_elsewhere()? {
+            return Err(foreign_running(&self.label));
+        }
         let changed = !self.is_noop();
         if !changed && prior.enabled && prior.active {
-            return record_unit(&self.vault, &self.unit_path);
+            return self.finish(systemctl);
         }
-        record_unit(&self.vault, &self.unit_path)?;
         if changed {
             if let Some(old) = &self.existing {
                 unique_backup(&self.vault, &self.unit_path, old.as_bytes())?;
@@ -413,13 +423,53 @@ impl ServicePlan {
             wi_history::durable::barrier_dir(parent, durability)?;
         }
         let Err(failure) = self.activate(systemctl, changed || prior.active) else {
-            return Ok(());
+            return self.finish(systemctl);
         };
         match self.rollback(systemctl, changed, prior) {
             Ok(()) => Err(failure),
             Err(error) => Err(Error::Service(format!(
                 "{failure}; restoring the previous service failed: {error}"
             ))),
+        }
+    }
+
+    /// Another recorded path still holds this vault's unit.
+    fn recorded_elsewhere(&self) -> Result<bool, Error> {
+        Ok(recorded_units(&self.vault, &self.label)?
+            .iter()
+            .filter(|path| **path != self.unit_path)
+            .any(|path| matches!(read_file(path), Ok(Some(text)) if is_owned(&text, &self.marker))))
+    }
+
+    /// After a successful apply: records this path and retires this vault's units at every other
+    /// recorded path. A path that could not be retired stays recorded for uninstall.
+    fn finish(&self, systemctl: &dyn Systemctl) -> Result<(), Error> {
+        let mut kept = vec![self.unit_path.clone()];
+        let mut errors = Vec::new();
+        let mut retired = false;
+        for path in recorded_units(&self.vault, &self.label)? {
+            if path == self.unit_path {
+                continue;
+            }
+            match retire(&self.label, &path, &self.marker) {
+                Ok(removed) => retired |= removed,
+                Err(error) => {
+                    errors.push(error.to_string());
+                    kept.push(path);
+                }
+            }
+        }
+        write_record(&self.vault, &kept)?;
+        if retired {
+            check(systemctl.daemon_reload(), "daemon-reload", false)?;
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Service(format!(
+                "removing an older copy of the service failed: {}",
+                errors.join("; ")
+            )))
         }
     }
 
@@ -447,7 +497,7 @@ impl ServicePlan {
         let unit = self.label.as_str();
         let mut steps = Vec::new();
         if self.existing.is_none() {
-            // Undo while the unit file still exists. A unit loaded without a file keeps running.
+            // Undo while the unit file still exists.
             if !was_active {
                 steps.push(check(systemctl.stop(unit), "stop", true));
             }
@@ -456,8 +506,13 @@ impl ServicePlan {
             }
             if changed {
                 steps.push(self.restore());
+                steps.push(remove_owned_wants_link(&self.unit_path, unit));
             }
             steps.push(check(systemctl.daemon_reload(), "daemon-reload", false));
+            // Only a recorded install elsewhere can be running here; bring it back.
+            if was_active {
+                steps.push(check(systemctl.start(unit), "start", false));
+            }
         } else {
             if changed {
                 steps.push(self.restore());
@@ -507,8 +562,8 @@ pub fn uninstall(home: &Path, vault_id: &str, systemctl: &dyn Systemctl) -> Resu
     uninstall_at(&config_home(home), vault_id, systemctl)
 }
 
-/// Like [`uninstall`], but first removes the unit at the path recorded in the vault when it was
-/// installed, so a changed `XDG_CONFIG_HOME` cannot leave an enabled unit behind.
+/// Like [`uninstall`], but first removes the units at every path recorded in the vault when they
+/// were installed, so a changed `XDG_CONFIG_HOME` cannot leave an enabled unit behind.
 pub fn uninstall_recorded(
     home: &Path,
     vault_root: &Path,
@@ -525,7 +580,7 @@ fn uninstall_recorded_at(
     systemctl: &dyn Systemctl,
 ) -> Result<bool, Error> {
     let (label, current) = unit_path(config_home, vault_id)?;
-    let mut paths: Vec<PathBuf> = recorded_unit(vault_root, &label)?.into_iter().collect();
+    let mut paths = recorded_units(vault_root, &label)?;
     if !paths.contains(&current) {
         paths.push(current);
     }
@@ -604,9 +659,13 @@ fn record_path(vault_root: &Path) -> PathBuf {
     local_base(vault_root).join(RECORD)
 }
 
-/// Records the installed unit path; rewrites only when it changed.
-fn record_unit(vault_root: &Path, unit_path: &Path) -> Result<(), Error> {
-    let text = format!("{}\n", absolute_str(unit_path, "unit path")?);
+/// Records the installed unit paths; rewrites only when they changed.
+fn write_record(vault_root: &Path, paths: &[PathBuf]) -> Result<(), Error> {
+    let mut text = String::new();
+    for path in paths {
+        text.push_str(absolute_str(path, "unit path")?);
+        text.push('\n');
+    }
     let path = record_path(vault_root);
     if read_file(&path)?.as_deref() == Some(text.as_str()) {
         return Ok(());
@@ -617,14 +676,36 @@ fn record_unit(vault_root: &Path, unit_path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// The recorded unit path, ignored unless it is absolute and names this vault's unit.
-fn recorded_unit(vault_root: &Path, label: &str) -> Result<Option<PathBuf>, Error> {
+/// The recorded unit paths, keeping only absolute ones that name this vault's unit.
+fn recorded_units(vault_root: &Path, label: &str) -> Result<Vec<PathBuf>, Error> {
     let Some(text) = read_file(&record_path(vault_root))? else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
-    let path = PathBuf::from(text.trim_end_matches('\n'));
-    let valid = path.is_absolute() && path.file_name().is_some_and(|name| name == label);
-    Ok(valid.then_some(path))
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for path in text.lines().map(PathBuf::from) {
+        let valid = path.is_absolute() && path.file_name().is_some_and(|name| name == label);
+        if valid && !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+/// Removes an older install of this vault's unit at `path` without asking the manager, which
+/// now resolves the unit name to the new file. Returns whether a unit file was removed. Anything
+/// at `path` that is not this vault's regular unit file is left alone.
+fn retire(label: &str, path: &Path, marker: &str) -> Result<bool, Error> {
+    match read_file(path) {
+        Ok(Some(text)) if is_owned(&text, marker) => {
+            remove_owned_wants_link(path, label)?;
+            std::fs::remove_file(path)?;
+            Ok(true)
+        }
+        // Drop an enablement link that still points at the removed file.
+        Ok(None) => remove_owned_wants_link(path, label).map(|()| false),
+        Ok(Some(_)) | Err(Error::Config(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 pub fn status(
