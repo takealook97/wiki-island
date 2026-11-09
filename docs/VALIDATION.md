@@ -113,6 +113,9 @@ Each row is a finite, checkable statement.
 - Skills sync writes only owned directories, is incremental by checksum, removes what it owns and never touches other directories.
 - `wi setup` is idempotent and prints its summary; `wi uninstall` removes everything it owns and no notes.
 - The service plist is written atomically, rolled back on a bootstrap failure, and refused for a development binary (fake launchctl, temporary HOME).
+- The systemd unit text is asserted exactly for paths with spaces, quotes, backslashes, `$` and `%`; first install, unchanged no-op, restart of a changed active unit, rollback after an enable-then-start failure, rollback of a replacement to the prior file, enablement and running state, uninstall of a not-loaded unit, configured versus running status, and a missing user manager are covered with a fake `systemctl` (`crates/wi-export/src/service/systemd_tests.rs`; these run on every Unix host).
+- On Linux, `wi setup`, `wi doctor`, `wi service` and `wi uninstall` run against a fake `systemctl` with and without a user manager (`crates/wi-cli/tests/linux_service.rs`, `crates/wi-cli/tests/setup_roundtrip.rs`).
+- The `linux-systemd` CI job on `ubuntu-24.04` starts a real user manager with lingering, runs `wi setup`, checks that the unit is enabled, active and not restarting, checks `wi doctor`, then runs `wi uninstall` and checks that the unit file is gone and the unit is neither enabled nor active (`.github/workflows/ci.yml`).
 
 ### CLI (`wi-cli`)
 
