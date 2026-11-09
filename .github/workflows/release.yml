@@ -6,7 +6,6 @@ name: release
 on:
   push:
     tags: ['v*']
-    branches: [release-pipeline]
   workflow_dispatch:
     inputs:
       ref:
