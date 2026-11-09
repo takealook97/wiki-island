@@ -268,3 +268,50 @@ fn setup_refuses_a_foreign_unit_with_the_same_name() {
     assert_eq!(fs::read_to_string(&unit).unwrap(), foreign);
     assert!(!f.calls().contains("disable"), "{}", f.calls());
 }
+
+#[test]
+fn setup_again_at_a_new_config_home_then_uninstall_leaves_nothing() {
+    let f = Fixture::new(true);
+    assert!(f.run(&["setup"]).status.success());
+    let first = f.units();
+    assert_eq!(first.len(), 1);
+    let other = f.path("home/other-config");
+    let again = support::output(f.command(&["setup"]).env("XDG_CONFIG_HOME", &other));
+    assert!(again.status.success(), "{again:?}");
+    let second = other
+        .join("systemd/user")
+        .join(first[0].file_name().unwrap());
+    assert!(second.exists(), "{second:?}");
+    assert!(!first[0].exists(), "first unit survives the second setup");
+    let out = support::output(f.command(&["uninstall"]).env("XDG_CONFIG_HOME", &other));
+    assert!(out.status.success(), "{out:?}");
+    assert!(f.units().is_empty(), "{:?}", f.units());
+    let second = other
+        .join("systemd/user")
+        .join(first[0].file_name().unwrap());
+    assert!(!second.exists(), "{second:?}");
+    assert!(!f.path("home/enabled").exists() && !f.path("home/active").exists());
+}
+
+#[test]
+fn setup_refuses_an_active_unit_without_a_file() {
+    let f = Fixture::new(true);
+    fs::write(f.path("home/active"), "").unwrap();
+    let out = f.run(&["setup"]);
+    assert!(!out.status.success(), "{out:?}");
+    let out = f.run(&["service", "install", "--yes", "--allow-dev-binary"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        text(&out.stderr).contains("different service unit"),
+        "{out:?}"
+    );
+    assert!(f.units().is_empty());
+    let calls = f.calls();
+    assert!(
+        calls
+            .lines()
+            .all(|call| call == "show-environment" || call.starts_with("is-")),
+        "{calls}"
+    );
+    assert!(f.path("home/active").exists());
+}

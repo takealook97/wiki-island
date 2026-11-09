@@ -446,7 +446,7 @@ fn status_separates_configured_from_running() {
 #[test]
 fn unavailable_manager_is_detected_and_uninstall_still_cleans_up() {
     let e = env();
-    let fake = Fake::running();
+    let fake = Fake::default();
     do_plan(&e).apply(&fake).unwrap();
     let wants = e.config.join("systemd/user").join(WANTS_DIR);
     std::fs::create_dir_all(&wants).unwrap();
@@ -599,24 +599,23 @@ fn snapshot_reads_stdout_not_exit_codes() {
 }
 
 #[test]
-fn absent_file_rollback_keeps_a_loaded_active_unit_running() {
+fn absent_file_with_an_active_unit_is_refused_before_any_change() {
     let e = env();
     let fake = Fake::default();
     fake.active.set(true);
-    fake.fail.replace(vec!["daemon-reload"]);
-    assert!(do_plan(&e).apply(&fake).is_err());
-    assert!(
-        fake.active.get(),
-        "prior active unit stopped: {:?}",
-        fake.calls()
-    );
+    let err = do_plan(&e).apply(&fake).unwrap_err();
+    assert!(err.to_string().contains("different service unit"), "{err}");
+    let calls = fake.calls();
+    assert!(calls.iter().all(|c| c.starts_with("is-")), "{calls:?}");
+    assert!(fake.active.get());
     assert!(!unit_file(&e).exists());
+    assert!(!record_path(&e.vault).exists());
 }
 
 #[test]
 fn uninstall_with_a_missing_file_removes_the_owned_wants_link() {
     let e = env();
-    let fake = Fake::running();
+    let fake = Fake::default();
     let wants = install_with_wants_link(&e, &fake);
     std::fs::remove_file(unit_file(&e)).unwrap();
     assert!(!uninstall_at(&e.config, ID, &fake).unwrap());
@@ -660,5 +659,111 @@ fn identical_unit_still_records_its_path() {
     do_plan(&e).apply(&fake).unwrap();
     std::fs::remove_file(record_path(&e.vault)).unwrap();
     do_plan(&e).apply(&fake).unwrap();
-    assert_eq!(recorded_unit(&e.vault, UNIT).unwrap(), Some(unit_file(&e)));
+    assert_eq!(recorded_units(&e.vault, UNIT).unwrap(), [unit_file(&e)]);
+}
+
+fn other_config(e: &Env) -> PathBuf {
+    e.home.join("other-config")
+}
+
+fn plan_other(e: &Env) -> ServicePlan {
+    plan_at(&other_config(e), &e.home, &e.binary, &e.vault, ID, false).unwrap()
+}
+
+fn other_unit(e: &Env) -> PathBuf {
+    other_config(e).join("systemd/user").join(UNIT)
+}
+
+#[test]
+fn second_setup_at_a_new_config_home_retires_the_first_unit() {
+    let e = env();
+    let fake = Fake::default();
+    let wants = install_with_wants_link(&e, &fake);
+    plan_other(&e).apply(&fake).unwrap();
+    assert!(
+        !unit_file(&e).exists(),
+        "first unit survives the second setup"
+    );
+    assert!(std::fs::symlink_metadata(&wants).is_err());
+    assert!(other_unit(&e).exists());
+    assert!(fake.enabled.get() && fake.active.get());
+    assert_eq!(recorded_units(&e.vault, UNIT).unwrap(), [other_unit(&e)]);
+    assert!(uninstall_recorded_at(&other_config(&e), &e.vault, ID, &fake).unwrap());
+    assert!(!other_unit(&e).exists());
+    assert!(!fake.enabled.get() && !fake.active.get());
+}
+
+#[test]
+fn failed_setup_at_a_new_config_home_keeps_the_previous_record() {
+    let e = env();
+    let fake = Fake::default();
+    let wants = install_with_wants_link(&e, &fake);
+    fake.fail.replace(vec!["daemon-reload"]);
+    assert!(plan_other(&e).apply(&fake).is_err());
+    assert!(!other_unit(&e).exists());
+    assert_eq!(recorded_units(&e.vault, UNIT).unwrap(), [unit_file(&e)]);
+    assert!(uninstall_recorded_at(&other_config(&e), &e.vault, ID, &fake).unwrap());
+    assert!(!unit_file(&e).exists());
+    assert!(std::fs::symlink_metadata(&wants).is_err());
+}
+
+#[test]
+fn failed_first_install_records_nothing() {
+    let e = env();
+    let fake = Fake::failing(&["restart"]);
+    assert!(do_plan(&e).apply(&fake).is_err());
+    assert!(!record_path(&e.vault).exists());
+}
+
+#[test]
+fn retiring_skips_a_recorded_path_that_is_no_longer_ours() {
+    let e = env();
+    let fake = Fake::default();
+    do_plan(&e).apply(&fake).unwrap();
+    let foreign = "[Service]\nExecStart=/bin/true\n";
+    std::fs::write(unit_file(&e), foreign).unwrap();
+    // A running unit is not ours once its recorded file is foreign.
+    let err = plan_other(&e).apply(&fake).unwrap_err();
+    assert!(err.to_string().contains("different service unit"), "{err}");
+    fake.active.set(false);
+    plan_other(&e).apply(&fake).unwrap();
+    assert_eq!(std::fs::read_to_string(unit_file(&e)).unwrap(), foreign);
+    assert_eq!(recorded_units(&e.vault, UNIT).unwrap(), [other_unit(&e)]);
+}
+
+#[test]
+fn restart_failure_at_a_new_path_restarts_the_recorded_unit() {
+    struct StopThenFail {
+        fake: Fake,
+        once: Cell<bool>,
+    }
+    impl Systemctl for StopThenFail {
+        fn run(&self, args: &[&str]) -> std::io::Result<Output> {
+            if args[0] == "restart" && !self.once.replace(true) {
+                self.fake.calls.borrow_mut().push(args.join(" "));
+                self.fake.active.set(false);
+                return Ok(output(
+                    1,
+                    "restart stopped the old process, then start failed",
+                ));
+            }
+            self.fake.run(args)
+        }
+    }
+    let e = env();
+    let fake = StopThenFail {
+        fake: Fake::default(),
+        once: Cell::new(true),
+    };
+    do_plan(&e).apply(&fake).unwrap();
+    fake.once.set(false);
+    assert!(plan_other(&e).apply(&fake).is_err());
+    assert!(
+        fake.fake.active.get(),
+        "prior active unit was not restarted: {:?}",
+        fake.fake.calls()
+    );
+    assert!(fake.fake.enabled.get());
+    assert!(unit_file(&e).exists() && !other_unit(&e).exists());
+    assert_eq!(recorded_units(&e.vault, UNIT).unwrap(), [unit_file(&e)]);
 }
