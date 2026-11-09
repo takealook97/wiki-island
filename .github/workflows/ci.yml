@@ -162,9 +162,11 @@ jobs:
           WI_PROOF_WI: "0"
         run: |
           $ErrorActionPreference = "Stop"
-          $password = "Wi!" + [guid]::NewGuid().ToString("N") + "a9Z"
+          # net user asks for confirmation above 14 characters, so stay at 14.
+          $password = "Wi!" + [guid]::NewGuid().ToString("N").Substring(0, 8) + "a9Z"
           Write-Output "::add-mask::$password"
-          net user wiproof $password /add | Out-Null
+          net user wiproof $password /add
+          if ($LASTEXITCODE -ne 0) { throw "could not create the standard user" }
           $members = net localgroup Administrators | Out-String
           Write-Output $members
           if ($members -match "(?m)^wiproof\s*$") { throw "wiproof must not be an administrator" }
