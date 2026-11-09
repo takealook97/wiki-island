@@ -87,7 +87,7 @@ Windows 10 1709 or later on x86_64 (MSVC) with NTFS is the target; the tests run
 - **Indexing.** Every reparse entry is skipped, including non-link reparse points such as some cloud placeholders. An open SQLite file cannot be deleted on Windows, so an index replacement closes it first. File identity folds the 128-bit file id to 64 bits, which on ReFS can collide.
 - **Permissions.** File modes are not carried over; the read-only attribute is the only mode, and private config and backup files rely on inherited ACLs instead of 0600 and 0700.
 - **Process identity.** A reused process id can make a dead owner look alive, as on Unix; an unreadable process counts as alive.
-- **No service.** There is no background service ([Service](#service)).
+- **Service.** The background service is a per-user Task Scheduler logon task ([Service](#windows-task-scheduler)).
 - **Creation flags.** A job-started child cannot carry custom process creation flags.
 - **Tools.** Benchmarks report machine details and Python-based process metrics as unknown.
 
@@ -230,7 +230,7 @@ Nothing here puts a daemon, network or model on the capture or search path.
 
 ## Service
 
-`wi service install|uninstall|status` manages an optional per-vault background service that runs `wi watch` (watcher, maintenance, and the sync and Notion publish threads when configured on this device): a launchd LaunchAgent on macOS and a systemd user unit on Linux. `wi setup` and `wi uninstall` call the same code. On other targets install returns an unsupported error; on Windows it says to run `wi watch` yourself (there is no Windows service, for example start `wi watch` from Task Scheduler at logon), and `wi setup` skips the service there. No capture or search path depends on the service.
+`wi service install|uninstall|status` manages an optional per-vault background service that runs `wi watch` (watcher, maintenance, and the sync and Notion publish threads when configured on this device): a launchd LaunchAgent on macOS, a systemd user unit on Linux and a Task Scheduler logon task on Windows. `wi setup` and `wi uninstall` call the same code. On other targets install returns an unsupported error and `wi setup` skips the service. No capture or search path depends on the service.
 
 ### macOS (launchd)
 
@@ -250,10 +250,21 @@ Nothing here puts a daemon, network or model on the capture or search path.
 - Nothing enables lingering (`loginctl enable-linger`). The watcher runs while the user manager runs, normally from login to the end of the last session; if lingering is already enabled for the account, the watcher also runs while the owner is logged out.
 - Without a systemd user session (for example a container, WSL without systemd, or a shell without a user bus), `wi setup` still finishes, skips the service and says to run `wi watch`. The same happens when the manager disappears after setup's first check; `wi doctor` reports the same as one sentence; `wi service install` and `status` return that sentence as an error.
 
+### Windows (Task Scheduler)
+
+- Task `wiki-island-<vault_id>` in the root folder of the current user's Task Scheduler library. It is registered with `schtasks /Create /XML <file> /TN <task> /F` from a temporary UTF-16 definition file, which is removed afterwards. No administrator rights are needed: the task belongs to the current user (`UserId` is the SID that `whoami /user` reports), runs with that user's interactive token (`LogonType` InteractiveToken) and `RunLevel` LeastPrivilege, and starts at that user's logon (`LogonTrigger`).
+- The action runs `<absolute wi binary> watch --vault "<absolute vault root>"` with the vault as working folder. The vault argument is quoted for the Windows command-line parser and every value is XML-escaped; a program path with a space is quoted; a `\\?\` prefix from a canonical path is dropped.
+- Settings: `ExecutionTimeLimit` PT0S (no time limit), `DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` false, `MultipleInstancesPolicy` IgnoreNew (a second start while running does nothing), `RestartOnFailure` every minute up to 999 times, hidden. The task runs only while the owner is logged on; there is no logged-out operation.
+- The description reads `Managed by wiki-island. Vault <vault_id>. Revision <16 hex>.`; the revision is derived from the rest of the definition. A task with that name whose description does not start with the marker belongs to someone else: applying and uninstalling refuse it with one sentence. An exported task with the same revision that is running is left alone.
+- Applying reads the registered definition (`/Query /TN <task> /XML`) and whether it runs, registers a changed definition, ends a running watcher so the new program and arguments take effect, then starts the task (`/Run`) so the watcher runs now, not only at the next logon. Any failure ends the task and re-registers the previous definition and restarts it if it was running, or deletes a new task; the first error is reported.
+- Uninstall ends the task (a task that is not running is fine) and deletes it (`/Delete /F`); without a task it reports nothing to remove.
+- `status` reports label, installed ("configured"), running and the task name. Running is read from `/Query /TN <task> /FO CSV /V /NH`: the Status column is `Running`, or the Last Result column is 267009 (`SCHED_S_TASK_RUNNING`), which is numeric in every display language.
+- Task Scheduler is usable when `schtasks /Query /FO CSV /NH` succeeds. When it is turned off (for example by a group policy that disables the Task Scheduler service), `wi setup` still finishes, skips the service and says to run `wi watch`; `wi doctor` says the same in one sentence; `wi service install` and `status` return it as an error. Turning Task Scheduler back on and running `wi setup` again registers the task. `WI_SCHTASKS` replaces the `schtasks.exe` executable; tests use a fake.
+
 ### Doctor and binaries
 
-- `wi doctor` says in plain words whether the background service runs (macOS: loaded; Linux: enabled and active), reports no warning for a work request already converted, and its help names `~/wiki-island` as the default notes folder.
-- The installer refuses a development binary: a Cargo `CACHEDIR.TAG` or `.rustc_info.json` among up to four canonical executable ancestors (custom `CARGO_TARGET_DIR` included). `--allow-dev-binary` overrides. `wi setup` uses the path it was invoked by, so a package-manager symlink stays the service binary; on Linux `wi service install` does the same.
+- `wi doctor` says in plain words whether the background service runs (macOS: loaded; Linux: enabled and active; Windows: registered and running), reports no warning for a work request already converted, and its help names `~/wiki-island` as the default notes folder.
+- The installer refuses a development binary: a Cargo `CACHEDIR.TAG` or `.rustc_info.json` among up to four canonical executable ancestors (custom `CARGO_TARGET_DIR` included). `--allow-dev-binary` overrides. `wi setup` uses the path it was invoked by, so a package-manager symlink stays the service binary; on Linux and Windows `wi service install` does the same.
 
 ## Recovery of a single path
 

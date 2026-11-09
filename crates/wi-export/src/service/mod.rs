@@ -1,22 +1,27 @@
 //! Per-vault background service that keeps `wi watch` running.
 //!
-//! The backend is chosen at compile time: launchd on macOS, a systemd user unit on Linux. Other
-//! targets report the service as unsupported. Planning is read-only. Applying mirrors the host
-//! installer protections: a symlink or non-regular destination is rejected, a stale preview
-//! fails, a differing file is backed up under a unique name, and the replacement is atomic.
+//! The backend is chosen at compile time: launchd on macOS, a systemd user unit on Linux and a
+//! Task Scheduler logon task on Windows. Other targets report the service as unsupported. Planning
+//! is read-only. The file-based backends mirror the host installer protections: a symlink or
+//! non-regular destination is rejected, a stale preview fails, a differing file is backed up under
+//! a unique name, and the replacement is atomic.
 use crate::install::Error;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 mod launchd;
 // Compiled for unit tests on every Unix host so the systemd logic is exercised off Linux too.
 #[cfg(any(all(test, unix), target_os = "linux"))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod systemd;
+// Compiled for unit tests on every host so the Task Scheduler logic is exercised off Windows too.
+#[cfg(any(test, windows))]
+#[cfg_attr(not(windows), allow(dead_code))]
+mod windows;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub use launchd::{
     Launchctl, ServicePlan, ServiceStatus, SystemLaunchctl, plan, plan_with_options, rotate_log,
     status, uninstall,
@@ -26,23 +31,35 @@ pub use systemd::{
     ServicePlan, ServiceStatus, SystemSystemctl, Systemctl, available, plan, plan_with_options,
     status, unavailable_message, uninstall, uninstall_recorded,
 };
+#[cfg(windows)]
+pub use windows::{
+    Schtasks, ServicePlan, ServiceStatus, SystemSchtasks, available, plan, plan_with_options,
+    status, unavailable_message, uninstall,
+};
 
 /// The command runner of this target's backend.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub type Runner = dyn Launchctl;
 /// The command runner of this target's backend.
 #[cfg(target_os = "linux")]
 pub type Runner = dyn Systemctl;
+/// The command runner of this target's backend.
+#[cfg(windows)]
+pub type Runner = dyn Schtasks;
 
 /// The process runner of this target's backend.
 pub fn default_runner() -> &'static Runner {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         &SystemLaunchctl
     }
     #[cfg(target_os = "linux")]
     {
         &SystemSystemctl
+    }
+    #[cfg(windows)]
+    {
+        &SystemSchtasks
     }
 }
 
@@ -60,6 +77,7 @@ fn validate_vault_id(vault_id: &str) -> Result<(), Error> {
 }
 
 /// Reads a service definition; `what` names it in the error for a symlink or non-regular file.
+#[cfg_attr(windows, allow(dead_code))]
 fn read_file(path: &Path, what: &str) -> Result<Option<String>, Error> {
     match std::fs::symlink_metadata(path) {
         Ok(m) if !m.is_file() || m.file_type().is_symlink() => Err(Error::Config(format!(
@@ -109,6 +127,7 @@ fn stable_binary(wi_binary: &Path, allow_dev_binary: bool) -> Result<&str, Error
 }
 
 /// Fails when the nearest existing ancestor of any directory is not a writable directory.
+#[cfg_attr(windows, allow(dead_code))]
 fn ensure_writable<'a>(directories: impl IntoIterator<Item = &'a Path>) -> Result<(), Error> {
     for directory in directories {
         for ancestor in directory.ancestors() {
@@ -139,6 +158,7 @@ fn describe(out: &Output) -> String {
     format!("exit {code}: {}", stderr_text(out))
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn unique_backup(vault: &Path, path: &Path, bytes: &[u8]) -> Result<PathBuf, Error> {
     let backup_dir = crate::install::local_dir(vault)?;
     let hash = wi_lifecycle::sha256(path.as_os_str().as_encoded_bytes());

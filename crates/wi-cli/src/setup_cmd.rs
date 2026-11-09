@@ -209,6 +209,8 @@ fn setup_with_options(
         "Background care is on."
     } else if cfg!(target_os = "linux") {
         "Your notes are ready; background care needs a systemd user session, so run wi watch to keep them up to date."
+    } else if cfg!(windows) {
+        "Your notes are ready; background care needs Windows Task Scheduler, so run wi watch to keep them up to date."
     } else {
         "Your notes are ready; background care is available on macOS."
     };
@@ -271,10 +273,10 @@ pub(crate) fn uninstall(
     };
     #[cfg(target_os = "linux")]
     service::uninstall_recorded(&state.home, &root, vault_id, runner)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     service::uninstall(&state.home, vault_id, runner)?;
     // Other targets have no service to remove.
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let _ = runner;
     let mut removed = 0;
     for (host, path) in &state.hosts {
@@ -308,7 +310,7 @@ fn start_background(
 
 /// True when the target's service manager is no longer reachable.
 fn manager_lost(runner: &service::Runner) -> bool {
-    cfg!(target_os = "linux") && !super::service_cmd::ready(runner)
+    cfg!(any(target_os = "linux", windows)) && !super::service_cmd::ready(runner)
 }
 
 fn cache_root(home: &Path) -> Result<PathBuf> {
