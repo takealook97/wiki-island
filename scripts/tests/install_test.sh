@@ -6,7 +6,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 INSTALL="$HERE/../install.sh"
 WORK=$(mktemp -d)
 SERVER_PID=""
-# shellcheck disable=SC2329  # runs through the trap
+# shellcheck disable=SC2329,SC2317  # runs through the trap
 cleanup() {
   if [ -n "$SERVER_PID" ]; then
     kill "$SERVER_PID" 2>/dev/null || true
