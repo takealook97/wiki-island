@@ -44,6 +44,14 @@ cargo build --tests --workspace --target x86_64-pc-windows-gnu
 
 Clippy alone does not evaluate `const` assertions; the test build does. This does not run any test. Runtime tests run on GitHub Actions `windows-latest` (and Ubuntu and macOS) through `.github/workflows/ci.yml`.
 
+### Installer
+
+`sh scripts/tests/install_test.sh` runs `scripts/install.sh` against a local server and a temporary `HOME`; run it with `shellcheck scripts/install.sh scripts/tests/*.sh` after any change to `scripts/`. `.github/workflows/install.yml` does both on Ubuntu and macOS. The cases are in [VALIDATION](docs/VALIDATION.md#installer-and-release).
+
+### Releases
+
+Pushing a tag that starts with `v` runs `.github/workflows/release.yml`. It builds `wi` and `wiki-island` for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`, writes `SHA256SUMS` and publishes a GitHub Release with generated notes. Running the workflow by hand (`workflow_dispatch`, optionally with a `ref`) builds the same archives as workflow artifacts and publishes nothing. Linux archives are built on Ubuntu 22.04, which sets the glibc floor ([OPERATIONS](docs/OPERATIONS.md#install-and-release)). Cut a release only from a commit whose CI is green.
+
 ### Benchmarks
 
 Measurement is opt-in and macOS only. Scratch paths must be new and outside the repository. Methods and the regression gate are in [crates/wi-bench/README.md](crates/wi-bench/README.md); targets are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).

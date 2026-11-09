@@ -4,10 +4,10 @@ How wiki-island connects to AI hosts and editors. Support is claimed only for a 
 
 ## Setup and uninstall
 
-`wi setup [--vault <dir>]` is one zero-question, idempotent command (default vault `~/wiki-island`). `scripts/install.sh` installs the Rust toolchain if missing, builds and installs `wi`, then runs it. `scripts/uninstall.sh` runs `wi uninstall`. `wi setup` first preflights every step, including the service binary, and writes nothing if one fails; the failure is one plain sentence. It:
+`wi setup [--vault <dir>]` is one zero-question, idempotent command (default vault `~/wiki-island`). `scripts/install.sh` (macOS and Linux) installs the checksum-verified prebuilt `wi` from the latest release, or builds it from source when none fits, then runs it ([OPERATIONS](OPERATIONS.md#install-and-release)). `scripts/uninstall.sh` runs `wi uninstall`. `wi setup` first preflights every step, including the service binary, and writes nothing if one fails; the failure is one plain sentence. It:
 
 1. initializes the vault if missing;
-2. installs the background service (macOS launchd; [OPERATIONS](OPERATIONS.md#service)); on Linux and Windows it skips this step and the owner runs `wi watch`;
+2. installs the background service (macOS launchd, Linux systemd user unit, Windows Task Scheduler logon task; [OPERATIONS](OPERATIONS.md#service)); where the platform has no usable service manager (no systemd user session, Task Scheduler turned off) it skips this step and says to run `wi watch`;
 3. detects every installed AI host and registers the MCP server and skills sync for each;
 4. runs the first maintenance pass;
 5. prints a three-line plain-language summary.
@@ -94,4 +94,4 @@ Export the workspace as Markdown & CSV (zip or folder) and run `wi import <expor
 
 ## Not integrated
 
-No UI, web app, mobile app or hosted service. No provider-specific memory silo. No Linux or Windows background service.
+No UI, web app, mobile app or hosted service. No provider-specific memory silo.
