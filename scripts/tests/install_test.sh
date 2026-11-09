@@ -30,23 +30,43 @@ sha256_of() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'; else sha256sum "$1" | awk '{print $1}'; fi
 }
 
-# Builds the fake release in $WORK/site. $1 = good|badrun.
+REL="$WORK/site/releases/download/$TAG"
+
+# Writes a fake program $2 (wi or wiki-island) to $1 that prints a version and records setup runs.
+fake_program() {
+  # shellcheck disable=SC2016  # $HOME and $1 expand when the fake program runs
+  printf '#!/bin/sh\necho "fake-%s 9.9.9"\nif [ "${1:-}" = setup ]; then echo setup-ran >> "$HOME/setup.log"; fi\nexit 0\n' "$2" > "$1"
+  chmod 755 "$1"
+}
+
+# Writes SHA256SUMS for the archive in $REL, one line in the normal two-column form.
+write_manifest() {
+  printf '%s  %s\n' "$(sha256_of "$REL/$ASSET")" "$ASSET" > "$REL/SHA256SUMS"
+}
+
+# Builds the fake release in $WORK/site. $1 = good|badrun|badalias.
 make_release() {
   rm -rf "$WORK/site" "$WORK/pkg"
-  mkdir -p "$WORK/site/releases/download/$TAG" "$WORK/pkg"
+  mkdir -p "$REL" "$WORK/pkg"
   for name in wi wiki-island; do
-    if [ "$1" = good ]; then
-      # shellcheck disable=SC2016  # $HOME and $1 expand when the fake program runs
-      printf '#!/bin/sh\necho "fake-%s 9.9.9"\nif [ "${1:-}" = setup ]; then echo setup-ran >> "$HOME/setup.log"; fi\nexit 0\n' "$name" > "$WORK/pkg/$name"
+    if [ "$1" = good ] || { [ "$1" = badalias ] && [ "$name" = wi ]; }; then
+      fake_program "$WORK/pkg/$name" "$name"
     else
       printf '#!/bin/sh\nexit 3\n' > "$WORK/pkg/$name"
+      chmod 755 "$WORK/pkg/$name"
     fi
-    chmod 755 "$WORK/pkg/$name"
   done
-  tar -C "$WORK/pkg" -czf "$WORK/site/releases/download/$TAG/$ASSET" wi wiki-island
-  printf '%s  %s\n' "$(sha256_of "$WORK/site/releases/download/$TAG/$ASSET")" "$ASSET" \
-    > "$WORK/site/releases/download/$TAG/SHA256SUMS"
+  echo license > "$WORK/pkg/LICENSE"
+  echo readme > "$WORK/pkg/README.md"
+  tar -C "$WORK/pkg" -czf "$REL/$ASSET" wi wiki-island LICENSE README.md
+  write_manifest
   printf '%s\n' "$TAG" > "$WORK/site/LATEST_TAG"
+}
+
+# Replaces the release archive with one built by make_archive.py from entries $@ (after make_release).
+craft_archive() {
+  python3 "$HERE/make_archive.py" "$REL/$ASSET" "$@"
+  write_manifest
 }
 
 PORT_FILE="$WORK/port"
@@ -68,12 +88,35 @@ check() {
 cond() { if "$@"; then echo ok; else echo no; fi; }
 
 # Runs install.sh with a fresh HOME. Output in $WORK/out, exit status in $RC.
+# Set SEED_OLD=1 (and reset it after) so the HOME starts with an older wi and wiki-island installed.
 run_install() {
   rm -rf "${WORK:?}/home"
   mkdir -p "$WORK/home"
+  if [ "${SEED_OLD:-0}" = 1 ]; then
+    mkdir -p "$WORK/home/.cargo/bin"
+    for name in wi wiki-island; do
+      printf '#!/bin/sh\necho old-%s\n' "$name" > "$WORK/home/.cargo/bin/$name"
+      chmod 755 "$WORK/home/.cargo/bin/$name"
+    done
+  fi
   RC=0
-  env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash TMPDIR="$WORK" \
+  env -i PATH="${RUN_PATH:-$PATH}" HOME="$WORK/home" SHELL=/bin/bash TMPDIR="$WORK" \
     WI_INSTALL_BASE_URL="$URL" "$@" sh "$INSTALL" > "$WORK/out" 2>&1 || RC=$?
+}
+
+BIN="$WORK/home/.cargo/bin"
+SEED_OLD=0
+RUN_PATH=""
+# True when both programs are still the seeded older ones and no staging files are left.
+# shellcheck disable=SC2329,SC2317  # called through cond
+old_pair_intact() {
+  grep -q old-wi "$BIN/wi" && grep -q old-wiki-island "$BIN/wiki-island" \
+    && [ -z "$(find "$BIN" -name '.*' -type f)" ]
+}
+# True when nothing was installed and no source build ran.
+# shellcheck disable=SC2329,SC2317  # called through cond
+nothing_installed() {
+  [ ! -e "$BIN/wi" ] && [ ! -e "$BIN/wiki-island" ] && [ ! -e "$WORK/home/source.log" ]
 }
 
 # shellcheck disable=SC2016  # expands inside install.sh's HOME
@@ -87,8 +130,12 @@ check "verified install puts wi in place" "$(cond [ -x "$WORK/home/.cargo/bin/wi
 check "verified install puts wiki-island in place" "$(cond [ -x "$WORK/home/.cargo/bin/wiki-island" ])"
 check "verified install uses the release, not the source build" "$(cond [ ! -e "$WORK/home/source.log" ])"
 check "verified install runs wi setup" "$(cond grep -q setup-ran "$WORK/home/setup.log")"
-check "verified install adds PATH to .bashrc and .profile on Linux" \
-  "$(if [ "$(uname -s)" = Linux ]; then cond grep -qF '.cargo/bin' "$WORK/home/.bashrc" ; else cond grep -qF '.cargo/bin' "$WORK/home/.bash_profile"; fi)"
+if [ "$(uname -s)" = Linux ]; then
+  check "verified install adds PATH to .bashrc on Linux" "$(cond grep -qF '.cargo/bin' "$WORK/home/.bashrc")"
+  check "verified install adds PATH to .profile on Linux" "$(cond grep -qF '.cargo/bin' "$WORK/home/.profile")"
+else
+  check "verified install adds PATH to .bash_profile on macOS" "$(cond grep -qF '.cargo/bin' "$WORK/home/.bash_profile")"
+fi
 
 # 2. Running twice adds the PATH line once.
 RC=0
@@ -142,6 +189,123 @@ check "WI_INSTALL_FROM_SOURCE=1 skips the release" "$(cond grep -q source-build 
 make_release good
 run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD" WI_INSTALL_BASE_URL="http://127.0.0.1:1"
 check "unreachable server falls back to the source build" "$(cond grep -q source-build "$WORK/home/source.log")"
+
+# 10. No published release: GitHub redirects releases/latest to /releases.
+make_release good
+rm "$WORK/site/LATEST_TAG"
+echo /releases > "$WORK/site/LATEST_REDIRECT"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+rm "$WORK/site/LATEST_REDIRECT"
+check "redirect to /releases falls back to the source build" "$(cond grep -q source-build "$WORK/home/source.log")"
+check "redirect to /releases says no prebuilt program is published yet" "$(cond grep -q 'published yet' "$WORK/out")"
+check "redirect to /releases downloads no archive" "$(cond [ "$(grep -c Downloading "$WORK/out")" -eq 0 ])"
+
+# 11. An archive whose wi is a symbolic link to a file outside it: stop, nothing installed or run.
+make_release good
+mkdir -p "$WORK/outside"
+printf '#!/bin/sh\necho OUTSIDE > "%s/outside/ran"\n' "$WORK" > "$WORK/outside/payload"
+chmod 600 "$WORK/outside/payload"
+craft_archive "link:wi:$WORK/outside/payload" "file:wiki-island:$WORK/pkg/wiki-island" \
+  "file:LICENSE:$WORK/pkg/LICENSE" "file:README.md:$WORK/pkg/README.md"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+check "symlinked program exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "symlinked program installs nothing" "$(cond nothing_installed)"
+check "symlinked program never runs the outside file" "$(cond [ ! -e "$WORK/outside/ran" ])"
+check "symlinked program leaves the outside file's mode alone" "$(cond [ ! -x "$WORK/outside/payload" ])"
+
+# 12. An archive with a '..' entry: stop, nothing installed, nothing written outside.
+make_release good
+craft_archive "file:wi:$WORK/pkg/wi" "file:wiki-island:$WORK/pkg/wiki-island" \
+  "file:LICENSE:$WORK/pkg/LICENSE" "file:README.md:$WORK/pkg/README.md" "file:../escaped:$WORK/pkg/LICENSE"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+check "'..' entry exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "'..' entry installs nothing" "$(cond nothing_installed)"
+check "'..' entry says so in a plain sentence" "$(cond grep -q 'unexpected files' "$WORK/out")"
+
+# 13. An archive with an extra entry: stop, nothing installed.
+make_release good
+craft_archive "file:wi:$WORK/pkg/wi" "file:wiki-island:$WORK/pkg/wiki-island" \
+  "file:LICENSE:$WORK/pkg/LICENSE" "file:README.md:$WORK/pkg/README.md" "file:unexpected:$WORK/pkg/LICENSE"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+check "extra entry exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "extra entry installs nothing" "$(cond nothing_installed)"
+
+# 14. The second rename fails: the older pair is restored and no staging file remains.
+make_release good
+REAL_MV=$(command -v mv)
+mkdir -p "$WORK/shim"
+cat > "$WORK/shim/mv" <<SHIM
+#!/bin/sh
+for arg in "\$@"; do
+  case "\$arg" in */.wiki-island.new.*) echo "mv: injected failure" >&2; exit 1 ;; esac
+done
+exec "$REAL_MV" "\$@"
+SHIM
+chmod 755 "$WORK/shim/mv"
+SEED_OLD=1 RUN_PATH="$WORK/shim:$PATH"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+SEED_OLD=0 RUN_PATH=""
+check "second rename failure exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "second rename failure restores the older pair" "$(cond old_pair_intact)"
+
+# 15. A folder sits where wiki-island belongs: stop before replacing anything.
+make_release good
+rm -rf "${WORK:?}/home"
+mkdir -p "$BIN/wiki-island"
+printf '#!/bin/sh\necho old-wi\n' > "$BIN/wi"
+chmod 755 "$BIN/wi"
+RC=0
+env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash TMPDIR="$WORK" WI_INSTALL_BASE_URL="$URL" \
+  WI_INSTALL_SOURCE_CMD="$SOURCE_CMD" sh "$INSTALL" > "$WORK/out" 2>&1 || RC=$?
+check "folder destination exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "folder destination keeps the older wi" "$(cond grep -q old-wi "$BIN/wi")"
+check "folder destination leaves the folder empty" "$(cond [ -z "$(ls -A "$BIN/wiki-island")" ])"
+
+# 16. wiki-island in the archive cannot run: source build instead of installing it.
+make_release badalias
+SEED_OLD=1
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+SEED_OLD=0
+check "failing wiki-island falls back to the source build" "$(cond grep -q source-build "$WORK/home/source.log")"
+check "failing wiki-island is not installed" "$(cond grep -q built-from-source "$BIN/wiki-island")"
+
+# 17. A checksum list with CRLF line endings is accepted.
+make_release good
+printf '%s  %s\r\n' "$(sha256_of "$REL/$ASSET")" "$ASSET" > "$REL/SHA256SUMS"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+check "CRLF checksum list installs" "$(cond [ "$RC" -eq 0 ])"
+check "CRLF checksum list installs the release" "$(cond grep -q fake-wi "$BIN/wi")"
+
+# 18. A matching line with an extra field is malformed: stop, nothing installed.
+make_release good
+printf '%s  %s junk\n' "$(sha256_of "$REL/$ASSET")" "$ASSET" > "$REL/SHA256SUMS"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+check "extra manifest field exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "extra manifest field installs nothing" "$(cond nothing_installed)"
+
+# 19. Upper-case hex digests and the binary-mode '*' marker are accepted.
+make_release good
+printf '%s *%s\n' "$(sha256_of "$REL/$ASSET" | tr 'a-f' 'A-F')" "$ASSET" > "$REL/SHA256SUMS"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+check "upper-case digest installs" "$(cond [ "$RC" -eq 0 ])"
+check "upper-case digest installs the release" "$(cond grep -q fake-wi "$BIN/wi")"
+
+# 20. Two matching lines: stop, nothing installed.
+make_release good
+write_manifest
+cat "$REL/SHA256SUMS" "$REL/SHA256SUMS" > "$WORK/dup" && mv "$WORK/dup" "$REL/SHA256SUMS"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+check "duplicate manifest line exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "duplicate manifest line installs nothing" "$(cond nothing_installed)"
+
+# 21. A verified install over an older pair replaces both and leaves no staging files.
+make_release good
+SEED_OLD=1
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+SEED_OLD=0
+check "upgrade exits 0" "$(cond [ "$RC" -eq 0 ])"
+check "upgrade replaces both programs" "$(cond grep -q fake-wiki-island "$BIN/wiki-island")"
+check "upgrade leaves no staging files" "$(cond [ -z "$(find "$BIN" -name '.*' -type f)" ])"
 
 [ "$FAILED" -eq 0 ] && echo "all install tests passed"
 exit "$FAILED"
