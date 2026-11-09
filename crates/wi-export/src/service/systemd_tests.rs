@@ -6,9 +6,13 @@ const ID: &str = "vault_1-a";
 const UNIT: &str = "wiki-island-vault_1-a.service";
 
 fn output(code: i32, stderr: &str) -> Output {
+    answer(code, "", stderr)
+}
+
+fn answer(code: i32, stdout: &str, stderr: &str) -> Output {
     Output {
         status: std::process::ExitStatus::from_raw(code << 8),
-        stdout: Vec::new(),
+        stdout: stdout.as_bytes().to_vec(),
         stderr: stderr.as_bytes().to_vec(),
     }
 }
@@ -51,8 +55,11 @@ impl Systemctl for Fake {
         }
         let ok = match verb {
             "show-environment" => !self.unavailable,
-            "is-enabled" => self.enabled.get(),
-            "is-active" => self.active.get(),
+            // Real systemctl answers both probes on stdout.
+            "is-enabled" if self.enabled.get() => return Ok(answer(0, "enabled\n", "")),
+            "is-enabled" => return Ok(answer(1, "disabled\n", "")),
+            "is-active" if self.active.get() => return Ok(answer(0, "active\n", "")),
+            "is-active" => return Ok(answer(3, "inactive\n", "")),
             "enable" => {
                 self.enabled.set(true);
                 true
@@ -110,18 +117,20 @@ fn unit_file(e: &Env) -> PathBuf {
 #[test]
 fn renders_literal_paths_for_systemd() {
     let text = render(
-        "/opt/my bin/w\"i\\$HOME%h",
+        ID,
+        "/opt/my bin/w$i%h",
         "/home/u/My \"Notes\" \\ $HOME %h",
         "/home/u $x%n",
     );
     assert_eq!(
         text,
         concat!(
+            "# Managed by wiki-island. Vault vault_1-a.\n",
             "[Unit]\n",
             "Description=wiki-island watcher\n",
             "\n",
             "[Service]\n",
-            "ExecStart=\"/opt/my bin/w\\\"i\\\\$$HOME%%h\" \"watch\" \"--vault\" ",
+            "ExecStart=\"/opt/my bin/w$i%%h\" \"watch\" \"--vault\" ",
             "\"/home/u/My \\\"Notes\\\" \\\\ $$HOME %%h\"\n",
             "Restart=always\n",
             "RestartSec=5\n",
@@ -453,4 +462,203 @@ fn unavailable_manager_is_detected_and_uninstall_still_cleans_up() {
     assert_eq!(gone.calls(), ["show-environment"; 3]);
     assert!(!unit_file(&e).exists());
     assert!(std::fs::symlink_metadata(wants.join(UNIT)).is_err());
+}
+
+// Regression tests for the Linux review findings.
+
+fn install_with_wants_link(e: &Env, fake: &Fake) -> PathBuf {
+    do_plan(e).apply(fake).unwrap();
+    let wants = unit_file(e).parent().unwrap().join(WANTS_DIR).join(UNIT);
+    std::fs::create_dir_all(wants.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(unit_file(e), &wants).unwrap();
+    wants
+}
+
+fn write_foreign(e: &Env) -> &'static str {
+    let foreign = "[Service]\nExecStart=/bin/sleep infinity\n[Install]\nWantedBy=default.target\n";
+    std::fs::create_dir_all(unit_file(e).parent().unwrap()).unwrap();
+    std::fs::write(unit_file(e), foreign).unwrap();
+    foreign
+}
+
+#[test]
+fn executable_path_keeps_a_dollar_literal() {
+    let e = env();
+    let binary = e.home.join("bin$/한 글/wi");
+    let p = plan_at(&e.config, &e.home, &binary, &e.vault, ID, false).unwrap();
+    assert!(
+        p.contents
+            .contains(&format!("ExecStart=\"{}\" \"watch\"", binary.display())),
+        "{}",
+        p.contents
+    );
+}
+
+#[test]
+fn plan_rejects_a_binary_path_systemd_cannot_run() {
+    let e = env();
+    for name in ["w\"i", "w\\i"] {
+        let binary = e.home.join(name);
+        let err = plan_at(&e.config, &e.home, &binary, &e.vault, ID, false).unwrap_err();
+        assert!(err.to_string().contains("quote or backslash"), "{err}");
+    }
+}
+
+#[test]
+fn rendered_unit_starts_with_the_ownership_marker() {
+    let e = env();
+    assert_eq!(
+        do_plan(&e).contents.lines().next(),
+        Some("# Managed by wiki-island. Vault vault_1-a.")
+    );
+}
+
+#[test]
+fn foreign_unit_with_the_same_name_is_never_replaced() {
+    let e = env();
+    let foreign = write_foreign(&e);
+    let err = plan_at(&e.config, &e.home, &e.binary, &e.vault, ID, false).unwrap_err();
+    assert!(err.to_string().contains("different service unit"), "{err}");
+    // A foreign file that appears after planning is refused before any manager call.
+    std::fs::remove_file(unit_file(&e)).unwrap();
+    let p = do_plan(&e);
+    std::fs::write(unit_file(&e), foreign).unwrap();
+    let mut stale = p;
+    stale.existing = Some(foreign.into());
+    let fake = Fake::running();
+    let err = stale.apply(&fake).unwrap_err();
+    assert!(err.to_string().contains("different service unit"), "{err}");
+    assert!(fake.calls().is_empty());
+    assert_eq!(std::fs::read_to_string(unit_file(&e)).unwrap(), foreign);
+}
+
+#[test]
+fn foreign_unit_with_the_same_name_is_never_uninstalled() {
+    let e = env();
+    let foreign = write_foreign(&e);
+    for fake in [
+        Fake::running(),
+        Fake {
+            unavailable: true,
+            ..Fake::default()
+        },
+    ] {
+        let err = uninstall_at(&e.config, ID, &fake).unwrap_err();
+        assert!(err.to_string().contains("different service unit"), "{err}");
+        assert!(fake.calls().is_empty());
+        assert_eq!(std::fs::read_to_string(unit_file(&e)).unwrap(), foreign);
+    }
+}
+
+#[test]
+fn failed_snapshot_aborts_before_any_change() {
+    let e = env();
+    let fake = Fake::default();
+    let first = do_plan(&e);
+    first.apply(&fake).unwrap();
+    let moved = e.home.join("new/wi");
+    let p = plan_at(&e.config, &e.home, &moved, &e.vault, ID, false).unwrap();
+    for verb in ["is-enabled", "is-active"] {
+        fake.fail.replace(vec![verb, "restart"]);
+        fake.calls();
+        let err = p.apply(&fake).unwrap_err();
+        assert!(err.to_string().contains("does not understand"), "{err}");
+        let calls = fake.calls();
+        assert!(calls.iter().all(|c| c.starts_with("is-")), "{calls:?}");
+        assert!(fake.enabled.get() && fake.active.get());
+        assert_eq!(
+            std::fs::read_to_string(unit_file(&e)).unwrap(),
+            first.contents
+        );
+    }
+}
+
+#[test]
+fn snapshot_reads_stdout_not_exit_codes() {
+    let ok = |stdout: &str, code| answer(code, stdout, "");
+    assert_eq!(parse_enabled(&ok("enabled\n", 0)), Some(true));
+    assert_eq!(parse_enabled(&ok("static\n", 0)), Some(false));
+    assert_eq!(parse_enabled(&ok("not-found\n", 4)), Some(false));
+    assert_eq!(
+        parse_enabled(&answer(
+            1,
+            "",
+            "Failed to get unit file state for x.service: No such file or directory"
+        )),
+        Some(false)
+    );
+    assert_eq!(parse_enabled(&ok("", 1)), None);
+    assert_eq!(parse_enabled(&ok("enabled\n", 1)), Some(true));
+    assert_eq!(parse_active(&ok("active\n", 0)), Some(true));
+    assert_eq!(parse_active(&ok("failed\n", 3)), Some(false));
+    assert_eq!(parse_active(&ok("", 0)), None);
+    assert_eq!(
+        parse_active(&answer(1, "", "Failed to connect to bus: No medium found")),
+        None
+    );
+}
+
+#[test]
+fn absent_file_rollback_keeps_a_loaded_active_unit_running() {
+    let e = env();
+    let fake = Fake::default();
+    fake.active.set(true);
+    fake.fail.replace(vec!["daemon-reload"]);
+    assert!(do_plan(&e).apply(&fake).is_err());
+    assert!(
+        fake.active.get(),
+        "prior active unit stopped: {:?}",
+        fake.calls()
+    );
+    assert!(!unit_file(&e).exists());
+}
+
+#[test]
+fn uninstall_with_a_missing_file_removes_the_owned_wants_link() {
+    let e = env();
+    let fake = Fake::running();
+    let wants = install_with_wants_link(&e, &fake);
+    std::fs::remove_file(unit_file(&e)).unwrap();
+    assert!(!uninstall_at(&e.config, ID, &fake).unwrap());
+    assert!(std::fs::symlink_metadata(&wants).is_err());
+}
+
+#[test]
+fn uninstall_leaves_a_wants_link_to_another_file() {
+    let e = env();
+    let fake = Fake::running();
+    let wants = e.config.join("systemd/user").join(WANTS_DIR).join(UNIT);
+    std::fs::create_dir_all(wants.parent().unwrap()).unwrap();
+    let other = e.home.join("elsewhere.service");
+    std::os::unix::fs::symlink(&other, &wants).unwrap();
+    let gone = Fake {
+        unavailable: true,
+        ..Fake::default()
+    };
+    assert!(!uninstall_at(&e.config, ID, &gone).unwrap());
+    assert!(!uninstall_at(&e.config, ID, &fake).unwrap());
+    assert_eq!(std::fs::read_link(&wants).unwrap(), other);
+}
+
+#[test]
+fn recorded_unit_path_survives_a_config_home_change() {
+    let e = env();
+    let fake = Fake::default();
+    let wants = install_with_wants_link(&e, &fake);
+    let other = e.home.join("other-config");
+    assert!(uninstall_recorded_at(&other, &e.vault, ID, &fake).unwrap());
+    assert!(!unit_file(&e).exists());
+    assert!(std::fs::symlink_metadata(&wants).is_err());
+    assert!(!fake.enabled.get() && !fake.active.get());
+    assert!(!record_path(&e.vault).exists());
+}
+
+#[test]
+fn identical_unit_still_records_its_path() {
+    let e = env();
+    let fake = Fake::default();
+    do_plan(&e).apply(&fake).unwrap();
+    std::fs::remove_file(record_path(&e.vault)).unwrap();
+    do_plan(&e).apply(&fake).unwrap();
+    assert_eq!(recorded_unit(&e.vault, UNIT).unwrap(), Some(unit_file(&e)));
 }

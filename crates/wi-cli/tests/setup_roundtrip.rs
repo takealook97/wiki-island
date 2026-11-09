@@ -1,4 +1,5 @@
 #![cfg(unix)]
+mod support;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
@@ -27,8 +28,8 @@ impl Fixture {
         fs::write(&fake, concat!(
             "#!/bin/sh\nshift\ncase $1 in\n",
             "show-environment) test ! -f \"$HOME/no-manager\"; exit $?;;\n",
-            "is-enabled) test -f \"$HOME/enabled\"; exit $?;;\n",
-            "is-active) test -f \"$HOME/active\"; exit $?;;\n",
+            "is-enabled) if test -f \"$HOME/enabled\"; then echo enabled; else echo disabled; exit 1; fi; exit 0;;\n",
+            "is-active) if test -f \"$HOME/active\"; then echo active; else echo inactive; exit 3; fi; exit 0;;\n",
             "esac\necho \"$*\" >> \"$HOME/calls\"\ncase $1 in\n",
             "enable) touch \"$HOME/enabled\";;\n",
             "disable) rm -f \"$HOME/enabled\"; test \"$2\" != --now || rm -f \"$HOME/active\";;\n",
@@ -57,21 +58,21 @@ impl Fixture {
         self.temp.path().join(path)
     }
     fn run_binary(&self, binary: &Path, args: &[&str]) -> Output {
-        Command::new(binary)
-            .args(args)
-            .env("HOME", self.path("home"))
-            .env("USERPROFILE", self.path("home"))
-            .env("APPDATA", self.path("home"))
-            .env("LOCALAPPDATA", self.path("home"))
-            .env("CODEX_HOME", self.path("home/.codex"))
-            .env("WI_VAULT", self.path("vault"))
-            .env("WI_CACHE_DIR", self.path("cache"))
-            .env("WI_LAUNCHCTL", self.path("bin/launchctl"))
-            .env("WI_SYSTEMCTL", self.path("bin/systemctl"))
-            .env_remove("XDG_CONFIG_HOME")
-            .env_remove("WI_FAULT")
-            .output()
-            .unwrap()
+        support::output(
+            Command::new(binary)
+                .args(args)
+                .env("HOME", self.path("home"))
+                .env("USERPROFILE", self.path("home"))
+                .env("APPDATA", self.path("home"))
+                .env("LOCALAPPDATA", self.path("home"))
+                .env("CODEX_HOME", self.path("home/.codex"))
+                .env("WI_VAULT", self.path("vault"))
+                .env("WI_CACHE_DIR", self.path("cache"))
+                .env("WI_LAUNCHCTL", self.path("bin/launchctl"))
+                .env("WI_SYSTEMCTL", self.path("bin/systemctl"))
+                .env_remove("XDG_CONFIG_HOME")
+                .env_remove("WI_FAULT"),
+        )
     }
     fn run(&self, args: &[&str]) -> Output {
         self.run_binary(&self.path("bin/wi"), args)
@@ -577,21 +578,21 @@ fn setup_records_destinations_and_later_home_changes_cannot_redirect_exports_or_
     f.seed("other/.claude.json", "{\"owner\":true}\n");
     fs::create_dir_all(f.path("other-cache")).unwrap();
     let invoke = |args: &[&str]| {
-        Command::new(f.path("bin/wi"))
-            .args(args)
-            .env("HOME", f.path("other"))
-            .env("USERPROFILE", f.path("other"))
-            .env("APPDATA", f.path("other"))
-            .env("LOCALAPPDATA", f.path("other"))
-            .env("CODEX_HOME", f.path("other/.codex"))
-            .env("WI_VAULT", f.path("vault"))
-            .env("WI_CACHE_DIR", f.path("other-cache"))
-            .env("WI_LAUNCHCTL", f.path("bin/launchctl"))
-            .env("WI_SYSTEMCTL", f.path("bin/systemctl"))
-            .env_remove("XDG_CONFIG_HOME")
-            .env_remove("WI_FAULT")
-            .output()
-            .unwrap()
+        support::output(
+            Command::new(f.path("bin/wi"))
+                .args(args)
+                .env("HOME", f.path("other"))
+                .env("USERPROFILE", f.path("other"))
+                .env("APPDATA", f.path("other"))
+                .env("LOCALAPPDATA", f.path("other"))
+                .env("CODEX_HOME", f.path("other/.codex"))
+                .env("WI_VAULT", f.path("vault"))
+                .env("WI_CACHE_DIR", f.path("other-cache"))
+                .env("WI_LAUNCHCTL", f.path("bin/launchctl"))
+                .env("WI_SYSTEMCTL", f.path("bin/systemctl"))
+                .env_remove("XDG_CONFIG_HOME")
+                .env_remove("WI_FAULT"),
+        )
     };
     // Force a pending skill sync without editing any owner note.
     fs::remove_file(f.path("vault/.wiki-island/local/skills-digest")).ok();

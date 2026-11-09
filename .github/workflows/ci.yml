@@ -122,6 +122,7 @@ jobs:
           test "${#units[@]}" -eq 1 && test -f "${units[0]}"
           unit=$(basename "${units[0]}")
           cat "${units[0]}"
+          head -n 1 "${units[0]}" | grep -Ex '# Managed by wiki-island\. Vault [A-Za-z0-9_-]+\.'
           systemctl --user is-enabled "$unit"
           sleep 5
           test "$(systemctl --user is-active "$unit")" = active

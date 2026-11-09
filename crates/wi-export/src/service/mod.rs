@@ -24,7 +24,7 @@ pub use launchd::{
 #[cfg(target_os = "linux")]
 pub use systemd::{
     ServicePlan, ServiceStatus, SystemSystemctl, Systemctl, available, plan, plan_with_options,
-    status, unavailable_message, uninstall,
+    status, unavailable_message, uninstall, uninstall_recorded,
 };
 
 /// The command runner of this target's backend.

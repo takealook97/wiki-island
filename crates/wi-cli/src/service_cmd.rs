@@ -33,6 +33,14 @@ pub(crate) fn run(vault: &Session, command: ServiceCommand) -> Result<Output> {
             Ok(install_output(&plan, yes))
         }
         ServiceCommand::Uninstall => {
+            #[cfg(target_os = "linux")]
+            let removed = service::uninstall_recorded(
+                &home,
+                &std::fs::canonicalize(vault.root()).context("locate the vault")?,
+                vault_id,
+                runner,
+            )?;
+            #[cfg(not(target_os = "linux"))]
             let removed = service::uninstall(&home, vault_id, runner)?;
             Ok(Output {
                 json: json!({"removed": removed}),

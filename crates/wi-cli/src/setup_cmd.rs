@@ -193,13 +193,19 @@ fn setup_with_options(
     } else {
         None
     };
-    let background = if let Some(plan) = background_plan {
-        if (!plan.is_noop() || !super::service_cmd::running(home, vault.vault_id(), runner)?)
-            && let Err(error) = plan.apply(runner)
-        {
-            install::cleanup_created_dirs(&root)?;
-            return Err(error.into());
-        }
+    let background_on = match background_plan {
+        Some(plan) => match start_background(&plan, home, vault.vault_id(), runner) {
+            Ok(()) => true,
+            // The manager went away after preflight: skip like a host without one.
+            Err(_) if manager_lost(runner) => false,
+            Err(error) => {
+                install::cleanup_created_dirs(&root)?;
+                return Err(error);
+            }
+        },
+        None => false,
+    };
+    let background = if background_on {
         "Background care is on."
     } else if cfg!(target_os = "linux") {
         "Your notes are ready; background care needs a systemd user session, so run wi watch to keep them up to date."
@@ -233,7 +239,7 @@ fn setup_with_options(
             root.display(),
             detected.len()
         ),
-        json: json!({"vault":root,"storage":vault.storage_mode(),"primary":vault.is_primary_device(),"hosts":detected,"skills":synced,"background":background_ready}),
+        json: json!({"vault":root,"storage":vault.storage_mode(),"primary":vault.is_primary_device(),"hosts":detected,"skills":synced,"background":background_on}),
     })
 }
 pub(crate) fn uninstall(
@@ -263,9 +269,13 @@ pub(crate) fn uninstall(
             json: json!({"removed":false,"notes_kept":true}),
         });
     };
-    if cfg!(any(target_os = "macos", target_os = "linux")) {
-        service::uninstall(&state.home, vault_id, runner)?;
-    }
+    #[cfg(target_os = "linux")]
+    service::uninstall_recorded(&state.home, &root, vault_id, runner)?;
+    #[cfg(target_os = "macos")]
+    service::uninstall(&state.home, vault_id, runner)?;
+    // Other targets have no service to remove.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = runner;
     let mut removed = 0;
     for (host, path) in &state.hosts {
         if let Some(plan) = install::plan_remove_at(*host, path, &root)? {
@@ -281,6 +291,24 @@ pub(crate) fn uninstall(
         human: "wiki-island is disconnected and background care is removed.".into(),
         json: json!({"removed":true,"hosts":removed,"skills":skills,"notes_kept":true}),
     })
+}
+
+/// Applies the service plan unless it already matches and runs.
+fn start_background(
+    plan: &service::ServicePlan,
+    home: &Path,
+    vault_id: &str,
+    runner: &service::Runner,
+) -> Result<()> {
+    if !plan.is_noop() || !super::service_cmd::running(home, vault_id, runner)? {
+        plan.apply(runner)?;
+    }
+    Ok(())
+}
+
+/// True when the target's service manager is no longer reachable.
+fn manager_lost(runner: &service::Runner) -> bool {
+    cfg!(target_os = "linux") && !super::service_cmd::ready(runner)
 }
 
 fn cache_root(home: &Path) -> Result<PathBuf> {
