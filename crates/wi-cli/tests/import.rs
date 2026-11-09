@@ -14,6 +14,7 @@ fn command(tmp: &TempDir) -> Command {
         .env("LOCALAPPDATA", tmp.path().join("local"))
         .env("WI_CACHE_DIR", tmp.path().join("cache"))
         .env("WI_SYSTEMCTL", "/bin/false")
+        .env("WI_SCHTASKS", "wi-missing-schtasks.exe")
         .env_remove("XDG_CONFIG_HOME")
         .arg("--vault")
         .arg(tmp.path().join("vault"))

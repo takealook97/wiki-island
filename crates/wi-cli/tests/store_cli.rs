@@ -35,6 +35,7 @@ impl Env {
             .env("WI_CACHE_DIR", self.cache.path())
             .env("WI_VAULT", &self.root)
             .env("WI_SYSTEMCTL", "/bin/false")
+            .env("WI_SCHTASKS", "wi-missing-schtasks.exe")
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("WI_FAULT");
         if let Some(fault) = fault {
