@@ -31,7 +31,17 @@ case "$OS" in
 esac
 
 TMP=$(mktemp -d) || fail "a temporary folder could not be created."
-trap 'rm -rf "$TMP"' EXIT
+# Replacement state for install_staged: TXN is 1 while the installed pair may change; STAGED and
+# BACKED list the programs whose new copy or backup copy is complete; COMMITTED is 1 once both new
+# programs are in place.
+TXN=0
+COMMITTED=0
+STAGED=""
+BACKED=""
+trap 'finish' EXIT
+trap 'interrupted 130' INT
+trap 'interrupted 143' TERM
+trap 'interrupted 129' HUP
 
 # Prints the release target for this computer, or nothing when there is no prebuilt program for it.
 release_target() {
@@ -218,19 +228,72 @@ try_release() {
   return 0
 }
 
-# Puts back what was there before a failed replacement and removes staged copies.
-rollback() {
-  for name in $PROGRAMS; do
-    if [ -e "$BIN_DIR/.$name.old.$$" ] || [ -L "$BIN_DIR/.$name.old.$$" ]; then
-      mv -f "$BIN_DIR/.$name.old.$$" "$BIN_DIR/$name" 2>/dev/null || true
-    elif [ -e "$TMP/placed.$name" ]; then
-      rm -f "$BIN_DIR/$name"
-    fi
-    rm -f "$BIN_DIR/.$name.new.$$"
-  done
+# Succeeds when word $1 is in list $2.
+listed() {
+  case " $2 " in *" $1 "*) return 0 ;; esac
+  return 1
 }
 
-# Replaces both installed programs with the staged ones, or neither.
+# Puts back every program already replaced by its backup copy (or removes it when nothing was
+# installed before) and removes all staged and backup copies. Each restore is one atomic rename.
+# Returns 1 when a program could not be put back.
+rollback() {
+  restored=0
+  for name in $PROGRAMS; do
+    if [ "$COMMITTED" != 1 ] && listed "$name" "$STAGED" && [ ! -e "$BIN_DIR/.$name.new.$$" ]; then
+      # The staged copy was renamed onto the program, so the program is the new one.
+      if listed "$name" "$BACKED"; then
+        mv -f "$BIN_DIR/.$name.old.$$" "$BIN_DIR/$name" || restored=1
+      else
+        rm -f "$BIN_DIR/$name" || restored=1
+      fi
+    fi
+  done
+  for name in $PROGRAMS; do
+    rm -f "$BIN_DIR/.$name.new.$$" "$BIN_DIR/.$name.old.$$" 2>/dev/null
+  done
+  TXN=0
+  return "$restored"
+}
+
+INCOMPLETE="the installation is incomplete, so run this installer again."
+
+# Ends a failed replacement: rolls back, then stops with message $1, or with the incomplete
+# message when something could not be put back.
+abort_txn() {
+  if rollback; then fail "$1"; fi
+  fail "$INCOMPLETE"
+}
+
+# Runs on every exit: undoes an unfinished replacement and removes temporary files.
+finish() {
+  status=$?
+  if [ "$TXN" = 1 ] && ! rollback; then
+    say "wiki-island could not be installed: $INCOMPLETE"
+    [ "$status" -ne 0 ] || status=1
+  fi
+  rm -rf "$TMP"
+  exit "$status"
+}
+
+# Runs on INT, TERM or HUP: undoes an unfinished replacement, then exits with status $1.
+interrupted() {
+  trap - INT TERM HUP
+  if [ "$TXN" != 1 ]; then
+    say "The installer was stopped before it finished, so run this installer again."
+  elif ! rollback; then
+    say "wiki-island could not be installed: $INCOMPLETE"
+  elif [ "$COMMITTED" = 1 ]; then
+    say "The installer was stopped after the new programs were put in place, so run this installer again to finish."
+  else
+    say "The installer was stopped, and the previous programs were kept. Run this installer again."
+  fi
+  exit "$1"
+}
+
+# Replaces both installed programs with the staged ones, or neither. Existing programs are only
+# copied, never moved, so each name always holds a runnable program; each new program then
+# replaces its name in one atomic rename.
 install_staged() {
   keep="Check that your home folder has free space and can be written to, then run this installer again."
   mkdir -p "$BIN_DIR" || fail "the program folder could not be created. $keep"
@@ -239,30 +302,27 @@ install_staged() {
       fail "a folder named $name is in the way in ~/.cargo/bin. Move it aside, then run this installer again."
     fi
   done
+  TXN=1
   for name in $PROGRAMS; do
     if ! cp "$TMP/stage/$name" "$BIN_DIR/.$name.new.$$" || ! chmod 755 "$BIN_DIR/.$name.new.$$"; then
-      rollback
-      fail "the new programs could not be copied into place, and the previous ones were kept. $keep"
+      abort_txn "the new programs could not be copied into place, and the previous ones were kept. $keep"
+    fi
+    STAGED="$STAGED $name"
+    if [ -e "$BIN_DIR/$name" ]; then
+      cp -p "$BIN_DIR/$name" "$BIN_DIR/.$name.old.$$" \
+        || abort_txn "the previous programs could not be backed up, and they were kept. $keep"
+      BACKED="$BACKED $name"
     fi
   done
   for name in $PROGRAMS; do
-    if [ -e "$BIN_DIR/$name" ] || [ -L "$BIN_DIR/$name" ]; then
-      if ! mv -f "$BIN_DIR/$name" "$BIN_DIR/.$name.old.$$"; then
-        rollback
-        fail "the previous programs could not be moved aside, and they were kept. $keep"
-      fi
-    fi
+    mv -f "$BIN_DIR/.$name.new.$$" "$BIN_DIR/$name" \
+      || abort_txn "the new programs could not be put in place, and the previous ones were kept. $keep"
   done
-  for name in $PROGRAMS; do
-    if ! mv -f "$BIN_DIR/.$name.new.$$" "$BIN_DIR/$name"; then
-      rollback
-      fail "the new programs could not be put in place, and the previous ones were kept. $keep"
-    fi
-    : > "$TMP/placed.$name"
-  done
+  COMMITTED=1
   for name in $PROGRAMS; do
     rm -f "$BIN_DIR/.$name.old.$$"
   done
+  TXN=0
 }
 
 # Builds and installs from source.

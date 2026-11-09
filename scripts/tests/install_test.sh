@@ -110,7 +110,7 @@ RUN_PATH=""
 # True when both programs are still the seeded older ones and no staging files are left.
 # shellcheck disable=SC2329,SC2317  # called through cond
 old_pair_intact() {
-  grep -q old-wi "$BIN/wi" && grep -q old-wiki-island "$BIN/wiki-island" \
+  grep -qs old-wi "$BIN/wi" && grep -qs old-wiki-island "$BIN/wiki-island" \
     && [ -z "$(find "$BIN" -name '.*' -type f)" ]
 }
 # True when nothing was installed and no source build ran.
@@ -306,6 +306,87 @@ SEED_OLD=0
 check "upgrade exits 0" "$(cond [ "$RC" -eq 0 ])"
 check "upgrade replaces both programs" "$(cond grep -q fake-wiki-island "$BIN/wiki-island")"
 check "upgrade leaves no staging files" "$(cond [ -z "$(find "$BIN" -name '.*' -type f)" ])"
+
+# True when both programs are the new release and no staging files are left.
+# shellcheck disable=SC2329,SC2317  # called through cond
+new_pair_intact() {
+  grep -qs fake-wi "$BIN/wi" && grep -qs fake-wiki-island "$BIN/wiki-island" \
+    && [ -z "$(find "$BIN" -name '.*' -type f)" ]
+}
+# True when the installer left no extraction folder behind.
+# shellcheck disable=SC2329,SC2317  # called through cond
+no_extraction_left() {
+  [ -z "$(find "$WORK" -mindepth 1 -maxdepth 1 -name 'tmp.*')" ]
+}
+
+# True when the output does not claim the previous programs were kept.
+# shellcheck disable=SC2329,SC2317  # called through cond
+no_kept_claim() {
+  ! grep -q 'were kept' "$WORK/out"
+}
+
+# Writes shim $1/$2 that fails (exit 1) when its joined arguments match case pattern $3, else runs
+# the real $2.
+fail_shim() {
+  mkdir -p "$1"
+  cat > "$1/$2" <<SHIM
+#!/bin/sh
+case "\$*" in $3) echo "$2: injected failure" >&2; exit 1 ;; esac
+exec "$(command -v "$2")" "\$@"
+SHIM
+  chmod 755 "$1/$2"
+}
+
+# 22. Every move onto wiki-island fails (a persistent destination error): the older pair is kept.
+make_release good
+rm -rf "$WORK/shim-persist"
+fail_shim "$WORK/shim-persist" mv '*/wiki-island'
+SEED_OLD=1 RUN_PATH="$WORK/shim-persist:$PATH"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+SEED_OLD=0 RUN_PATH=""
+check "persistent rename failure exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "persistent rename failure keeps the older pair" "$(cond old_pair_intact)"
+check "persistent rename failure says the previous programs were kept" "$(cond grep -q 'previous ones were kept' "$WORK/out")"
+
+# 23. The restore also fails: the installer says the installation is incomplete and exits non-zero.
+make_release good
+rm -rf "$WORK/shim-restore"
+fail_shim "$WORK/shim-restore" mv '*/wiki-island | */.wi.old.*'
+SEED_OLD=1 RUN_PATH="$WORK/shim-restore:$PATH"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+SEED_OLD=0 RUN_PATH=""
+check "failed restore exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "failed restore says the installation is incomplete" "$(cond grep -q 'incomplete' "$WORK/out")"
+check "failed restore does not claim the previous programs were kept" "$(cond no_kept_claim)"
+check "failed restore leaves both names runnable" "$(cond [ -x "$BIN/wi" ] && [ -x "$BIN/wiki-island" ])"
+
+# 24. TERM arrives at each step of the replacement: both names stay runnable as one pair and
+# nothing is left behind. The shim signals the installer once, then lets the step itself run.
+for step in "cp:*/.wi.new.*" "cp:*/.wiki-island.new.*" "cp:*/.wi.old.*" "cp:*/.wiki-island.old.*" \
+  "mv:*/.wi.new.*" "mv:*/.wiki-island.new.*" "rm:*/.wi.old.*"; do
+  tool=${step%%:*}
+  pattern=${step#*:}
+  make_release good
+  rm -rf "$WORK/shim-term" "$WORK/term-sent"
+  mkdir -p "$WORK/shim-term"
+  cat > "$WORK/shim-term/$tool" <<SHIM
+#!/bin/sh
+for arg in "\$@"; do
+  case "\$arg" in $pattern)
+    if [ ! -e "$WORK/term-sent" ]; then : > "$WORK/term-sent"; kill -TERM "\$PPID"; fi ;;
+  esac
+done
+exec "$(command -v "$tool")" "\$@"
+SHIM
+  chmod 755 "$WORK/shim-term/$tool"
+  SEED_OLD=1 RUN_PATH="$WORK/shim-term:$PATH"
+  run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+  SEED_OLD=0 RUN_PATH=""
+  check "TERM at $tool $pattern was delivered" "$(cond [ -e "$WORK/term-sent" ])"
+  check "TERM at $tool $pattern exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+  check "TERM at $tool $pattern leaves one runnable pair" "$(cond eval 'old_pair_intact || new_pair_intact')"
+  check "TERM at $tool $pattern leaves no extraction folder" "$(cond no_extraction_left)"
+done
 
 [ "$FAILED" -eq 0 ] && echo "all install tests passed"
 exit "$FAILED"
