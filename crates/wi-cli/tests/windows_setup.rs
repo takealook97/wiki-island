@@ -144,7 +144,12 @@ fn setup_uses_profile_and_roaming_paths_registers_the_task_and_uninstalls() {
     let task = definition(&fixture.task().expect("setup registers the task"));
     assert!(task.contains("Managed by wiki-island. Vault "), "{task}");
     assert!(task.contains("<LogonType>InteractiveToken</LogonType>"));
-    assert!(task.contains(&format!("<Command>{}</Command>", fixture.binary.display())));
+    // The program path is the absolute invocation path, with native separators.
+    let binary = std::path::absolute(&fixture.binary).unwrap();
+    assert!(
+        task.contains(&format!("<Command>{}</Command>", binary.display())),
+        "{task}"
+    );
     // Setup records the canonical vault folder, without the `\\?\` prefix.
     let vault = std::fs::canonicalize(fixture.home.join("wiki-island")).unwrap();
     let vault = vault.to_str().unwrap().trim_start_matches(r"\\?\");
