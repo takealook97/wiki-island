@@ -1,0 +1,139 @@
+name: release
+
+# Tag pushes (v*) build all five targets and publish a GitHub Release.
+# workflow_dispatch builds the same archives as workflow artifacts and never publishes.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build (default is the dispatching ref)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-14 }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add "${{ matrix.target }}"
+          rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p wiki-island --target ${{ matrix.target }}
+      - name: Smoke run
+        shell: bash
+        run: |
+          ext=""
+          case "${{ matrix.target }}" in *windows*) ext=".exe" ;; esac
+          out="target/${{ matrix.target }}/release"
+          "$out/wi$ext" --version
+          "$out/wiki-island$ext" --version
+      - name: Record Linux glibc floor
+        if: contains(matrix.target, 'linux')
+        shell: bash
+        run: |
+          for b in wi wiki-island; do
+            floor=$(objdump -T "target/${{ matrix.target }}/release/$b" | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1)
+            echo "glibc floor ${{ matrix.target }} $b: $floor"
+          done
+      - name: Package
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = push ]; then
+            version="$REF_NAME"
+          else
+            version="dev-$(git rev-parse --short HEAD)"
+          fi
+          name="wiki-island-${version}-${{ matrix.target }}"
+          out="target/${{ matrix.target }}/release"
+          mkdir -p "dist/stage"
+          case "${{ matrix.target }}" in
+            *windows*)
+              cp "$out/wi.exe" "$out/wiki-island.exe" LICENSE README.md dist/stage/
+              (cd dist/stage && 7z a -tzip "../${name}.zip" . >/dev/null)
+              ;;
+            *)
+              cp "$out/wi" "$out/wiki-island" LICENSE README.md dist/stage/
+              tar -C dist/stage -czf "dist/${name}.tar.gz" wi wiki-island LICENSE README.md
+              ;;
+          esac
+          rm -rf dist/stage
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          count=$(ls | grep -c -E '\.(tar\.gz|zip)$')
+          [ "$count" -eq 5 ] || { echo "expected 5 archives, found $count"; ls; exit 1; }
+          sha256sum ./*.tar.gz ./*.zip | sed 's# \./# #' > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    needs: checksums
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: dist
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/* --title "$TAG" --generate-notes --verify-tag
