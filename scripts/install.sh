@@ -103,7 +103,8 @@ check_manifest() {
   bad="the published checksum list is damaged, so nothing was installed. Run this installer again later, or report it at $ISSUES."
   lines=$(awk -v n="$1" '{ sub(/\r$/, ""); f = $2; sub(/^\*/, "", f); if (f == n) print NF, tolower($1) }' \
     "$TMP/SHA256SUMS") || fail "$bad"
-  [ -n "$lines" ] && [ "$(printf '%s\n' "$lines" | wc -l | tr -d ' ')" = "1" ] || fail "$bad"
+  [ -n "$lines" ] || fail "$bad"
+  [ "$(printf '%s\n' "$lines" | wc -l | tr -d ' ')" = "1" ] || fail "$bad"
   [ "${lines%% *}" = "2" ] || fail "$bad"
   WANT=${lines#* }
   case "$WANT" in
@@ -203,7 +204,9 @@ try_release() {
   tar -xzf "$TMP/$asset" -C "$TMP/stage" 2>/dev/null \
     || fail "the downloaded program could not be unpacked, so nothing was installed. Run this installer again later, or report it at $ISSUES."
   for name in $PROGRAMS; do
-    [ -f "$TMP/stage/$name" ] && [ ! -L "$TMP/stage/$name" ] || archive_unexpected
+    if [ ! -f "$TMP/stage/$name" ] || [ -L "$TMP/stage/$name" ]; then
+      archive_unexpected
+    fi
   done
   chmod 755 "$TMP/stage/wi" "$TMP/stage/wiki-island"
   for name in $PROGRAMS; do
