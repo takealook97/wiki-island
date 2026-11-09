@@ -343,6 +343,21 @@ fn without_task_scheduler_setup_skips_the_service_and_doctor_says_what_to_do() {
         text(&install.stderr).contains("run wi watch"),
         "{install:?}"
     );
+    // A scheduler that does not answer could still hold a task, so uninstall changes nothing
+    // and says to try again instead of reporting that nothing was there.
+    let removed = fixture.run(&["uninstall"]);
+    assert!(!removed.status.success(), "{removed:?}");
+    assert!(
+        text(&removed.stderr).contains("Task Scheduler did not report the background task"),
+        "{removed:?}"
+    );
+    assert!(
+        fixture
+            .home
+            .join("wiki-island/.wiki-island/config.toml")
+            .is_file()
+    );
+    std::fs::remove_file(fixture.state.join("unavailable")).unwrap();
     let removed = fixture.run(&["uninstall"]);
     assert!(removed.status.success(), "{removed:?}");
     assert!(fixture.task().is_none());
