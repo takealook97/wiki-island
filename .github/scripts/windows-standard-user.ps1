@@ -38,7 +38,9 @@ if ($Standard) {
     # new user cannot write. Use the new user's own folders, as a real logon would.
     $env:USERPROFILE = [Environment]::GetFolderPath("UserProfile")
     $env:APPDATA = [Environment]::GetFolderPath("ApplicationData")
-    $env:LOCALAPPDATA = [Environment]::GetFolderPath("LocalApplicationData")
+    # The local known folder can still resolve to the caller's profile here, so derive it.
+    $env:LOCALAPPDATA = Join-Path $env:USERPROFILE "AppData\Local"
+    New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
     $env:HOMEDRIVE = $env:USERPROFILE.Substring(0, 2)
     $env:HOMEPATH = $env:USERPROFILE.Substring(2)
     $temp = Join-Path $Work "temp"
