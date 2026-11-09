@@ -32,6 +32,14 @@ function TaskStatus([string]$name) {
 
 Write-Host "== identity"
 whoami
+Write-Host "inherited TEMP: $env:TEMP"
+if ($Standard) {
+    # A credential logon inherits the caller's environment, whose TEMP the new user cannot write.
+    $temp = Join-Path $Work "temp"
+    New-Item -ItemType Directory -Force $temp | Out-Null
+    $env:TEMP = $temp
+    $env:TMP = $temp
+}
 $groups = whoami /groups /fo csv /nh | Out-String
 Write-Host $groups.TrimEnd()
 if ($Standard -and $groups -match "S-1-5-32-544") { Fail "the proof user belongs to Administrators" }
@@ -72,12 +80,16 @@ if ($Wi) {
     Write-Host "== wi setup roundtrip"
     $env:WI_CACHE_DIR = Join-Path $Work "cache"
     if ($Vault) { $env:WI_VAULT = $Vault }
-    if ((Run $Wi @("setup")).Code -ne 0) { Fail "wi setup" }
+    if ((Run $Wi @("setup")).Code -ne 0) {
+        Fail "wi setup"
+        # The service command reports the backend's own sentence.
+        [void](Run $Wi @("service", "install", "--yes"))
+    }
     $tasks = & schtasks.exe /Query /FO CSV /NH 2>$null | ConvertFrom-Csv -Header Name, Next, Status |
         Where-Object { $_.Name -like "\wiki-island-*" }
     Write-Host ($tasks | Format-Table | Out-String).TrimEnd()
-    if (@($tasks).Count -ne 1) { Fail "expected one wiki-island task" }
-    $task = @($tasks)[0].Name.TrimStart("\")
+    if (@($tasks).Count -ne 1) { Fail "expected one wiki-island task"; $task = "wiki-island-none" }
+    else { $task = @($tasks)[0].Name.TrimStart("\") }
     [void](Run schtasks.exe @("/Query", "/TN", $task, "/XML"))
     Start-Sleep -Seconds 5
     $state = TaskStatus $task
