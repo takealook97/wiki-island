@@ -34,11 +34,18 @@ Write-Host "== identity"
 whoami
 Write-Host "inherited TEMP: $env:TEMP"
 if ($Standard) {
-    # A credential logon inherits the caller's environment, whose TEMP the new user cannot write.
+    # A credential logon inherits the caller's environment (profile, app data, TEMP), which the
+    # new user cannot write. Use the new user's own folders, as a real logon would.
+    $env:USERPROFILE = [Environment]::GetFolderPath("UserProfile")
+    $env:APPDATA = [Environment]::GetFolderPath("ApplicationData")
+    $env:LOCALAPPDATA = [Environment]::GetFolderPath("LocalApplicationData")
+    $env:HOMEDRIVE = $env:USERPROFILE.Substring(0, 2)
+    $env:HOMEPATH = $env:USERPROFILE.Substring(2)
     $temp = Join-Path $Work "temp"
     New-Item -ItemType Directory -Force $temp | Out-Null
     $env:TEMP = $temp
     $env:TMP = $temp
+    Write-Host "profile: $env:USERPROFILE; app data: $env:APPDATA; local: $env:LOCALAPPDATA"
 }
 $groups = whoami /groups /fo csv /nh | Out-String
 Write-Host $groups.TrimEnd()
