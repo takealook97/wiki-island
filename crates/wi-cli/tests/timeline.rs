@@ -107,6 +107,8 @@ impl World {
             .env("WI_CACHE_DIR", self.path("cache"))
             .env("WI_LAUNCHCTL", self.path("bin/launchctl"))
             .env("WI_NOW", &self.now)
+            .env("WI_SYSTEMCTL", "/bin/false")
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("WI_FAULT");
         cmd
     }

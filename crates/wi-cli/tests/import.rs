@@ -13,6 +13,8 @@ fn command(tmp: &TempDir) -> Command {
         .env("APPDATA", tmp.path().join("roaming"))
         .env("LOCALAPPDATA", tmp.path().join("local"))
         .env("WI_CACHE_DIR", tmp.path().join("cache"))
+        .env("WI_SYSTEMCTL", "/bin/false")
+        .env_remove("XDG_CONFIG_HOME")
         .arg("--vault")
         .arg(tmp.path().join("vault"))
         .arg("--json");

@@ -20,6 +20,8 @@ impl Env {
             .env("WI_VAULT", self.0.path().join("vault"))
             .env("WI_CACHE_DIR", self.0.path().join("cache"))
             .env("WI_LAUNCHCTL", "/usr/bin/false")
+            .env("WI_SYSTEMCTL", "/bin/false")
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("WI_FAULT")
             .output()
             .unwrap()
