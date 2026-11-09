@@ -137,3 +137,52 @@ jobs:
           test "$state" != active
           test "$state" != activating
           if systemctl --user is-enabled "$unit"; then exit 1; fi
+
+  # Hosted Windows runners are administrators, so the no-elevation proof runs as a newly
+  # created standard local user. Start-Process -Credential starts the proof script under that
+  # user's own logon without any interactive prompt.
+  windows-standard-user:
+    needs: plan
+    if: contains(needs.plan.outputs.os, 'windows-latest')
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p wiki-island --bin wi
+      - name: Register, run, query and remove a logon task as a standard user
+        shell: pwsh
+        env:
+          WI_PROOF_WI: "0"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $password = "Wi!" + [guid]::NewGuid().ToString("N") + "a9Z"
+          Write-Output "::add-mask::$password"
+          net user wiproof $password /add | Out-Null
+          $members = net localgroup Administrators | Out-String
+          Write-Output $members
+          if ($members -match "(?m)^wiproof\s*$") { throw "wiproof must not be an administrator" }
+          $work = "C:\wiproof"
+          New-Item -ItemType Directory -Force $work | Out-Null
+          icacls $work /grant "wiproof:(OI)(CI)F" | Out-Null
+          Copy-Item .github/scripts/windows-standard-user.ps1 $work
+          $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$work\windows-standard-user.ps1", "-Work", $work)
+          if ($env:WI_PROOF_WI -eq "1") {
+            New-Item -ItemType Directory -Force "$work\bin" | Out-Null
+            Copy-Item target\debug\wi.exe "$work\bin\wi.exe"
+            $arguments += @("-Wi", "$work\bin\wi.exe")
+          }
+          $credential = New-Object System.Management.Automation.PSCredential("wiproof", (ConvertTo-SecureString $password -AsPlainText -Force))
+          $process = Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments `
+            -Credential $credential -LoadUserProfile -WorkingDirectory $work -Wait -PassThru `
+            -RedirectStandardOutput "$work\out.txt" -RedirectStandardError "$work\err.txt"
+          Get-Content "$work\out.txt"
+          Get-Content "$work\err.txt"
+          Write-Output "proof exit code: $($process.ExitCode)"
+          exit $process.ExitCode
