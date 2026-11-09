@@ -10,14 +10,20 @@ It never calls a model, and saving, searching and reading never use the network.
 
 ### macOS and Linux
 
-Open a terminal and paste these two lines:
+Open a terminal and paste this line:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/takealook97/wiki-island/main/scripts/install.sh | sh
+```
+
+It needs no git checkout. The installer downloads the latest release for your computer, checks its SHA-256 checksum and installs `wi` and `wiki-island`; a checksum mismatch stops the install and changes nothing. If no usable release exists, it clones the source into a temporary folder and builds it instead: it installs the Rust build tool if needed (this takes a few minutes the first time) and needs git and a C compiler (Apple's command line tools on macOS, for example `build-essential` on Linux; if one is missing the installer says which and what to run). The programs are placed in the `.cargo/bin` folder inside your home folder (`~/.cargo/bin`), and the installer adds that folder to your shell startup file once so new terminals find `wi`. Then it runs `wi setup`. It needs no administrator password and is safe to run again. Details, environment variables and the release layout: [operations](docs/OPERATIONS.md#install-and-release).
+
+If you prefer to read the source first, clone the repository and run the same installer from it:
 
 ```sh
 git clone https://github.com/takealook97/wiki-island.git
 sh wiki-island/scripts/install.sh
 ```
-
-The installer downloads the latest release for your computer, checks its SHA-256 checksum, installs `wi` and `wiki-island` into `~/.cargo/bin` and runs `wi setup`. A checksum mismatch stops the install and changes nothing. If no release exists for your computer, it builds from source instead: it installs the Rust build tool if needed (this takes a few minutes the first time) and needs git and a C compiler (Apple's command line tools on macOS, for example `build-essential` on Linux; if one is missing the installer says which and what to run). It adds `~/.cargo/bin` to your shell startup file once so new terminals find `wi`, needs no administrator password and is safe to run again. Details, environment variables and the release layout: [operations](docs/OPERATIONS.md#install-and-release).
 
 `wi setup` asks nothing. It creates your notes folder (`~/wiki-island`), starts a small background service, connects every AI app it finds on this computer, runs the first maintenance pass and prints a three-line summary. It checks everything first and changes nothing if a step cannot work, then tells you why in one sentence.
 
