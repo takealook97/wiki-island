@@ -39,6 +39,8 @@ impl Env {
             .env("APPDATA", self.home.path())
             .env("LOCALAPPDATA", self.home.path())
             .env_remove("WI_FAULT")
+            .env("WI_SYSTEMCTL", "/bin/false")
+            .env_remove("XDG_CONFIG_HOME")
             .output()
             .unwrap()
     }

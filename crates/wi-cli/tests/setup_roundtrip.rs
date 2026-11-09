@@ -1,4 +1,5 @@
 #![cfg(unix)]
+mod support;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
@@ -21,25 +22,57 @@ impl Fixture {
         let fake = f.path("bin/launchctl");
         fs::write(&fake, "#!/bin/sh\necho \"$1\" >> \"$HOME/calls\"\ncase $1 in\nprint) test -f \"$HOME/loaded\";;\nbootstrap) touch \"$HOME/loaded\";;\nbootout) rm -f \"$HOME/loaded\";;\nesac\n").unwrap();
         fs::set_permissions(fake, fs::Permissions::from_mode(0o755)).unwrap();
+        // A user manager that logs every change; `no-manager` and `fail-start` in HOME
+        // simulate a missing session and a watcher that cannot start.
+        let fake = f.path("bin/systemctl");
+        fs::write(&fake, concat!(
+            "#!/bin/sh\nshift\ncase $1 in\n",
+            "show-environment) test ! -f \"$HOME/no-manager\"; exit $?;;\n",
+            "is-enabled) if test -f \"$HOME/enabled\"; then echo enabled; else echo disabled; exit 1; fi; exit 0;;\n",
+            "is-active) if test -f \"$HOME/active\"; then echo active; else echo inactive; exit 3; fi; exit 0;;\n",
+            "esac\necho \"$*\" >> \"$HOME/calls\"\ncase $1 in\n",
+            "enable) touch \"$HOME/enabled\";;\n",
+            "disable) rm -f \"$HOME/enabled\"; test \"$2\" != --now || rm -f \"$HOME/active\";;\n",
+            "start|restart) test ! -f \"$HOME/fail-start\" || exit 1; touch \"$HOME/active\";;\n",
+            "stop) rm -f \"$HOME/active\";;\n",
+            "esac\nexit 0\n",
+        )).unwrap();
+        fs::set_permissions(fake, fs::Permissions::from_mode(0o755)).unwrap();
         f
+    }
+    fn vault_id(&self) -> String {
+        wi_note::VaultConfig::parse(
+            &fs::read_to_string(self.path("vault/.wiki-island/config.toml")).unwrap(),
+        )
+        .unwrap()
+        .vault_id()
+        .unwrap()
+        .to_owned()
+    }
+    fn unit(&self, id: &str) -> std::path::PathBuf {
+        self.path(&format!(
+            "home/.config/systemd/user/wiki-island-{id}.service"
+        ))
     }
     fn path(&self, path: &str) -> std::path::PathBuf {
         self.temp.path().join(path)
     }
     fn run_binary(&self, binary: &Path, args: &[&str]) -> Output {
-        Command::new(binary)
-            .args(args)
-            .env("HOME", self.path("home"))
-            .env("USERPROFILE", self.path("home"))
-            .env("APPDATA", self.path("home"))
-            .env("LOCALAPPDATA", self.path("home"))
-            .env("CODEX_HOME", self.path("home/.codex"))
-            .env("WI_VAULT", self.path("vault"))
-            .env("WI_CACHE_DIR", self.path("cache"))
-            .env("WI_LAUNCHCTL", self.path("bin/launchctl"))
-            .env_remove("WI_FAULT")
-            .output()
-            .unwrap()
+        support::output(
+            Command::new(binary)
+                .args(args)
+                .env("HOME", self.path("home"))
+                .env("USERPROFILE", self.path("home"))
+                .env("APPDATA", self.path("home"))
+                .env("LOCALAPPDATA", self.path("home"))
+                .env("CODEX_HOME", self.path("home/.codex"))
+                .env("WI_VAULT", self.path("vault"))
+                .env("WI_CACHE_DIR", self.path("cache"))
+                .env("WI_LAUNCHCTL", self.path("bin/launchctl"))
+                .env("WI_SYSTEMCTL", self.path("bin/systemctl"))
+                .env_remove("XDG_CONFIG_HOME")
+                .env_remove("WI_FAULT"),
+        )
     }
     fn run(&self, args: &[&str]) -> Output {
         self.run_binary(&self.path("bin/wi"), args)
@@ -61,12 +94,16 @@ impl Fixture {
         assert!(!self.path("home/loaded").exists());
     }
 }
+/// Targets with a service backend: launchd on macOS, systemd on Linux.
+const SERVICE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+const LINUX: bool = cfg!(target_os = "linux");
+
 #[test]
 fn setup_preflights_development_binary_without_changing_home_or_vault() {
     let f = Fixture::new();
     f.seed("home/.claude.json", "{\"theme\":1}\n");
     let out = f.run_binary(Path::new(env!("CARGO_BIN_EXE_wi")), &["setup"]);
-    if !cfg!(target_os = "macos") {
+    if !SERVICE {
         f.assert_setup_without_service(&out);
         assert!(!f.path("home/Library/LaunchAgents").exists());
         return;
@@ -119,6 +156,10 @@ fn setup_twice_and_uninstall_restore_exact_host_bytes_and_created_containers() {
                 .unwrap()
                 .contains("bootstrap")
         );
+    } else if LINUX {
+        let calls = fs::read_to_string(f.path("home/calls")).unwrap();
+        assert!(calls.contains("enable wiki-island-"), "{calls}");
+        assert!(f.path("home/active").exists());
     } else {
         assert!(!f.path("home/calls").exists());
     }
@@ -139,6 +180,13 @@ fn setup_twice_and_uninstall_restore_exact_host_bytes_and_created_containers() {
                 .count(),
             1
         );
+    } else if LINUX {
+        let calls = fs::read_to_string(f.path("home/calls")).unwrap();
+        assert_eq!(
+            calls.lines().filter(|l| l.starts_with("restart")).count(),
+            1,
+            "{calls}"
+        );
     } else {
         assert!(!f.path("home/calls").exists());
     }
@@ -153,6 +201,7 @@ fn setup_twice_and_uninstall_restore_exact_host_bytes_and_created_containers() {
         "home/.agents/skills",
         "home/Library/LaunchAgents",
         "home/Library/Logs",
+        "home/.config/systemd",
     ] {
         assert!(!f.path(path).exists(), "left behind: {path}");
     }
@@ -179,6 +228,16 @@ fn registration_preserves_stable_executable_symlink() {
         text.contains(f.path("bin/stable-wi").to_str().unwrap()),
         "{text}"
     );
+    if LINUX {
+        let unit = fs::read_to_string(f.unit(&f.vault_id())).unwrap();
+        assert!(
+            unit.contains(&format!(
+                "ExecStart=\"{}\"",
+                f.path("bin/stable-wi").display()
+            )),
+            "{unit}"
+        );
+    }
 }
 
 // A single stored ZIP member, without a platform command or test dependency.
@@ -267,6 +326,7 @@ fn uninstall_keeps_preexisting_service_and_skill_containers() {
     for path in [
         "home/Library/LaunchAgents",
         "home/Library/Logs/wiki-island",
+        "home/.config/systemd/user",
         "home/.claude/skills",
     ] {
         fs::create_dir_all(f.path(path)).unwrap();
@@ -295,9 +355,13 @@ fn uninstall_keeps_preexisting_service_and_skill_containers() {
     for path in [
         "home/Library/LaunchAgents",
         "home/Library/Logs/wiki-island",
+        "home/.config/systemd/user",
         "home/.claude/skills",
     ] {
         assert!(f.path(path).is_dir(), "{path}");
+    }
+    if LINUX {
+        assert!(!f.unit(&id).exists());
     }
 }
 
@@ -331,8 +395,9 @@ fn failed_background_start_does_not_leave_host_connections_or_service_files() {
         "bin/launchctl",
         "#!/bin/sh\ncase $1 in bootstrap) exit 1;; print) exit 3;; *) exit 0;; esac\n",
     );
+    f.seed("home/fail-start", "");
     let out = f.run(&["setup"]);
-    if !cfg!(target_os = "macos") {
+    if !SERVICE {
         f.assert_setup_without_service(&out);
         assert!(!f.path("home/Library/LaunchAgents").exists());
         assert!(!f.path("home/Library/Logs").exists());
@@ -346,8 +411,12 @@ fn failed_background_start_does_not_leave_host_connections_or_service_files() {
     assert!(!f.path("home/.claude/skills").exists());
     assert!(!f.path("home/Library/LaunchAgents").exists());
     assert!(!f.path("home/Library/Logs").exists());
+    assert!(!f.path("home/.config/systemd").exists());
+    assert!(!f.path("home/enabled").exists());
+    assert!(!f.path("home/active").exists());
     let message = String::from_utf8(out.stderr).unwrap();
     assert!(!message.contains("launchctl"), "{message}");
+    assert!(!message.contains("systemctl"), "{message}");
     assert_eq!(message.lines().count(), 1, "{message}");
 }
 
@@ -372,8 +441,12 @@ fn setup_preflights_the_existing_service_destination() {
         )),
     )
     .unwrap();
+    if LINUX {
+        fs::create_dir_all(f.unit(&id).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(f.path("foreign.plist"), f.unit(&id)).unwrap();
+    }
     let out = f.run(&["setup"]);
-    if !cfg!(target_os = "macos") {
+    if !SERVICE {
         f.assert_setup_without_service(&out);
         assert_eq!(
             fs::read_to_string(f.path("foreign.plist")).unwrap(),
@@ -417,7 +490,7 @@ fn invalid_json_settings_report_one_plain_sentence_without_mutations() {
     assert!(!f.path("vault").exists());
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn doctor_checks_loaded_service_and_uninstall_removes_disposable_cache() {
     let f = Fixture::new();
@@ -438,7 +511,7 @@ fn doctor_checks_loaded_service_and_uninstall_removes_disposable_cache() {
     ] {
         assert!(!text.contains(jargon), "{text}");
     }
-    fs::remove_file(f.path("home/loaded")).unwrap();
+    fs::remove_file(f.path(if LINUX { "home/active" } else { "home/loaded" })).unwrap();
     let after = f.run(&["doctor"]);
     let text = String::from_utf8(after.stdout).unwrap();
     assert!(
@@ -453,6 +526,10 @@ fn doctor_checks_loaded_service_and_uninstall_removes_disposable_cache() {
     assert_eq!(text.lines().count(), 1, "{text}");
     assert!(fs::read_dir(f.path("cache")).unwrap().next().is_none());
     assert!(f.path("vault/.git").is_dir());
+    if LINUX {
+        assert!(!f.path("home/.config/systemd").exists());
+        assert!(!f.path("home/enabled").exists());
+    }
 }
 
 #[test]
@@ -485,6 +562,15 @@ fn setup_records_destinations_and_later_home_changes_cannot_redirect_exports_or_
             "<key>HOME</key>\n\t\t<string>{}</string>",
             f.path("home").display()
         )));
+    } else if LINUX {
+        let unit = fs::read_to_string(f.unit(&f.vault_id())).unwrap();
+        assert!(
+            unit.contains(&format!(
+                "Environment=\"HOME={}\"",
+                f.path("home").display()
+            )),
+            "{unit}"
+        );
     } else {
         assert!(!f.path("home/Library/LaunchAgents").exists());
         assert!(!f.path("home/calls").exists());
@@ -492,19 +578,21 @@ fn setup_records_destinations_and_later_home_changes_cannot_redirect_exports_or_
     f.seed("other/.claude.json", "{\"owner\":true}\n");
     fs::create_dir_all(f.path("other-cache")).unwrap();
     let invoke = |args: &[&str]| {
-        Command::new(f.path("bin/wi"))
-            .args(args)
-            .env("HOME", f.path("other"))
-            .env("USERPROFILE", f.path("other"))
-            .env("APPDATA", f.path("other"))
-            .env("LOCALAPPDATA", f.path("other"))
-            .env("CODEX_HOME", f.path("other/.codex"))
-            .env("WI_VAULT", f.path("vault"))
-            .env("WI_CACHE_DIR", f.path("other-cache"))
-            .env("WI_LAUNCHCTL", f.path("bin/launchctl"))
-            .env_remove("WI_FAULT")
-            .output()
-            .unwrap()
+        support::output(
+            Command::new(f.path("bin/wi"))
+                .args(args)
+                .env("HOME", f.path("other"))
+                .env("USERPROFILE", f.path("other"))
+                .env("APPDATA", f.path("other"))
+                .env("LOCALAPPDATA", f.path("other"))
+                .env("CODEX_HOME", f.path("other/.codex"))
+                .env("WI_VAULT", f.path("vault"))
+                .env("WI_CACHE_DIR", f.path("other-cache"))
+                .env("WI_LAUNCHCTL", f.path("bin/launchctl"))
+                .env("WI_SYSTEMCTL", f.path("bin/systemctl"))
+                .env_remove("XDG_CONFIG_HOME")
+                .env_remove("WI_FAULT"),
+        )
     };
     // Force a pending skill sync without editing any owner note.
     fs::remove_file(f.path("vault/.wiki-island/local/skills-digest")).ok();
@@ -534,6 +622,10 @@ fn setup_records_destinations_and_later_home_changes_cannot_redirect_exports_or_
             .next()
             .is_some()
     );
+    if LINUX {
+        assert!(!f.unit(&f.vault_id()).exists());
+        assert!(!f.path("other/.config").exists());
+    }
 }
 
 #[test]
@@ -544,21 +636,20 @@ fn watcher_continues_when_previous_log_is_a_directory() {
         &fs::read_to_string(f.path("vault/.wiki-island/config.toml")).unwrap(),
     )
     .unwrap();
-    let log = if cfg!(target_os = "macos") {
-        wi_export::service::plan(
-            &f.path("home"),
-            &f.path("bin/wi"),
-            &f.path("vault"),
-            config.vault_id().unwrap(),
-        )
-        .unwrap()
-        .log_path
-    } else {
-        f.path(&format!(
-            "home/Library/Logs/wiki-island/{}.log",
-            config.vault_id().unwrap()
-        ))
-    };
+    #[cfg(target_os = "macos")]
+    let log = wi_export::service::plan(
+        &f.path("home"),
+        &f.path("bin/wi"),
+        &f.path("vault"),
+        config.vault_id().unwrap(),
+    )
+    .unwrap()
+    .log_path;
+    #[cfg(not(target_os = "macos"))]
+    let log = f.path(&format!(
+        "home/Library/Logs/wiki-island/{}.log",
+        config.vault_id().unwrap()
+    ));
     fs::create_dir_all(log.parent().unwrap()).unwrap();
     fs::write(&log, vec![b'x'; 1_100_000]).unwrap();
     fs::create_dir(log.with_extension("log.old")).unwrap();

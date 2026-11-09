@@ -34,6 +34,8 @@ impl Env {
         cmd.args(args)
             .env("WI_CACHE_DIR", self.cache.path())
             .env("WI_VAULT", &self.root)
+            .env("WI_SYSTEMCTL", "/bin/false")
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("WI_FAULT");
         if let Some(fault) = fault {
             cmd.env("WI_FAULT", fault);

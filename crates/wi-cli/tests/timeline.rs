@@ -7,6 +7,7 @@
 //! The CLI reports engine withheld reasons (`not-active`); MCP collapses them to the
 //! protocol vocabulary (`not-current`), so each rule names the reasons of its own surface.
 #![cfg(unix)]
+mod support;
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
@@ -107,15 +108,14 @@ impl World {
             .env("WI_CACHE_DIR", self.path("cache"))
             .env("WI_LAUNCHCTL", self.path("bin/launchctl"))
             .env("WI_NOW", &self.now)
+            .env("WI_SYSTEMCTL", "/bin/false")
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("WI_FAULT");
         cmd
     }
 
     fn wi(&self, args: &[&str]) -> Output {
-        self.command(&self.path("bin/wi"))
-            .args(args)
-            .output()
-            .unwrap()
+        support::output(self.command(&self.path("bin/wi")).args(args))
     }
 
     /// `wi --json <args>`: parsed stdout and success.
@@ -312,15 +312,15 @@ struct Client {
 
 impl Client {
     fn start(world: &World) -> Self {
-        let mut child = world
-            .command(&world.path("bin/wi"))
-            .args(["mcp", "--vault"])
-            .arg(world.vault())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child = support::spawn(
+            world
+                .command(&world.path("bin/wi"))
+                .args(["mcp", "--vault"])
+                .arg(world.vault())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        );
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
         let (tx, messages) = mpsc::channel();

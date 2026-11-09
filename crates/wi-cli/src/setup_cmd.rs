@@ -76,7 +76,7 @@ pub(crate) fn setup(
     home: &Path,
     binary: &Path,
     codex_home: Option<&Path>,
-    launchctl: &dyn service::Launchctl,
+    runner: &service::Runner,
     primary: bool,
 ) -> Result<Output> {
     setup_with_options(
@@ -84,7 +84,7 @@ pub(crate) fn setup(
         home,
         binary,
         codex_home,
-        launchctl,
+        runner,
         wi_store::OpenOptions::default(),
         primary,
     ).map_err(|_| anyhow::anyhow!("Setup could not finish; check that wiki-island is installed in its permanent location and your AI app settings are readable and writable, then run wi setup again."))
@@ -94,7 +94,7 @@ fn setup_with_options(
     home: &Path,
     binary: &Path,
     codex_home: Option<&Path>,
-    launchctl: &dyn service::Launchctl,
+    runner: &service::Runner,
     options: wi_store::OpenOptions,
     primary: bool,
 ) -> Result<Output> {
@@ -124,12 +124,14 @@ fn setup_with_options(
     if codex_home.is_some_and(Path::is_dir) && !detected.contains(&hosts::HostId::Codex) {
         detected.push(hosts::HostId::Codex);
     }
+    // Without a usable service manager the service is skipped, not an error.
+    let background_ready = super::service_cmd::ready(runner);
     // Validate every host and service destination before creating the vault or editing a host.
     let preflight = || -> Result<Vec<install::Plan>> {
         if !binary.is_file() {
             anyhow::bail!("The installed program could not be found.");
         }
-        if cfg!(target_os = "macos") {
+        if background_ready {
             let existing_id = std::fs::read_to_string(root.join(".wiki-island/config.toml"))
                 .ok()
                 .map(|text| wi_note::VaultConfig::parse(&text))
@@ -186,19 +188,27 @@ fn setup_with_options(
         },
     }
     .save(&root)?;
-    let background_plan = if cfg!(target_os = "macos") {
+    let background_plan = if background_ready {
         Some(service::plan(home, binary, &root, vault.vault_id())?)
     } else {
         None
     };
-    let background = if let Some(plan) = background_plan {
-        if (!plan.is_noop() || !service::status(home, vault.vault_id(), launchctl)?.loaded)
-            && let Err(error) = plan.apply(launchctl)
-        {
-            install::cleanup_created_dirs(&root)?;
-            return Err(error.into());
-        }
+    let background_on = match background_plan {
+        Some(plan) => match start_background(&plan, home, vault.vault_id(), runner) {
+            Ok(()) => true,
+            // The manager went away after preflight: skip like a host without one.
+            Err(_) if manager_lost(runner) => false,
+            Err(error) => {
+                install::cleanup_created_dirs(&root)?;
+                return Err(error);
+            }
+        },
+        None => false,
+    };
+    let background = if background_on {
         "Background care is on."
+    } else if cfg!(target_os = "linux") {
+        "Your notes are ready; background care needs a systemd user session, so run wi watch to keep them up to date."
     } else {
         "Your notes are ready; background care is available on macOS."
     };
@@ -229,14 +239,14 @@ fn setup_with_options(
             root.display(),
             detected.len()
         ),
-        json: json!({"vault":root,"storage":vault.storage_mode(),"primary":vault.is_primary_device(),"hosts":detected,"skills":synced,"background":cfg!(target_os="macos")}),
+        json: json!({"vault":root,"storage":vault.storage_mode(),"primary":vault.is_primary_device(),"hosts":detected,"skills":synced,"background":background_on}),
     })
 }
 pub(crate) fn uninstall(
     root: &Path,
     _home: &Path,
     _codex_home: Option<&Path>,
-    launchctl: &dyn service::Launchctl,
+    runner: &service::Runner,
 ) -> Result<Output> {
     if !root.join(".wiki-island/config.toml").is_file() {
         return Ok(Output {
@@ -259,9 +269,13 @@ pub(crate) fn uninstall(
             json: json!({"removed":false,"notes_kept":true}),
         });
     };
-    if cfg!(target_os = "macos") {
-        service::uninstall(&state.home, vault_id, launchctl)?;
-    }
+    #[cfg(target_os = "linux")]
+    service::uninstall_recorded(&state.home, &root, vault_id, runner)?;
+    #[cfg(target_os = "macos")]
+    service::uninstall(&state.home, vault_id, runner)?;
+    // Other targets have no service to remove.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = runner;
     let mut removed = 0;
     for (host, path) in &state.hosts {
         if let Some(plan) = install::plan_remove_at(*host, path, &root)? {
@@ -277,6 +291,24 @@ pub(crate) fn uninstall(
         human: "wiki-island is disconnected and background care is removed.".into(),
         json: json!({"removed":true,"hosts":removed,"skills":skills,"notes_kept":true}),
     })
+}
+
+/// Applies the service plan unless it already matches and runs.
+fn start_background(
+    plan: &service::ServicePlan,
+    home: &Path,
+    vault_id: &str,
+    runner: &service::Runner,
+) -> Result<()> {
+    if !plan.is_noop() || !super::service_cmd::running(home, vault_id, runner)? {
+        plan.apply(runner)?;
+    }
+    Ok(())
+}
+
+/// True when the target's service manager is no longer reachable.
+fn manager_lost(runner: &service::Runner) -> bool {
+    cfg!(target_os = "linux") && !super::service_cmd::ready(runner)
 }
 
 fn cache_root(home: &Path) -> Result<PathBuf> {
@@ -344,6 +376,21 @@ mod tests {
         calls: Cell<usize>,
         loaded: Cell<bool>,
     }
+    // A Linux host without a user manager: setup and removal skip the service.
+    #[cfg(target_os = "linux")]
+    impl service::Systemctl for FakeLaunchctl {
+        fn run(&self, args: &[&str]) -> std::io::Result<ProcessOutput> {
+            self.calls.set(self.calls.get() + 1);
+            assert!(!self.loaded.get());
+            assert_eq!(args, ["show-environment"], "unexpected service operation");
+            Ok(ProcessOutput {
+                status: ExitStatus::from_raw(1 << 8),
+                stdout: vec![],
+                stderr: vec![],
+            })
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
     impl service::Launchctl for FakeLaunchctl {
         fn run(&self, args: &[&str]) -> std::io::Result<ProcessOutput> {
             self.calls.set(self.calls.get() + 1);

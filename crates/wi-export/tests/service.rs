@@ -2,9 +2,11 @@
 use std::cell::RefCell;
 #[cfg(target_os = "macos")]
 use std::collections::VecDeque;
+#[cfg(not(target_os = "linux"))]
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::process::Output;
+#[cfg(not(target_os = "linux"))]
 use wi_export::install::Error;
 use wi_export::service::plan;
 #[cfg(target_os = "macos")]
@@ -483,9 +485,9 @@ mod macos {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[test]
-fn plan_is_unsupported_off_macos() {
+fn plan_is_unsupported_without_a_service_backend() {
     let err = plan(
         Path::new("/home/u"),
         Path::new("/usr/bin/wi"),
@@ -494,6 +496,29 @@ fn plan_is_unsupported_off_macos() {
     )
     .unwrap_err();
     assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_plan_renders_a_systemd_user_unit_under_the_config_home() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    let plan = plan(&home, &home.join("bin/wi"), &home.join("vault"), "id").unwrap();
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(".config"));
+    assert_eq!(
+        plan.unit_path,
+        config.join("systemd/user/wiki-island-id.service")
+    );
+    assert_eq!(plan.label, "wiki-island-id.service");
+    assert!(plan.contents.contains("WantedBy=default.target"));
+    assert!(plan.contents.contains(&format!(
+        "ExecStart=\"{}\" \"watch\" \"--vault\" \"{}\"",
+        home.join("bin/wi").display(),
+        home.join("vault").display()
+    )));
 }
 
 #[cfg(target_os = "macos")]

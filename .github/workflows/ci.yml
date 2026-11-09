@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, windows-support, 'win/**']
+    branches: [main, windows-support, svc-linux, 'win/**']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -74,3 +74,66 @@ jobs:
         run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
+
+  # A real systemd user manager: wi setup installs and starts the unit, doctor reports it and
+  # uninstall removes it. Lingering starts the runner user's manager without a login session.
+  linux-systemd:
+    needs: plan
+    if: contains(needs.plan.outputs.os, 'ubuntu-latest')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p wiki-island --bin wi
+      - name: Start the user manager
+        shell: bash
+        run: |
+          sudo loginctl enable-linger "$USER"
+          uid=$(id -u)
+          for _ in $(seq 1 30); do
+            test -S "/run/user/$uid/bus" && break
+            sleep 1
+          done
+          test -S "/run/user/$uid/bus"
+          echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
+          # The manager reads units from the runner's own config folder.
+          echo "XDG_CONFIG_HOME=$HOME/.config" >> "$GITHUB_ENV"
+      - name: Probe the user manager
+        shell: bash
+        run: systemctl --user show-environment > /dev/null
+      - name: Setup, doctor and uninstall against the real manager
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/wi-systemd"
+          mkdir -p "$work/home" "$work/bin"
+          # A copy outside target/ is a stable binary path for the unit.
+          install -m 755 target/debug/wi "$work/bin/wi"
+          export HOME="$work/home" WI_VAULT="$work/home/wiki-island" WI_CACHE_DIR="$work/cache"
+          "$work/bin/wi" setup
+          units=("$XDG_CONFIG_HOME"/systemd/user/wiki-island-*.service)
+          test "${#units[@]}" -eq 1 && test -f "${units[0]}"
+          unit=$(basename "${units[0]}")
+          cat "${units[0]}"
+          head -n 1 "${units[0]}" | grep -Ex '# Managed by wiki-island\. Vault [A-Za-z0-9_-]+\.'
+          systemctl --user is-enabled "$unit"
+          sleep 5
+          test "$(systemctl --user is-active "$unit")" = active
+          test "$(systemctl --user show -p NRestarts --value "$unit")" = 0
+          systemctl --user status "$unit" --no-pager || true
+          "$work/bin/wi" doctor | tee "$work/doctor.txt"
+          grep -F "[ok] service: Background care is running." "$work/doctor.txt"
+          "$work/bin/wi" uninstall
+          test ! -e "${units[0]}"
+          state=$(systemctl --user is-active "$unit" || true)
+          echo "after uninstall: $state"
+          test "$state" != active
+          test "$state" != activating
+          if systemctl --user is-enabled "$unit"; then exit 1; fi

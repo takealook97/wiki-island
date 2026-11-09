@@ -816,7 +816,7 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
                     &home,
                     &setup_cmd::executable()?,
                     codex_home.as_deref(),
-                    &wi_export::service::SystemLaunchctl,
+                    wi_export::service::default_runner(),
                     primary,
                 )?;
                 if github {
@@ -830,7 +830,7 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
                     &root,
                     &home,
                     codex_home.as_deref(),
-                    &wi_export::service::SystemLaunchctl,
+                    wi_export::service::default_runner(),
                 )
             }
         }
@@ -977,9 +977,8 @@ fn run_standalone(root: &Option<PathBuf>, json: bool, command: Command) -> Resul
                 {
                     publisher = publish_cmd::start(&vault)?;
                 }
-                if cfg!(target_os = "macos")
-                    && let Some(home) = &log_home
-                    && wi_export::service::rotate_log(home, vault.vault_id()).is_err()
+                if let Some(home) = &log_home
+                    && !service_cmd::rotate_log(home, vault.vault_id())
                     && !rotation_warned
                 {
                     eprintln!(
@@ -1437,32 +1436,7 @@ fn run_in_vault(vault: &Session, command: Command) -> Result<Output> {
                 detail: format!("{tasks} task(s) for your AI"),
                 fix: None,
             });
-            if cfg!(target_os = "macos") {
-                let check = match setup_cmd::home().and_then(|home| {
-                    Ok(wi_export::service::status(
-                        &home,
-                        vault.vault_id(),
-                        &wi_export::service::SystemLaunchctl,
-                    )?)
-                }) {
-                    Ok(status) => wi_store::Check {
-                        name: "service",
-                        status: if status.loaded { "ok" } else { "warn" },
-                        detail: if status.loaded {
-                            "Background care is running."
-                        } else {
-                            "Background care is not running."
-                        }
-                        .into(),
-                        fix: (!status.loaded).then(|| "run wi setup".into()),
-                    },
-                    Err(_) => wi_store::Check {
-                        name: "service",
-                        status: "warn",
-                        detail: "Background care could not be checked.".into(),
-                        fix: Some("run wi setup".into()),
-                    },
-                };
+            if let Some(check) = service_cmd::doctor_check(vault.vault_id()) {
                 report.checks.push(check);
             }
             for check in &mut report.checks {

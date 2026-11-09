@@ -1,8 +1,8 @@
 //! launchd LaunchAgent that keeps `wi watch` running for one vault (macOS only).
-//!
-//! Planning is read-only. Applying mirrors the host installer protections: a symlink or
-//! non-regular plist is rejected, a stale preview fails, a differing file is backed up under a
-//! unique name, and the replacement is atomic.
+use super::{
+    absolute_str, describe, ensure_writable, plan_diff, stable_binary, stderr_text, unique_backup,
+    validate_vault_id,
+};
 use crate::install::Error;
 use serde::Serialize;
 use std::io::Write;
@@ -44,6 +44,7 @@ pub struct ServicePlan {
     pub contents: String,
     pub existing: Option<String>,
     vault: PathBuf,
+    home: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,15 +74,7 @@ fn ensure_supported() -> Result<(), Error> {
 
 fn paths(home: &Path, vault_id: &str) -> Result<Paths, Error> {
     ensure_supported()?;
-    if vault_id.is_empty()
-        || !vault_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(Error::Config(format!(
-            "invalid vault id {vault_id:?}; use only A-Z, a-z, 0-9, '_' and '-'"
-        )));
-    }
+    validate_vault_id(vault_id)?;
     if !home.is_absolute() {
         return Err(Error::Config("home must be an absolute path".into()));
     }
@@ -98,16 +91,7 @@ fn paths(home: &Path, vault_id: &str) -> Result<Paths, Error> {
 }
 
 fn read_file(path: &Path) -> Result<Option<String>, Error> {
-    match std::fs::symlink_metadata(path) {
-        Ok(m) if !m.is_file() || m.file_type().is_symlink() => Err(Error::Config(
-            "service plist must be a regular file, not a symlink".into(),
-        )),
-        Ok(_) => String::from_utf8(std::fs::read(path)?)
-            .map(Some)
-            .map_err(|e| Error::Config(e.to_string())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    super::read_file(path, "service plist")
 }
 
 fn xml_escape(text: &str) -> String {
@@ -123,21 +107,6 @@ fn xml_escape(text: &str) -> String {
         }
     }
     out
-}
-
-fn absolute_str<'a>(path: &'a Path, what: &str) -> Result<&'a str, Error> {
-    if !path.is_absolute() {
-        return Err(Error::Config(format!("{what} must be an absolute path")));
-    }
-    let text = path
-        .to_str()
-        .ok_or_else(|| Error::Config(format!("{what} must be valid UTF-8")))?;
-    if text.chars().any(char::is_control) {
-        return Err(Error::Config(format!(
-            "{what} must not contain control characters"
-        )));
-    }
-    Ok(text)
 }
 
 fn render(label: &str, binary: &str, vault: &str, log: &str, home: &str) -> String {
@@ -185,17 +154,6 @@ fn render(label: &str, binary: &str, vault: &str, log: &str, home: &str) -> Stri
     )
 }
 
-// Cargo can place artifacts in a custom cache or under a target triple. Directory
-// names alone do not distinguish an installed binary from a development build.
-fn is_dev_binary(path: &Path) -> bool {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    canonical.ancestors().skip(1).take(4).any(|dir| {
-        dir.join(".rustc_info.json").is_file()
-            || std::fs::read_to_string(dir.join("CACHEDIR.TAG"))
-                .is_ok_and(|tag| tag.to_ascii_lowercase().contains("cargo"))
-    })
-}
-
 pub fn plan(
     home: &Path,
     wi_binary: &Path,
@@ -215,30 +173,15 @@ pub fn plan_with_options(
 ) -> Result<ServicePlan, Error> {
     let p = paths(home, vault_id)?;
     crate::install::preflight_local(vault_root)?;
-    let binary = absolute_str(wi_binary, "wi binary")?;
-    if !allow_dev_binary && is_dev_binary(wi_binary) {
-        return Err(Error::Config("service needs a stable binary path; run `cargo install --path crates/wi-cli` or explicitly pass --allow-dev-binary".into()));
-    }
+    let binary = stable_binary(wi_binary, allow_dev_binary)?;
     let vault = absolute_str(vault_root, "vault root")?;
     let log = absolute_str(&p.log_path, "log path")?;
     let existing = read_file(&p.plist_path)?;
-    for directory in [p.plist_path.parent(), p.log_path.parent()]
-        .into_iter()
-        .flatten()
-    {
-        for ancestor in directory.ancestors() {
-            match std::fs::metadata(ancestor) {
-                Ok(meta) if !meta.is_dir() || meta.permissions().readonly() => {
-                    return Err(Error::Config(
-                        "background care folder is not writable".into(),
-                    ));
-                }
-                Ok(_) => break,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-    }
+    ensure_writable(
+        [p.plist_path.parent(), p.log_path.parent()]
+            .into_iter()
+            .flatten(),
+    )?;
     let contents = render(&p.label, binary, vault, log, absolute_str(home, "home")?);
     Ok(ServicePlan {
         label: p.label,
@@ -247,6 +190,7 @@ pub fn plan_with_options(
         contents,
         existing,
         vault: vault_root.to_path_buf(),
+        home: home.to_path_buf(),
     })
 }
 
@@ -261,18 +205,6 @@ fn user_id(_home: &Path) -> Result<u32, Error> {
     Err(Error::Unsupported(
         "wi service requires macOS launchd; run wi watch to keep this vault up to date".into(),
     ))
-}
-
-fn stderr_text(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).trim().to_owned()
-}
-
-fn describe(out: &Output) -> String {
-    let code = out
-        .status
-        .code()
-        .map_or_else(|| "signal".to_owned(), |c| c.to_string());
-    format!("exit {code}: {}", stderr_text(out))
 }
 
 fn is_not_loaded(out: &Output) -> bool {
@@ -301,70 +233,6 @@ fn bootout(launchctl: &dyn Launchctl, uid: u32, label: &str) -> Result<bool, Err
             describe(&out)
         )))
     }
-}
-
-fn unique_backup(vault: &Path, path: &Path, bytes: &[u8]) -> Result<PathBuf, Error> {
-    let backup_dir = crate::install::local_dir(vault)?;
-    let hash = wi_lifecycle::sha256(path.as_os_str().as_encoded_bytes());
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    for attempt in 0u32..100 {
-        let name = if attempt == 0 {
-            format!("wi-backup-{stamp}")
-        } else {
-            format!("wi-backup-{stamp}-{attempt}")
-        };
-        let candidate = backup_dir.join(format!("{}-{name}", &hash[7..15]));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&candidate) {
-            Ok(mut file) => {
-                file.write_all(bytes)?;
-                wi_history::durable::barrier(&file, wi_history::durable::Durability::Standard)?;
-                return Ok(candidate);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Err(Error::Config(
-        "could not allocate a unique backup name".into(),
-    ))
-}
-
-fn plan_diff(path: &Path, old_text: &str, new_text: &str) -> String {
-    let old: Vec<_> = old_text.lines().collect();
-    let new: Vec<_> = new_text.lines().collect();
-    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
-    let suffix = old[prefix..]
-        .iter()
-        .rev()
-        .zip(new[prefix..].iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-    let mut diff = format!(
-        "--- {}\n+++ {} (proposed)\n@@ -{},{} +{},{} @@\n",
-        path.display(),
-        path.display(),
-        prefix + 1,
-        old.len() - prefix - suffix,
-        prefix + 1,
-        new.len() - prefix - suffix
-    );
-    for line in &old[prefix..old.len() - suffix] {
-        diff.push_str(&format!("-{line}\n"));
-    }
-    for line in &new[prefix..new.len() - suffix] {
-        diff.push_str(&format!("+{line}\n"));
-    }
-    diff
 }
 
 impl ServicePlan {
@@ -396,10 +264,6 @@ impl ServicePlan {
             .log_path
             .parent()
             .ok_or_else(|| Error::Config("log path has no parent".into()))?;
-        let home = parent
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| Error::Config("plist path is not under a home directory".into()))?;
         let durability = wi_history::durable::Durability::Standard;
         crate::install::record_created_dirs(
             &self.vault,
@@ -426,7 +290,7 @@ impl ServicePlan {
                 .map_err(|e| Error::Io(e.error))?;
             wi_history::durable::barrier_dir(parent, durability)?;
         }
-        let uid = user_id(home)?;
+        let uid = user_id(&self.home)?;
         if let Err(error) = bootout(launchctl, uid, &self.label) {
             self.restore()?;
             return Err(error);
