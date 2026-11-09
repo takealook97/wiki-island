@@ -767,3 +767,108 @@ fn restart_failure_at_a_new_path_restarts_the_recorded_unit() {
     assert!(unit_file(&e).exists() && !other_unit(&e).exists());
     assert_eq!(recorded_units(&e.vault, UNIT).unwrap(), [unit_file(&e)]);
 }
+
+fn bad_records(e: &Env) -> usize {
+    let dir = record_path(&e.vault).parent().unwrap().to_path_buf();
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            name.to_string_lossy().starts_with("systemd-unit-path.bad-")
+        })
+        .count()
+}
+
+#[test]
+fn malformed_record_is_set_aside_and_the_install_is_recorded() {
+    let e = env();
+    let fake = Fake::default();
+    crate::install::local_dir(&e.vault).unwrap();
+    std::fs::write(record_path(&e.vault), [0xff]).unwrap();
+    do_plan(&e).apply(&fake).unwrap();
+    assert!(unit_file(&e).exists() && fake.enabled.get() && fake.active.get());
+    assert_eq!(recorded_units(&e.vault, UNIT).unwrap(), [unit_file(&e)]);
+    assert_eq!(bad_records(&e), 1);
+}
+
+#[test]
+fn malformed_record_with_a_failed_apply_leaves_no_unrecorded_unit() {
+    let e = env();
+    let fake = Fake::failing(&["restart"]);
+    crate::install::local_dir(&e.vault).unwrap();
+    std::fs::write(record_path(&e.vault), [0xff]).unwrap();
+    assert!(do_plan(&e).apply(&fake).is_err());
+    let recorded = recorded_units(&e.vault, UNIT).unwrap();
+    assert!(!unit_file(&e).exists() || recorded.contains(&unit_file(&e)));
+    assert!(!fake.enabled.get() && !fake.active.get());
+}
+
+/// Fake manager whose `restart` waits briefly for the other apply to reach the same point, so
+/// unserialized applies interleave their record updates.
+struct Rendezvous(std::sync::Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>);
+
+impl Systemctl for Rendezvous {
+    fn run(&self, args: &[&str]) -> std::io::Result<Output> {
+        match args[0] {
+            "is-enabled" => Ok(answer(1, "disabled\n", "")),
+            "is-active" => Ok(answer(3, "inactive\n", "")),
+            "restart" | "start" => {
+                let (count, ready) = &*self.0;
+                let mut arrived = count.lock().unwrap();
+                *arrived += 1;
+                ready.notify_all();
+                let wait = std::time::Duration::from_millis(100);
+                drop(ready.wait_timeout_while(arrived, wait, |n| *n < 2).unwrap());
+                Ok(output(0, ""))
+            }
+            _ => Ok(output(0, "")),
+        }
+    }
+}
+
+#[test]
+fn concurrent_applies_at_two_config_homes_leave_no_unrecorded_unit() {
+    for iteration in 0..20 {
+        let e = env();
+        let a = do_plan(&e);
+        let b = plan_other(&e);
+        crate::install::record_created_dirs(&e.vault, &[]).unwrap();
+        let shared = std::sync::Arc::new(Default::default());
+        let one = Rendezvous(std::sync::Arc::clone(&shared));
+        let ta = std::thread::spawn(move || a.apply(&one));
+        let tb = std::thread::spawn(move || b.apply(&Rendezvous(shared)));
+        let (ra, rb) = (ta.join().unwrap(), tb.join().unwrap());
+        assert!(ra.is_ok() && rb.is_ok(), "apply errors: {ra:?} {rb:?}");
+        let recorded = recorded_units(&e.vault, UNIT).unwrap();
+        for path in [unit_file(&e), other_unit(&e)] {
+            assert!(
+                !path.exists() || recorded.contains(&path),
+                "iteration {iteration}: unrecorded unit {path:?}, record {recorded:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn uninstall_repairs_a_malformed_record_and_removes_the_lock_file() {
+    let e = env();
+    let fake = Fake::default();
+    do_plan(&e).apply(&fake).unwrap();
+    let lock = lock_path(&e.vault, UNIT);
+    assert!(lock.exists());
+    std::fs::write(record_path(&e.vault), [0xff]).unwrap();
+    assert!(uninstall_recorded_at(&e.config, &e.vault, ID, &fake).unwrap());
+    assert!(!unit_file(&e).exists() && !fake.enabled.get() && !fake.active.get());
+    assert!(!record_path(&e.vault).exists() && !lock.exists());
+    assert_eq!(bad_records(&e), 1);
+}
+
+#[test]
+fn refused_apply_does_not_record_a_foreign_unit() {
+    let e = env();
+    let fake = Fake::default();
+    let plan = do_plan(&e);
+    write_foreign(&e);
+    assert!(plan.apply(&fake).is_err());
+    assert!(!record_path(&e.vault).exists());
+}
