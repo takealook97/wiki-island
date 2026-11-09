@@ -1,0 +1,26 @@
+name: install
+
+on:
+  push:
+    paths: ['scripts/**', '.github/workflows/install.yml']
+  pull_request:
+    paths: ['scripts/**', '.github/workflows/install.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  install-script:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        if: matrix.os == 'ubuntu-latest'
+        run: shellcheck scripts/install.sh scripts/tests/*.sh
+      - name: Test
+        run: sh scripts/tests/install_test.sh
