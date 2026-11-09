@@ -207,6 +207,12 @@ fn install_output(plan: &service::ServicePlan, yes: bool) -> Output {
 
 #[cfg(windows)]
 fn status_text(status: &service::ServiceStatus) -> String {
+    if status.foreign {
+        return format!(
+            "{}: a different task with this name exists\ntask: {}",
+            status.label, status.task_name
+        );
+    }
     format!(
         "{}: {}, {}\ntask: {}",
         status.label,
@@ -216,14 +222,36 @@ fn status_text(status: &service::ServiceStatus) -> String {
     )
 }
 
-/// Whether the service is set up and its watcher is running right now.
-pub(crate) fn running(home: &Path, vault_id: &str, runner: &service::Runner) -> Result<bool> {
+/// The state of this vault's background care.
+#[derive(PartialEq)]
+enum Care {
+    Running,
+    Stopped,
+    /// A task of the same name exists that wiki-island did not register (Windows).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Foreign,
+}
+
+fn care(home: &Path, vault_id: &str, runner: &service::Runner) -> Result<Care> {
     let status = service::status(home, vault_id, runner)?;
+    #[cfg(windows)]
+    if status.foreign {
+        return Ok(Care::Foreign);
+    }
     #[cfg(any(target_os = "linux", windows))]
     let running = status.configured() && status.running;
     #[cfg(not(any(target_os = "linux", windows)))]
     let running = status.loaded;
-    Ok(running)
+    Ok(if running {
+        Care::Running
+    } else {
+        Care::Stopped
+    })
+}
+
+/// Whether the service is set up and its watcher is running right now.
+pub(crate) fn running(home: &Path, vault_id: &str, runner: &service::Runner) -> Result<bool> {
+    Ok(care(home, vault_id, runner)? == Care::Running)
 }
 
 /// Whether this target has a service backend that can be used now.
@@ -259,8 +287,16 @@ pub(crate) fn doctor_check(vault_id: &str) -> Option<wi_store::Check> {
         });
     }
     Some(
-        match super::setup_cmd::home().and_then(|home| running(&home, vault_id, runner)) {
-            Ok(running) => wi_store::Check {
+        match super::setup_cmd::home().and_then(|home| care(&home, vault_id, runner)) {
+            Ok(Care::Foreign) => wi_store::Check {
+                name: "service",
+                status: "warn",
+                detail: "A different scheduled task with this vault's name exists, so background care is not running.".into(),
+                fix: Some("rename or remove that task in Task Scheduler, then run wi setup".into()),
+            },
+            Ok(care) => {
+                let running = care == Care::Running;
+                wi_store::Check {
                 name: "service",
                 status: if running { "ok" } else { "warn" },
                 detail: if running {
@@ -270,7 +306,8 @@ pub(crate) fn doctor_check(vault_id: &str) -> Option<wi_store::Check> {
                 }
                 .into(),
                 fix: (!running).then(|| "run wi setup".into()),
-            },
+            }
+            }
             Err(_) => wi_store::Check {
                 name: "service",
                 status: "warn",

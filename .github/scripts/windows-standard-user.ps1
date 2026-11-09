@@ -29,6 +29,11 @@ function TaskStatus([string]$name) {
     if ($LASTEXITCODE -ne 0 -or -not $row) { return "absent" }
     return ($row | ConvertFrom-Csv -Header (1..40)).4
 }
+# Processes still running the raw task's action, identified by its unique arguments.
+function RawProcesses {
+    return @(Get-CimInstance Win32_Process -Filter "Name = 'PING.EXE'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*-n 600 127.0.0.1*" })
+}
 
 Write-Host "== identity"
 whoami
@@ -70,7 +75,7 @@ $xml = @"
     <Hidden>true</Hidden>
     <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
   </Settings>
-  <Actions Context="Author"><Exec><Command>cmd.exe</Command><Arguments>/c ping -n 600 127.0.0.1</Arguments></Exec></Actions>
+  <Actions Context="Author"><Exec><Command>ping.exe</Command><Arguments>-n 600 127.0.0.1</Arguments></Exec></Actions>
 </Task>
 "@
 $file = Join-Path $Work "raw-task.xml"
@@ -80,10 +85,20 @@ if ((Run schtasks.exe @("/Run", "/TN", $name)).Code -ne 0) { Fail "raw /Run" }
 Start-Sleep -Seconds 3
 $state = TaskStatus $name
 Write-Host "raw status: $state"
+if ($state -eq "absent") { Fail "raw task status could not be read" }
 if ($ExpectRunning -and $state -ne "Running") { Fail "raw task is not running" }
-[void](Run schtasks.exe @("/End", "/TN", $name))
+if ($ExpectRunning -and (RawProcesses).Count -lt 1) { Fail "raw task action is not running" }
+# Deleting a task does not stop its running instance, so /End must succeed first.
+if ((Run schtasks.exe @("/End", "/TN", $name)).Code -ne 0) { Fail "raw /End" }
 if ((Run schtasks.exe @("/Delete", "/TN", $name, "/F")).Code -ne 0) { Fail "raw /Delete" }
+Start-Sleep -Seconds 2
 if ((TaskStatus $name) -ne "absent") { Fail "raw task still exists" }
+$raw = RawProcesses
+Write-Host "raw action processes after delete: $($raw.Count)"
+if ($raw.Count -ne 0) {
+    Fail "raw task action still running after /End and /Delete"
+    $raw | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
 
 if ($Wi) {
     Write-Host "== wi setup roundtrip"
@@ -99,7 +114,9 @@ if ($Wi) {
     Write-Host ($tasks | Format-Table | Out-String).TrimEnd()
     if (@($tasks).Count -ne 1) { Fail "expected one wiki-island task"; $task = "wiki-island-none" }
     else { $task = @($tasks)[0].Name.TrimStart("\") }
-    [void](Run schtasks.exe @("/Query", "/TN", $task, "/XML"))
+    $export = Run schtasks.exe @("/Query", "/TN", $task, "/XML")
+    if ($export.Code -ne 0) { Fail "wi task definition could not be read" }
+    elseif ($export.Text -notmatch "<Source>wiki-island</Source>") { Fail "wi task lacks the ownership marker" }
     Start-Sleep -Seconds 5
     $state = TaskStatus $task
     Write-Host "task status: $state"

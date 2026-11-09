@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 /// A stand-in for `schtasks.exe` that keeps one task in a state folder: `task.xml` holds the
-/// registered definition, `running` marks a started task, `unavailable` makes every call fail.
+/// registered definition, `name` its task name, `running` marks a started task, `list-fails`
+/// makes the list of all tasks fail and `unavailable` makes every call fail.
 const FAKE_SCHTASKS: &str = r#"@echo off
 setlocal
 set "state=%WI_FAKE_SCHTASKS_DIR%"
@@ -17,7 +18,7 @@ if /I "%~1"=="/End" goto end
 if /I "%~1"=="/Delete" goto delete
 exit /b 1
 :query
-if /I "%~2"=="/FO" exit /b 0
+if /I "%~2"=="/FO" goto list
 if not exist "%state%\task.xml" exit /b 1
 if /I "%~4"=="/XML" goto export
 if exist "%state%\running" (echo "PC","\%~3","N/A","Running","Interactive only") else (echo "PC","\%~3","N/A","Ready","Interactive only")
@@ -25,8 +26,15 @@ exit /b 0
 :export
 type "%state%\task.xml"
 exit /b 0
+:list
+if exist "%state%\list-fails" exit /b 1
+if not exist "%state%\task.xml" exit /b 0
+set /p name=<"%state%\name"
+echo "\%name%","N/A","Ready"
+exit /b 0
 :create
 copy /y "%~3" "%state%\task.xml" >nul
+>"%state%\name" echo %~5
 exit /b 0
 :run
 if not exist "%state%\task.xml" exit /b 1
@@ -335,7 +343,67 @@ fn without_task_scheduler_setup_skips_the_service_and_doctor_says_what_to_do() {
         text(&install.stderr).contains("run wi watch"),
         "{install:?}"
     );
+    // A scheduler that does not answer could still hold a task, so uninstall changes nothing
+    // and says to try again instead of reporting that nothing was there.
+    let removed = fixture.run(&["uninstall"]);
+    assert!(!removed.status.success(), "{removed:?}");
+    assert!(
+        text(&removed.stderr).contains("Task Scheduler did not report the background task"),
+        "{removed:?}"
+    );
+    assert!(
+        fixture
+            .home
+            .join("wiki-island/.wiki-island/config.toml")
+            .is_file()
+    );
+    std::fs::remove_file(fixture.state.join("unavailable")).unwrap();
     let removed = fixture.run(&["uninstall"]);
     assert!(removed.status.success(), "{removed:?}");
     assert!(fixture.task().is_none());
+}
+
+#[test]
+fn foreign_task_with_the_vault_name_is_reported_and_never_removed() {
+    let fixture = Fixture::new();
+    assert!(fixture.run(&["setup"]).status.success());
+    let foreign =
+        "<Task><RegistrationInfo><Description>Backup job</Description></RegistrationInfo></Task>";
+    std::fs::write(fixture.state.join("task.xml"), foreign).unwrap();
+    let doctor = fixture.run(&["doctor"]);
+    assert!(
+        text(&doctor.stdout)
+            .contains("[warn] service: A different scheduled task with this vault's name exists"),
+        "{doctor:?}"
+    );
+    let status = fixture.run(&["service", "status", "--json"]);
+    assert!(status.status.success(), "{status:?}");
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["foreign"], true, "{status}");
+    assert_eq!(status["installed"], false, "{status}");
+    let removed = fixture.run(&["service", "uninstall"]);
+    assert!(!removed.status.success(), "{removed:?}");
+    assert!(
+        text(&removed.stderr).contains("not created by wiki-island"),
+        "{removed:?}"
+    );
+    let install = fixture.run(&["service", "install", "--yes"]);
+    assert!(!install.status.success(), "{install:?}");
+    assert_eq!(fixture.task().as_deref(), Some(foreign.as_bytes()));
+}
+
+#[test]
+fn failed_task_list_is_never_read_as_nothing_to_remove() {
+    let fixture = Fixture::new();
+    assert!(fixture.run(&["setup"]).status.success());
+    let task = fixture.task().unwrap();
+    std::fs::write(fixture.state.join("list-fails"), "").unwrap();
+    let removed = fixture.run(&["service", "uninstall", "--json"]);
+    assert!(!removed.status.success(), "{removed:?}");
+    assert!(
+        text(&removed.stderr).contains("Task Scheduler did not report the background task"),
+        "{removed:?}"
+    );
+    assert_eq!(fixture.task(), Some(task));
+    assert!(fixture.running());
 }
