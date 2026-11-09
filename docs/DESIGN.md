@@ -82,7 +82,7 @@ Unix and Windows (x86_64, NTFS) are supported. Other targets fail with `unsuppor
 
 ### Windows
 
-Windows has no `openat`, so `wi-store` has a second containment backend on top of `wi_sys::fs::Dir`, a directory handle that opens, creates, renames and deletes one component at a time relative to itself, refusing reparse points. The write path, recovery and ingress use the same API on both platforms. Windows adds name rules (reserved device names, `:`, trailing dot or space, 8.3 aliases), `\` input handling, a placement that re-hashes then replaces instead of exchanging, file barriers by `FlushFileBuffers` and no directory barrier, child processes in kill-on-close Job Objects, per-user data in `%LOCALAPPDATA%` and the Notion token in Credential Manager. There is no background service. The mechanisms and every behavior weaker than on Unix are in [OPERATIONS](OPERATIONS.md#windows).
+Windows has no `openat`, so `wi-store` has a second containment backend on top of `wi_sys::fs::Dir`, a directory handle that opens, creates, renames and deletes one component at a time relative to itself, refusing reparse points. The write path, recovery and ingress use the same API on both platforms. Windows adds name rules (reserved device names, `:`, trailing dot or space, 8.3 aliases), `\` input handling, a placement that re-hashes then replaces instead of exchanging, file barriers by `FlushFileBuffers` and no directory barrier, child processes in kill-on-close Job Objects, per-user data in `%LOCALAPPDATA%` and the Notion token in Credential Manager. The background service is a per-user Task Scheduler logon task. The mechanisms and every behavior weaker than on Unix are in [OPERATIONS](OPERATIONS.md#windows).
 
 ## Crate map
 

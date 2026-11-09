@@ -8,35 +8,28 @@ It never calls a model, and saving, searching and reading never use the network.
 
 ## Install
 
-### macOS
+### macOS and Linux
 
-Open the Terminal app and paste these two lines:
+Open a terminal and paste this line:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/takealook97/wiki-island/main/scripts/install.sh | sh
+```
+
+It needs no git checkout. The installer downloads the latest release for your computer, checks its SHA-256 checksum and installs `wi` and `wiki-island`; a checksum mismatch stops the install and changes nothing. If no usable release exists, it clones the source into a temporary folder and builds it instead: it installs the Rust build tool if needed (this takes a few minutes the first time) and needs git and a C compiler (Apple's command line tools on macOS, for example `build-essential` on Linux; if one is missing the installer says which and what to run). The programs are placed in the `.cargo/bin` folder inside your home folder (`~/.cargo/bin`), and the installer adds that folder to your shell startup file once so new terminals find `wi`. Then it runs `wi setup`. It needs no administrator password and is safe to run again. Details, environment variables and the release layout: [operations](docs/OPERATIONS.md#install-and-release).
+
+If you prefer to read the source first, clone the repository and run the same installer from it:
 
 ```sh
 git clone https://github.com/takealook97/wiki-island.git
 sh wiki-island/scripts/install.sh
 ```
 
-The installer checks for Apple's command line tools (if missing it prints the one command to run and stops), installs the Rust build tool if needed, builds wiki-island (a few minutes the first time), adds `~/.cargo/bin` to your login profile once so new Terminal windows find `wi`, and runs `wi setup`. It needs no administrator password and is safe to run again.
+`wi setup` asks nothing. It creates your notes folder (`~/wiki-island`), starts a small background service, connects every AI app it finds on this computer, runs the first maintenance pass and prints a three-line summary. It checks everything first and changes nothing if a step cannot work, then tells you why in one sentence.
 
-`wi setup` asks nothing. It creates your notes folder (`~/wiki-island`), starts a small background service (a launchd LaunchAgent), connects every AI app it finds on this computer, and prints a three-line summary. It checks everything first and changes nothing if a step cannot work, then tells you why in one sentence.
+The background service keeps editor changes ingested, committed and indexed. On macOS it is a launchd LaunchAgent. On Linux it is a systemd user service; it runs while your user session is active, and keeps running after you log out only if lingering is already enabled for your account. Without a systemd user session (a container, WSL without systemd) setup still finishes, skips the service and says to run `wi watch`. Saving and searching through your AI never depend on the service. The service units are described in [operations](docs/OPERATIONS.md#service).
 
-Requirements: macOS on Apple silicon is the tested platform. The background service and Notion token storage (macOS keychain) are available here.
-
-### Linux
-
-There is no install script. Build from source with [rustup](https://rustup.rs) (the repository pins the Rust version), then run setup:
-
-```sh
-git clone https://github.com/takealook97/wiki-island.git
-cd wiki-island
-cargo install --path crates/wi-cli --locked
-wi setup
-```
-
-`wi setup` creates the notes folder, connects the AI apps it finds and runs the first maintenance pass. It does not start a background service off macOS. To keep editor changes ingested, committed and indexed, run `wi watch` yourself under your own supervisor (systemd user unit, tmux, and so on). Saving and searching through your AI never depend on it.
-
-Requirements: only a Linux arm64 container has passed the test suite; bare-metal Linux is untested. Off macOS there is no background service and no Notion token storage, so `wi publish notion setup` is unavailable. Git remote sync (`wi sync`) uses the `git` program on your path.
+Requirements: macOS on Apple silicon is the tested platform. The prebuilt Linux programs need glibc 2.34 or newer (measured on the Ubuntu 22.04 build machines); older systems build from source. Linux is tested on GitHub Actions (Ubuntu) and in an arm64 container; bare-metal Linux is untested. Notion token storage uses the macOS keychain, so `wi publish notion setup` is unavailable on Linux. Git remote sync (`wi sync`) uses the `git` program on your path.
 
 ### Windows
 
@@ -49,7 +42,7 @@ cargo install --path crates/wi-cli --locked
 wi setup
 ```
 
-`wi setup` creates your notes folder (`%USERPROFILE%\wiki-island`), connects the AI apps it finds and runs the first maintenance pass. The per-device data (history for synced folders, index state, backups) is in `%LOCALAPPDATA%\wiki-island`. There is no background service on Windows. To keep editor changes ingested, committed and indexed, run `wi watch` yourself, for example from Task Scheduler at logon. Saving and searching through your AI never depend on it.
+`wi setup` creates your notes folder (`%USERPROFILE%\wiki-island`), connects the AI apps it finds and runs the first maintenance pass. The per-device data (history for synced folders, index state, backups) is in `%LOCALAPPDATA%\wiki-island`. It also registers a Task Scheduler task for the current user that runs `wi watch` at each logon and starts it now, so editor changes are ingested, committed and indexed while you are logged on. This needs no administrator rights. If Task Scheduler is turned off, setup still finishes, skips the service and says to run `wi watch`. Saving and searching through your AI never depend on it. Details: [operations](docs/OPERATIONS.md#windows-task-scheduler).
 
 The Notion token is kept in Windows Credential Manager. Git remote sync (`wi sync`) uses the `git` program on your path.
 
