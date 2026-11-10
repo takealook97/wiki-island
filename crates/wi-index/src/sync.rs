@@ -10,6 +10,7 @@ use std::{
 use wi_note::Note;
 
 mod literal;
+mod sliced;
 mod storage;
 mod walk;
 
@@ -306,6 +307,7 @@ impl Index {
         tx.execute("INSERT INTO index_meta(key,value) VALUES('skipped',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(&report.skipped)?])?;
         tx.execute("INSERT INTO index_meta(key,value) VALUES('diagnostics',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(&report.diagnostics)?])?;
         tx.execute("INSERT INTO index_meta(key,value) VALUES('index_as_of',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&as_of])?;
+        sliced::clear_progress(&tx)?;
         tx.commit()?;
         report.elapsed_ms = start.elapsed().as_millis();
         Ok(report)
