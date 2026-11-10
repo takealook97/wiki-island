@@ -171,3 +171,249 @@ fn a_full_sync_ends_an_unfinished_rebuild() {
     // The next slice starts a new rebuild rather than resuming the old one.
     assert!(index.rebuild_slice(100, &|| false).unwrap().is_some());
 }
+
+/// Two notes linking to each other: `a.md` → B and `b.md` → A.
+fn seed_pair(root: &Path) {
+    write(root, "a.md", "---\ntitle: A\n---\n[[B]]\n");
+    write(root, "b.md", "---\ntitle: B\n---\n[[A]]\n");
+}
+
+/// Relations whose target is not resolved.
+fn unresolved(cache: &TempDir) -> i64 {
+    rusqlite::Connection::open(cache.path().join("index.sqlite3"))
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM relations WHERE to_path IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_sync_that_ends_an_unfinished_rebuild_resolves_its_links() {
+    let vault = TempDir::new().unwrap();
+    seed_pair(vault.path());
+    let cache = TempDir::new().unwrap();
+    let mut index = open(vault.path(), &cache);
+    // Every file is rebuilt, but the slice stopped before the last step.
+    assert!(index.rebuild_slice(128, &|| true).unwrap().is_none());
+    assert_eq!(unresolved(&cache), 2, "chunks defer link resolution");
+    let report = index.sync(vault.path()).unwrap();
+    assert_eq!((report.parsed, report.removed), (0, 0));
+    assert!(index.index_as_of().unwrap().is_some());
+    assert_eq!(index.rebuild_progress().unwrap(), None);
+    assert_eq!(
+        unresolved(&cache),
+        0,
+        "the sync did the deferred resolution"
+    );
+    assert_eq!(index.context("a", 1).unwrap().hits.len(), 2);
+}
+
+#[test]
+fn a_chunk_stops_when_another_walk_completed_the_index() {
+    let vault = TempDir::new().unwrap();
+    seed_pair(vault.path());
+    let cache = TempDir::new().unwrap();
+    let mut slicer = open(vault.path(), &cache);
+    let other = std::cell::RefCell::new(open(vault.path(), &cache));
+    let calls = std::cell::Cell::new(0);
+    // After the first one-file chunk, another connection rebuilds the
+    // whole index before the slicer's next chunk.
+    let done = slicer
+        .rebuild_slice(1, &|| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                other.borrow_mut().rebuild().unwrap();
+                false
+            } else {
+                true
+            }
+        })
+        .unwrap();
+    assert!(done.is_none());
+    assert!(slicer.index_as_of().unwrap().is_some());
+    assert_eq!(
+        slicer.rebuild_progress().unwrap(),
+        None,
+        "no cursor came back"
+    );
+    assert_eq!(unresolved(&cache), 0, "the completed index is intact");
+    assert_eq!(slicer.context("a", 1).unwrap().hits.len(), 2);
+}
+
+#[test]
+fn a_chunk_stops_when_another_slicer_restarted_the_rebuild() {
+    let vault = TempDir::new().unwrap();
+    seed_pair(vault.path());
+    write(vault.path(), "c.md", "C");
+    let cache = TempDir::new().unwrap();
+    let mut first = open(vault.path(), &cache);
+    let second = std::cell::RefCell::new(open(vault.path(), &cache));
+    let calls = std::cell::Cell::new(0);
+    let done = first
+        .rebuild_slice(1, &|| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                second.borrow_mut().begin_rebuild().unwrap();
+            }
+            false
+        })
+        .unwrap();
+    assert!(done.is_none(), "the old rebuild stopped");
+    assert_eq!(calls.get(), 1, "without writing another chunk");
+    assert_eq!(first.rebuild_progress().unwrap().as_deref(), Some(""));
+    assert!(
+        second
+            .borrow_mut()
+            .rebuild_slice(128, &|| false)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(unresolved(&cache), 0);
+}
+
+#[test]
+fn the_last_step_reparses_new_files_within_the_budget() {
+    let vault = TempDir::new().unwrap();
+    write(vault.path(), "z.md", "last note");
+    let cache = TempDir::new().unwrap();
+    let mut index = open(vault.path(), &cache);
+    assert!(index.rebuild_slice(128, &|| true).unwrap().is_none());
+    // Files added before the cursor are left to the last step.
+    for i in 0..400 {
+        write(vault.path(), &format!("a{i:04}.md"), "new note");
+    }
+    let calls = std::cell::Cell::new(0);
+    let over = || {
+        calls.set(calls.get() + 1);
+        true
+    };
+    assert!(index.rebuild_slice(128, &over).unwrap().is_none());
+    assert_eq!(calls.get(), 1, "one chunk, then the budget check");
+    let mut slices = 1;
+    while index.rebuild_slice(128, &over).unwrap().is_none() {
+        slices += 1;
+        assert_eq!(index.index_as_of().unwrap(), None);
+        assert!(slices < 10, "the last step never finished");
+    }
+    assert!(slices >= 4, "400 files in chunks of 128: {slices}");
+    let fresh = TempDir::new().unwrap();
+    open(vault.path(), &fresh).rebuild().unwrap();
+    assert_eq!(dump(&cache), dump(&fresh));
+}
+
+#[test]
+fn a_failed_chunk_rolls_back_its_rows_and_progress() {
+    let vault = TempDir::new().unwrap();
+    seed_pair(vault.path());
+    let cache = TempDir::new().unwrap();
+    let mut index = open(vault.path(), &cache);
+    index.begin_rebuild().unwrap();
+    let db = rusqlite::Connection::open(cache.path().join("index.sqlite3")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail_b BEFORE INSERT ON files WHEN NEW.path='b.md' \
+         BEGIN SELECT RAISE(ABORT,'injected interruption'); END;",
+    )
+    .unwrap();
+    assert!(index.rebuild_slice(128, &|| true).is_err());
+    assert_eq!(index.rebuild_progress().unwrap().as_deref(), Some(""));
+    assert_eq!(index.index_as_of().unwrap(), None);
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+    db.execute_batch("DROP TRIGGER fail_b").unwrap();
+    drop(index);
+    let mut index = open(vault.path(), &cache);
+    assert!(index.rebuild_slice(128, &|| false).unwrap().is_some());
+    assert_eq!(unresolved(&cache), 0);
+}
+
+#[test]
+fn a_schema_change_between_slices_rebuilds_everything() {
+    let vault = TempDir::new().unwrap();
+    seed_pair(vault.path());
+    let cache = TempDir::new().unwrap();
+    let mut index = open(vault.path(), &cache);
+    assert!(index.rebuild_slice(1, &|| true).unwrap().is_none());
+    drop(index);
+    let db = rusqlite::Connection::open(cache.path().join("index.sqlite3")).unwrap();
+    db.pragma_update(None, "user_version", 0).unwrap();
+    drop(db);
+    let mut index = open(vault.path(), &cache);
+    assert_eq!(index.rebuild_progress().unwrap(), None);
+    assert_eq!(index.index_as_of().unwrap(), None);
+    assert!(index.rebuild_slice(128, &|| false).unwrap().is_some());
+    assert_eq!(unresolved(&cache), 0);
+    assert_eq!(index.search(&Query::text("B")).unwrap().hits.len(), 2);
+}
+
+#[test]
+fn watcher_changes_on_both_sides_of_the_cursor_survive() {
+    let vault = TempDir::new().unwrap();
+    seed_pair(vault.path());
+    write(vault.path(), "c.md", "C");
+    write(vault.path(), "d.md", "D");
+    let cache = TempDir::new().unwrap();
+    let mut index = open(vault.path(), &cache);
+    assert!(index.rebuild_slice(2, &|| true).unwrap().is_none());
+    let mut watcher = open(vault.path(), &cache);
+    let root = vault.path();
+    fs::rename(root.join("a.md"), root.join("aa.md")).unwrap();
+    fs::remove_file(root.join("b.md")).unwrap();
+    fs::rename(root.join("c.md"), root.join("cc.md")).unwrap();
+    fs::remove_file(root.join("d.md")).unwrap();
+    watcher
+        .update_paths(&["a.md", "aa.md", "b.md", "c.md", "cc.md", "d.md"])
+        .unwrap();
+    assert!(index.rebuild_slice(128, &|| false).unwrap().is_some());
+    let db = rusqlite::Connection::open(cache.path().join("index.sqlite3")).unwrap();
+    let paths: Vec<String> = db
+        .prepare("SELECT path FROM files ORDER BY path")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(paths, ["aa.md", "cc.md"]);
+}
+
+#[test]
+fn edits_behind_the_last_step_cursor_are_read_again() {
+    let vault = TempDir::new().unwrap();
+    write(vault.path(), "z.md", "last note");
+    let cache = TempDir::new().unwrap();
+    let mut index = open(vault.path(), &cache);
+    assert!(index.rebuild_slice(1, &|| true).unwrap().is_none());
+    for name in ["a0.md", "a1.md", "a2.md"] {
+        write(vault.path(), name, "new note");
+    }
+    // The last step reparses a0.md, then the file changes again.
+    assert!(index.rebuild_slice(1, &|| true).unwrap().is_none());
+    write(vault.path(), "a0.md", "edited after the last step read it");
+    while index.rebuild_slice(1, &|| true).unwrap().is_none() {}
+    let fresh = TempDir::new().unwrap();
+    open(vault.path(), &fresh).rebuild().unwrap();
+    assert_eq!(dump(&cache), dump(&fresh));
+}
+
+#[test]
+fn a_cursor_left_next_to_a_recorded_walk_restarts_the_rebuild() {
+    let vault = TempDir::new().unwrap();
+    seed_pair(vault.path());
+    let cache = TempDir::new().unwrap();
+    let mut index = open(vault.path(), &cache);
+    index.sync(vault.path()).unwrap();
+    let db = rusqlite::Connection::open(cache.path().join("index.sqlite3")).unwrap();
+    db.execute(
+        "INSERT INTO index_meta(key,value) VALUES('rebuild_after','a.md')",
+        [],
+    )
+    .unwrap();
+    assert_eq!(index.rebuild_progress().unwrap().as_deref(), Some("a.md"));
+    assert!(index.rebuild_slice(128, &|| false).unwrap().is_some());
+    assert_eq!(index.rebuild_progress().unwrap(), None);
+    assert_eq!(unresolved(&cache), 0);
+}

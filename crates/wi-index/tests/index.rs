@@ -808,7 +808,7 @@ fn lifecycle_rows_match_files_and_survive_rebuild() {
     f.sync();
     let format = wi_lifecycle::MATERIALIZED_FORMAT;
     let check = |index: &Index, root: &Path, expected: &[&str]| {
-        let rows = index.lifecycle_rows().unwrap();
+        let rows = index.lifecycle_rows().unwrap().unwrap();
         let paths: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
         assert_eq!(paths, expected);
         let snapshots = index.lifecycle_snapshots(format, &paths).unwrap();

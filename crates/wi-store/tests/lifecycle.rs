@@ -926,3 +926,37 @@ fn user_observation_of_other_bytes_does_not_attest_the_pinned_snapshot() {
             .contains("source-self-reported")
     );
 }
+
+/// A partially rebuilt index never hides lifecycle notes: until the
+/// rebuild records a complete walk, listings come from the files.
+#[test]
+fn current_rules_stay_complete_while_the_index_rebuilds() {
+    let (f, vault) = Fixture::new();
+    seed_active(
+        &vault,
+        "zz-rule.md",
+        &Claim::rule("Always retain qualifiers"),
+    );
+    for i in 0..300 {
+        std::fs::write(vault.root().join(format!("a{i:04}.md")), "plain filler").unwrap();
+    }
+    vault.reindex().unwrap();
+    assert_eq!(vault.current_rules().unwrap().rules.len(), 1);
+    drop(vault);
+    std::fs::remove_file(f.cache.path().join("index.sqlite3")).unwrap();
+    let vault = f.open();
+    let tiny = wi_store::MaintainOptions {
+        full: false,
+        time_budget: Some(std::time::Duration::from_nanos(1)),
+    };
+    for _ in 0..5 {
+        vault.maintain(&tiny).unwrap();
+        if vault.index_rebuilding() {
+            break;
+        }
+    }
+    assert!(vault.index_rebuilding());
+    assert_eq!(vault.index_as_of().unwrap(), None);
+    let rules = vault.current_rules().unwrap();
+    assert_eq!(rules.rules.len(), 1, "the rule outside the rebuilt prefix");
+}

@@ -153,3 +153,35 @@ fn an_unbudgeted_pass_finishes_an_unfinished_rebuild() {
     assert!(!vault.index_rebuilding());
     assert!(!answer(&vault, "alpha").0);
 }
+
+#[test]
+fn a_database_deleted_mid_rebuild_restarts_on_the_same_handle() {
+    let (f, vault) = Fixture::new();
+    seed(&vault);
+    drop(vault);
+    std::fs::remove_file(f.cache.path().join("index.sqlite3")).unwrap();
+    let vault = f.open();
+    for _ in 0..5 {
+        vault.maintain(&tiny()).unwrap();
+        if vault.index_rebuilding() {
+            break;
+        }
+    }
+    assert!(vault.index_rebuilding());
+    // Windows cannot unlink an open SQLite database: close it first.
+    vault.close_index();
+    std::fs::remove_file(f.cache.path().join("index.sqlite3")).unwrap();
+    assert!(vault.index_as_of().unwrap().is_none());
+    let mut rebuilt = false;
+    for _ in 0..30 {
+        let report = vault.maintain(&tiny()).unwrap();
+        rebuilt |= report.index_rebuilt;
+        if report.complete {
+            break;
+        }
+    }
+    assert!(rebuilt);
+    let (fallback, paths) = answer(&vault, "alpha");
+    assert!(!fallback);
+    assert_eq!(paths.len(), NOTES);
+}
