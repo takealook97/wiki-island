@@ -1634,3 +1634,22 @@ fn oversized_files_are_refused_by_read_but_still_listed_and_moved() {
         LIMIT + 1
     );
 }
+
+#[test]
+fn an_over_cap_search_is_an_invalid_request_with_a_fixed_message() {
+    let (_temp, e) = fixture(Arc::new(Unavailable));
+    write(&e, "a.md", "alpha beta\n");
+    for query in [vec!["alpha"; 65].join(" "), "a".repeat(2049)] {
+        let refused = e.call("wi_search", json!({ "query": query }));
+        assert_eq!(refused.is_error, Some(true), "{refused:?}");
+        let error = &refused.text_value().unwrap()["error"];
+        assert_eq!(error["code"], "invalid-request");
+        assert_eq!(
+            error["message"],
+            "The search text is too long. Search for a few key words instead."
+        );
+    }
+    let at_caps = vec!["alpha"; 64].join(" ");
+    let found = good(&e, "wi_search", json!({ "query": at_caps }));
+    assert_eq!(found["hits"].as_array().unwrap().len(), 1);
+}

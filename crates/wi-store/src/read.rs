@@ -256,7 +256,9 @@ impl Vault {
     fn search_once(&self, query: &Query, diagnostics: &mut Vec<String>) -> Result<SearchOnce> {
         let result = match self.with_index(|index| Ok(index.search(query)?)) {
             Ok(result) => result,
-            Err(StoreError::Index(e @ wi_index::Error::InvalidQuery(_))) => {
+            Err(StoreError::Index(
+                e @ (wi_index::Error::InvalidQuery(_) | wi_index::Error::QueryTooLong { .. }),
+            )) => {
                 return Err(StoreError::Index(e));
             }
             Err(e) => {

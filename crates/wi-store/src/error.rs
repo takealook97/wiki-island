@@ -107,6 +107,12 @@ impl StoreError {
         }
     }
 
+    /// Whether a text or title query was refused for its length
+    /// (`wi_index::Error::QueryTooLong`).
+    pub fn is_query_too_long(&self) -> bool {
+        matches!(self, Self::Index(wi_index::Error::QueryTooLong { .. }))
+    }
+
     /// Stable machine-readable code for `--json` output and tools.
     pub fn code(&self) -> &'static str {
         match self {
@@ -128,6 +134,7 @@ impl StoreError {
             Self::Invalid(_) => "invalid-request",
             Self::Parse(_) => "parse",
             Self::History(_) => "history",
+            Self::Index(wi_index::Error::QueryTooLong { .. }) => "invalid-request",
             Self::Index(_) => "index",
             Self::Config(_) => "config",
             Self::Io { .. } => "io",

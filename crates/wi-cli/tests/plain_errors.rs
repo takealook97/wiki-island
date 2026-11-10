@@ -87,3 +87,30 @@ fn wi_read_refuses_a_file_above_the_read_limit_with_a_plain_sentence() {
     assert!(out.status.success(), "{out:?}");
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "y".repeat(32));
 }
+
+#[test]
+fn wi_search_refuses_an_over_cap_query_as_an_invalid_request() {
+    let env = Env::new();
+    let out = env
+        .command(&["write", "a.md"])
+        .arg("--content")
+        .arg("alpha beta\n")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    for query in [vec!["alpha"; 65].join(" "), "a".repeat(2049)] {
+        let out = env.wi(&["--json", "search", &query]);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let error = json_error(&out);
+        assert_eq!(error["code"], "invalid-request");
+        assert_eq!(
+            error["message"],
+            "The search text is too long. Search for a few key words instead."
+        );
+        let text = stderr(&out);
+        assert!(text.contains("The search text is too long."), "{text}");
+        assert!(!text.contains("recovering"), "{text}");
+    }
+    let out = env.wi(&["--json", "search", &vec!["alpha"; 64].join(" ")]);
+    assert!(out.status.success(), "{out:?}");
+}

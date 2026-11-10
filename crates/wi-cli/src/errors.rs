@@ -14,6 +14,9 @@ pub(crate) fn plain_error(error: &anyhow::Error) -> String {
         Some(
             StoreError::LifecycleRevertRequiresFork { path } | StoreError::TerminalNote { path },
         ) => format!("The claim in {path} is kept as history; restore its text as a new note."),
+        Some(e @ StoreError::Index(_)) if e.is_query_too_long() => {
+            "The search text is too long. Search for a few key words instead.".into()
+        }
         Some(StoreError::Index(_)) => {
             "Search is recovering its local cache. Your notes are safe.".into()
         }
@@ -45,6 +48,7 @@ pub(crate) fn hint(error: &StoreError) -> Option<&'static str> {
             "copy the earlier text into a new note so its history is kept"
         }
         StoreError::OperationMismatch { .. } => "use a new --op-id for a different request",
+        StoreError::Index(_) if error.is_query_too_long() => return None,
         StoreError::Index(_) => "search will recover automatically on the next run",
         StoreError::History(_) => "run `wi doctor`",
         _ => return None,

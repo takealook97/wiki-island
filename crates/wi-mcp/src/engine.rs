@@ -186,6 +186,11 @@ impl Engine {
                         Error::Lifecycle(LifecycleError::Store(StoreError::BudgetExhausted {
                             ..
                         })) => "The automatic-change cap is spent; the change is queued.",
+                        Error::Store(e) | Error::Lifecycle(LifecycleError::Store(e))
+                            if e.is_query_too_long() =>
+                        {
+                            "The search text is too long. Search for a few key words instead."
+                        }
 
                         _ => message(e.code()),
                     };

@@ -27,6 +27,12 @@ pub use sync::{
 pub type RelPath = PathBuf;
 pub type Result<T> = std::result::Result<T, Error>;
 const SCHEMA_VERSION: i64 = 7;
+/// Largest text or title query, in bytes of the raw query text. An
+/// unmeasured policy choice: it keeps query parsing and FTS work small.
+pub const MAX_QUERY_BYTES: usize = 2048;
+/// Most whitespace-separated terms in a text or title query. An unmeasured
+/// policy choice, like [`MAX_QUERY_BYTES`].
+pub const MAX_QUERY_TERMS: usize = 64;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -44,6 +50,10 @@ pub enum Error {
     Config(#[from] wi_note::ConfigError),
     #[error("invalid query: {0}")]
     InvalidQuery(String),
+    /// Text or title query above [`MAX_QUERY_BYTES`] or [`MAX_QUERY_TERMS`].
+    /// Never answered by the literal scan fallback.
+    #[error("query too long: {bytes} bytes, {terms} terms")]
+    QueryTooLong { bytes: usize, terms: usize },
     #[error("unsafe or unsupported path: {0}")]
     InvalidPath(PathBuf),
     #[error("note exceeds configured size bound: {0}")]
@@ -102,6 +112,15 @@ impl Query {
     pub(crate) fn validate(&self) -> Result<Vec<filters::Predicate>> {
         if self.limit > 10_000 || self.text.len() > 16_384 {
             return Err(Error::InvalidQuery("limit or text exceeds bounds".into()));
+        }
+        // Exact permalink identities are not parsed as terms; only text and
+        // title queries reach the FTS parser and carry the cap.
+        if self.mode != SearchMode::Permalink {
+            let bytes = self.text.len();
+            let terms = self.text.split_whitespace().count();
+            if bytes > MAX_QUERY_BYTES || terms > MAX_QUERY_TERMS {
+                return Err(Error::QueryTooLong { bytes, terms });
+            }
         }
         filters::parse(&self.metadata_filters)
     }
