@@ -102,8 +102,8 @@ Uses `wi-store` for all vault writes and eligibility, `wi-note`, `wi-lifecycle` 
 
 | Crate | Range | Reason and alternative |
 | --- | --- | --- |
-| `rmcp` | 3.8 (server, transport-io; defaults off) | The official Rust MCP SDK: stdio framing, initialization, dispatch. A custom JSON-RPC server would duplicate protocol and cancellation handling. |
-| `tokio` | 1 (rt-multi-thread, sync, io-std, macros) | rmcp's asynchronous stdio. The git-backed vault stays on a dedicated OS thread. |
+| `rmcp` | 3.8 (server, transport-async-rw; defaults off) | The official Rust MCP SDK: framing, initialization, dispatch over any async reader and writer; `wi-mcp` serves it on `tokio::io::stdin` and `tokio::io::stdout`. A custom JSON-RPC server would duplicate protocol and cancellation handling. |
+| `tokio` | 1 (rt-multi-thread, sync, io-std, macros) | Asynchronous stdin and stdout for rmcp. Used without its `net` feature. The git-backed vault stays on a dedicated OS thread. |
 | `ignore`, `globset` | 0.4 | Symlink-free gitignore-aware listings and basename globs. |
 | `pulldown-cmark` | 0.13 | Heading paths and byte ranges excluding code fences, including Setext headings. |
 | `chrono` | 0.4 | Context `since` dates. |
