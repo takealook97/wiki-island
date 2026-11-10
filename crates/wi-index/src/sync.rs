@@ -185,6 +185,25 @@ fn prepare_retry(
     }
 }
 
+/// Every indexed file with its stamp and hash.
+fn existing_rows(conn: &rusqlite::Connection) -> Result<BTreeMap<String, Existing>> {
+    let mut statement = conn.prepare_cached("SELECT path,mtime_ns,size,content_hash FROM files")?;
+    Ok(statement
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                Existing {
+                    stamp: Stamp {
+                        mtime_ns: r.get(1)?,
+                        size: r.get(2)?,
+                    },
+                    hash: r.get(3)?,
+                },
+            ))
+        })?
+        .collect::<std::result::Result<_, _>>()?)
+}
+
 impl Index {
     /// Complete stat-first walk; no file bytes are read when mtime and size match.
     pub fn sync(&mut self, vault_root: impl AsRef<Path>) -> Result<SyncReport> {
@@ -203,32 +222,13 @@ impl Index {
     pub fn reverify(&mut self) -> Result<SyncReport> {
         self.sync_inner(false, true)
     }
-    fn existing(&self) -> Result<BTreeMap<String, Existing>> {
-        let mut statement = self
-            .connection
-            .prepare_cached("SELECT path,mtime_ns,size,content_hash FROM files")?;
-        Ok(statement
-            .query_map([], |r| {
-                Ok((
-                    r.get(0)?,
-                    Existing {
-                        stamp: Stamp {
-                            mtime_ns: r.get(1)?,
-                            size: r.get(2)?,
-                        },
-                        hash: r.get(3)?,
-                    },
-                ))
-            })?
-            .collect::<std::result::Result<_, _>>()?)
-    }
     fn sync_inner(&mut self, force: bool, hash_all: bool) -> Result<SyncReport> {
         let start = Instant::now();
         let as_of = now();
         let settings = settings(&self.vault_root)?;
         let mut report = SyncReport::default();
         let files = walk(&self.vault_root, settings.ignored, &mut report);
-        let existing = self.existing()?;
+        let existing = existing_rows(&self.connection)?;
         let unknown_walk_error = report.skipped.iter().any(|p| p.as_os_str().is_empty());
         let skipped: BTreeSet<_> = report.skipped.iter().collect();
         let removed: Vec<_> = existing
@@ -301,13 +301,14 @@ impl Index {
                 store(&tx, item)?;
             }
         }
-        if force || report.parsed > 0 || report.removed > 0 {
+        // Ending a sliced rebuild includes its deferred link resolution.
+        let ended = sliced::end_rebuild(&tx)?;
+        if force || ended || report.parsed > 0 || report.removed > 0 {
             resolve(&tx)?;
         }
         tx.execute("INSERT INTO index_meta(key,value) VALUES('skipped',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(&report.skipped)?])?;
         tx.execute("INSERT INTO index_meta(key,value) VALUES('diagnostics',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(&report.diagnostics)?])?;
         tx.execute("INSERT INTO index_meta(key,value) VALUES('index_as_of',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&as_of])?;
-        sliced::clear_progress(&tx)?;
         tx.commit()?;
         report.elapsed_ms = start.elapsed().as_millis();
         Ok(report)

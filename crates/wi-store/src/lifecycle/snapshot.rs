@@ -127,12 +127,13 @@ fn resolve_group(
 }
 
 impl Vault {
-    /// Every lifecycle note with its indexed hash and stamp. Uses the index;
-    /// without one, walks the vault (each Markdown file is parsed to find
-    /// the lifecycle notes).
+    /// Every lifecycle note with its indexed hash and stamp. Uses the index
+    /// after a complete walk; otherwise (no index, or one being rebuilt)
+    /// walks the vault (each Markdown file is parsed to find the lifecycle
+    /// notes).
     fn lifecycle_listing(&self) -> Vec<Listed> {
         let indexed = self.with_index(|index| Ok(index.lifecycle_rows()?));
-        if let Ok(rows) = indexed {
+        if let Ok(Some(rows)) = indexed {
             return rows
                 .into_iter()
                 .map(|r| Listed {

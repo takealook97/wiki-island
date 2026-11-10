@@ -485,12 +485,18 @@ impl Index {
     }
 
     /// Every lifecycle note (`wi_lifecycle::LIFECYCLE_TYPES`) in path
-    /// order, with its indexed stamp and hash. `store` writes one
+    /// order, with its indexed stamp and hash; `None` without a complete
+    /// walk (a partial index would list only some notes). `store` writes one
     /// `lifecycle_snapshots` row per indexed lifecycle note in the same
     /// transaction as its `notes` row, so the listing needs no scan of
     /// `notes`. Snapshots are fetched separately, for cache misses only.
-    pub fn lifecycle_rows(&self) -> Result<Vec<LifecycleRow>> {
-        let mut statement = self.connection.prepare_cached(
+    pub fn lifecycle_rows(&self) -> Result<Option<Vec<LifecycleRow>>> {
+        // One read snapshot: the rows belong to the walk that was checked.
+        let snapshot = self.connection.unchecked_transaction()?;
+        if self.index_as_of()?.is_none() {
+            return Ok(None);
+        }
+        let mut statement = snapshot.prepare_cached(
             "SELECT s.path, f.content_hash, f.mtime_ns, f.size \
              FROM lifecycle_snapshots s JOIN files f ON f.path = s.path ORDER BY s.path",
         )?;
@@ -502,7 +508,7 @@ impl Index {
                 size: r.get::<_, i64>(3)?.try_into().unwrap_or(u64::MAX),
             })
         })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        Ok(Some(rows.collect::<std::result::Result<Vec<_>, _>>()?))
     }
     /// Materialized snapshots in `format` of `paths`: path → (content hash
     /// the snapshot was parsed from, snapshot text). Paths without one are
