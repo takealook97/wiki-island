@@ -16,37 +16,29 @@ Open a terminal and paste this line:
 curl -fsSL https://raw.githubusercontent.com/takealook97/wiki-island/main/scripts/install.sh | sh
 ```
 
-It needs no git checkout. The installer downloads the latest release for your computer, checks its SHA-256 checksum and installs `wi` and `wiki-island`; a checksum mismatch stops the install and changes nothing. If no usable release exists, it clones the source into a temporary folder and builds it instead: it installs the Rust build tool if needed (this takes a few minutes the first time) and needs git and a C compiler (Apple's command line tools on macOS, for example `build-essential` on Linux; if one is missing the installer says which and what to run). The programs are placed in the `.cargo/bin` folder inside your home folder (`~/.cargo/bin`), and the installer adds that folder to your shell startup file once so new terminals find `wi`. Then it runs `wi setup`. It needs no administrator password and is safe to run again. Details, environment variables and the release layout: [operations](docs/OPERATIONS.md#install-and-release).
-
-If you prefer to read the source first, clone the repository and run the same installer from it:
-
-```sh
-git clone https://github.com/takealook97/wiki-island.git
-sh wiki-island/scripts/install.sh
-```
-
-`wi setup` asks nothing. It creates your notes folder (`~/wiki-island`), starts a small background service, connects every AI app it finds on this computer, runs the first maintenance pass and prints a three-line summary. It checks everything first and changes nothing if a step cannot work, then tells you why in one sentence.
-
-The background service keeps editor changes ingested, committed and indexed. On macOS it is a launchd LaunchAgent. On Linux it is a systemd user service; it runs while your user session is active, and keeps running after you log out only if lingering is already enabled for your account. Without a systemd user session (a container, WSL without systemd) setup still finishes, skips the service and says to run `wi watch`. Saving and searching through your AI never depend on the service. The service units are described in [operations](docs/OPERATIONS.md#service).
-
-Requirements: macOS on Apple silicon is the tested platform. The prebuilt Linux programs need glibc 2.34 or newer (measured on the Ubuntu 22.04 build machines); older systems build from source. Linux is tested on GitHub Actions (Ubuntu) and in an arm64 container; bare-metal Linux is untested. Notion token storage uses the macOS keychain, so `wi publish notion setup` is unavailable on Linux. Git remote sync (`wi sync`) uses the `git` program on your path.
-
 ### Windows
 
-There is no install script. Install [rustup](https://rustup.rs) with the MSVC toolchain, which needs the Visual Studio Build Tools "Desktop development with C++" workload, then build from source in a terminal (the repository pins the Rust version):
+Open PowerShell (administrator rights are not needed) and paste this line:
 
 ```powershell
-git clone https://github.com/takealook97/wiki-island.git
-cd wiki-island
-cargo install --path crates/wi-cli --locked
-wi setup
+irm https://raw.githubusercontent.com/takealook97/wiki-island/main/scripts/install.ps1 | iex
 ```
 
-`wi setup` creates your notes folder (`%USERPROFILE%\wiki-island`), connects the AI apps it finds and runs the first maintenance pass. The per-device data (history for synced folders, index state, backups) is in `%LOCALAPPDATA%\wiki-island`. It also registers a Task Scheduler task for the current user that runs `wi watch` at each logon and starts it now, so editor changes are ingested, committed and indexed while you are logged on. This needs no administrator rights. If Task Scheduler is turned off, setup still finishes, skips the service and says to run `wi watch`. Saving and searching through your AI never depend on it. Details: [operations](docs/OPERATIONS.md#windows-task-scheduler).
+It needs Windows 10 version 1709 or later on a 64-bit Intel or AMD computer. If no release fits your computer, the installer stops with one sentence and changes nothing; then [build from source](docs/OPERATIONS.md#build-from-source-on-windows).
 
-The Notion token is kept in Windows Credential Manager. Git remote sync (`wi sync`) uses the `git` program on your path.
+### Check that it worked
 
-Requirements: Windows 10 version 1709 or later on x86_64 with an NTFS volume. The test suite runs on GitHub Actions `windows-latest` (NTFS). ARM64 Windows and volumes other than NTFS (ReFS, FAT, network shares) are untested. Some behaviors are weaker than on macOS and Linux, for example there is no atomic swap for an editor save that lands during a write and a directory flush after power loss is not measured; the list is in [operations](docs/OPERATIONS.md#windows).
+The installer downloads the latest release for your computer, checks its SHA-256 checksum, installs `wi` and `wiki-island` and runs `wi setup`. A checksum mismatch stops the install and changes nothing. It is safe to run again. Open a new terminal window and run:
+
+```sh
+wi doctor
+```
+
+It checks health and says in plain words what, if anything, to do. Then restart your AI app.
+
+`wi setup` asks nothing. It creates your notes folder (`~/wiki-island`, on Windows `%USERPROFILE%\wiki-island`), starts a small background service, connects every AI app it finds on this computer, runs the first maintenance pass and prints a three-line summary. It checks everything first and changes nothing if a step cannot work, then tells you why in one sentence. Saving and searching through your AI never depend on the service.
+
+macOS on Apple silicon is the tested platform. Requirements, what the installers do step by step, the background service on each system and the limits of each platform: [operations](docs/OPERATIONS.md#install-and-release).
 
 ## Connect your AI
 
@@ -113,6 +105,8 @@ sh wiki-island/scripts/uninstall.sh   # or, anywhere: wi uninstall
 ```
 
 This removes the background service and every AI-app connection and skill that wiki-island added, and restores the settings files it edited (copies were saved first). Your notes are kept. It also tells you how to remove the Rust build tool if you want that gone.
+
+On Windows run `wi uninstall`, then remove the program folder: [operations](docs/OPERATIONS.md#windows-installer).
 
 ## Where your data lives
 

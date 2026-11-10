@@ -10,7 +10,7 @@ Run from the repository root before any commit:
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
-Before pushing Windows-affecting code also run `cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings && cargo build --tests --workspace --target x86_64-pc-windows-gnu` (mingw-w64); runtime tests run on GitHub Actions ([CONTRIBUTING](CONTRIBUTING.md#windows)).
+Before pushing Windows-affecting code also run `cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings && cargo build --tests --workspace --target x86_64-pc-windows-gnu` (mingw-w64); runtime tests run on GitHub Actions ([CONTRIBUTING](CONTRIBUTING.md#windows)). CI also runs `cargo deny check licenses` and `sh scripts/check-offline-tree.sh`; they are not part of the local gate ([CONTRIBUTING](CONTRIBUTING.md#policy-checks)).
 
 Libraries forbid unsafe code, except `wi-sys`, which holds all Windows FFI; every unsafe block there has a `SAFETY` comment.
 
