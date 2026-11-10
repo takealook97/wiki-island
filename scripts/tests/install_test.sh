@@ -325,6 +325,36 @@ run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD" WI_INSTALL_MAX_ASSET_BYTES="$ASS
 check "archive exactly at the limit installs" "$(cond [ "$RC" -eq 0 ])"
 check "archive exactly at the limit installs the release" "$(cond grep -q fake-wi "$BIN/wi")"
 
+# 22b. curl writes more than the limit and then fails with an error other than 63: still a
+# refusal, not a source build. A fake curl stands in for the asset download only.
+make_release good
+ASSET_SIZE=$(wc -c < "$REL/$ASSET" | tr -d ' ')
+REAL_CURL=$(command -v curl)
+mkdir -p "$WORK/fakebin"
+cat > "$WORK/fakebin/curl" <<FAKE
+#!/bin/sh
+out=""
+prev=""
+for arg in "\$@"; do
+  [ "\$prev" = "-o" ] && out=\$arg
+  prev=\$arg
+  case "\$arg" in
+    *.tar.gz) head -c $((ASSET_SIZE + 10)) /dev/zero > "\$out"; exit 56 ;;
+  esac
+done
+exec "$REAL_CURL" "\$@"
+FAKE
+chmod 755 "$WORK/fakebin/curl"
+RUN_PATH="$WORK/fakebin:$PATH"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD" WI_INSTALL_MAX_ASSET_BYTES=$((ASSET_SIZE - 1))
+RUN_PATH=""
+check "oversized partial download with a non-63 error exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "oversized partial download with a non-63 error installs nothing" "$(cond nothing_installed)"
+check "oversized partial download with a non-63 error says so" "$(cond grep -q 'larger than any release should be' "$WORK/out")"
+# An override of 0 is ignored, so the default limit applies and the archive installs.
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD" WI_INSTALL_MAX_ASSET_BYTES=0
+check "a limit override of 0 keeps the default limit" "$(cond grep -q fake-wi "$BIN/wi")"
+
 # 23. A checksum list larger than 64 KiB: stop, nothing installed, no source build.
 make_release good
 awk 'BEGIN { for (i = 0; i < 1100; i++) printf "%064d  padding-%d\n", 0, i }' >> "$REL/SHA256SUMS"

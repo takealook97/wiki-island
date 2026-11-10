@@ -32,7 +32,8 @@ MAX_SUMS_BYTES=65536
 case "${WI_INSTALL_MAX_ASSET_BYTES:-}" in
   "" | *[!0-9]*) ;;
   *)
-    if [ "${#WI_INSTALL_MAX_ASSET_BYTES}" -le 9 ] && [ "$WI_INSTALL_MAX_ASSET_BYTES" -lt "$MAX_ASSET_BYTES" ]; then
+    if [ "${#WI_INSTALL_MAX_ASSET_BYTES}" -le 9 ] && [ "$WI_INSTALL_MAX_ASSET_BYTES" -gt 0 ] \
+      && [ "$WI_INSTALL_MAX_ASSET_BYTES" -lt "$MAX_ASSET_BYTES" ]; then
       MAX_ASSET_BYTES=$WI_INSTALL_MAX_ASSET_BYTES
     fi
     ;;
@@ -76,7 +77,7 @@ fetch() {
   rc=0
   code=$(curl -sS -L --proto "$PROTO" --connect-timeout 20 --max-time 900 --max-filesize "$3" \
     -o "$2" -w '%{http_code}' "$1" 2>/dev/null) || rc=$?
-  if [ "$rc" -eq 63 ]; then
+  if [ "$rc" -eq 63 ] || { [ "$rc" -ne 0 ] && [ -f "$2" ] && [ "$(wc -c < "$2" | tr -d ' ')" -gt "$3" ]; }; then
     FETCH=toolarge
   elif [ "$rc" -ne 0 ]; then
     FETCH=error
