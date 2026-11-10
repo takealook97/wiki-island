@@ -18,9 +18,12 @@ fn an_over_cap_query_is_an_invalid_request_and_keeps_the_index() {
     let error = vault.search(&over, SearchOptions::default()).unwrap_err();
     assert!(error.is_query_too_long(), "{error}");
     assert_eq!(error.code(), "invalid-request");
-    let over = Query::text("a".repeat(2049));
-    let error = vault.search(&over, SearchOptions::default()).unwrap_err();
-    assert_eq!(error.code(), "invalid-request");
+    for bytes in [2049, 16_385, 100_000] {
+        let over = Query::text("a".repeat(bytes));
+        let error = vault.search(&over, SearchOptions::default()).unwrap_err();
+        assert!(error.is_query_too_long(), "{error}");
+        assert_eq!(error.code(), "invalid-request");
+    }
 
     // The refusal did not switch the vault to the literal scan.
     let after = vault

@@ -98,7 +98,11 @@ fn wi_search_refuses_an_over_cap_query_as_an_invalid_request() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");
-    for query in [vec!["alpha"; 65].join(" "), "a".repeat(2049)] {
+    for query in [
+        vec!["alpha"; 65].join(" "),
+        "a".repeat(2049),
+        "a".repeat(16_385),
+    ] {
         let out = env.wi(&["--json", "search", &query]);
         assert_eq!(out.status.code(), Some(1), "{out:?}");
         let error = json_error(&out);
