@@ -1,6 +1,6 @@
 # Dependencies
 
-Versions are manifest ranges; `Cargo.lock` records exact resolved versions. Capture, search, reads and MCP use local runtime code only. Only `wi sync`, `wi publish` and their background threads use the network, outside engine locks; crate downloads are build-time only. Each crate declares its own dependencies. A new dependency needs a written reason here: what it does, what it costs, what the alternative was. Release builds use thin LTO, one codegen unit and symbol stripping; panic behavior stays Rust's default because a workspace-wide abort would also affect libraries.
+Versions are manifest ranges; `Cargo.lock` records exact resolved versions. Capture, search, reads and MCP use local runtime code only. Only the background sync and publish threads, the explicit `wi sync` and `wi publish` commands and the explicit `wi setup --github` (which asks the hosting service for the account name and finds or creates the private repository) use the network, outside engine locks; `wi sync setup <url>` only stores the remote address. Crate downloads are build-time only. Each crate declares its own dependencies. A new dependency needs a written reason here: what it does, what it costs, what the alternative was. Release builds use thin LTO, one codegen unit and symbol stripping; panic behavior stays Rust's default because a workspace-wide abort would also affect libraries.
 
 ## wi-sys
 
@@ -125,3 +125,20 @@ A non-published, opt-in package. It reuses `wi-store`, `wi-index`, `wi-history`,
 | `lindera` | 0.43.3 (ko-dic) | Korean morphological segmentation; adds a dictionary download at build time and a large experimental binary. |
 
 `Cargo.lock` records their transitive packages; their presence does not enable them in `wi`.
+
+## License policy and network-client check
+
+CI runs two checks on every change ([CONTRIBUTING](../CONTRIBUTING.md#policy-checks); what they prove: [VALIDATION](VALIDATION.md#dependency-checks)).
+
+**Licenses.** The workspace is AGPL-3.0-only, so every license in `Cargo.lock` must be compatible with it. `cargo deny check licenses` (cargo-deny 0.20.2, configured in `deny.toml`, all features and all targets, so Windows-only crates count) fails when a crate has no license expression that an allow-list entry satisfies. An `OR` expression passes when one alternative is allowed. Only the licenses check is configured: there are no advisories, bans or sources checks. The allow list holds the licenses the tree uses:
+
+| License | Basis |
+| --- | --- |
+| `AGPL-3.0-only` | The workspace crates' own license. |
+| `MIT`, `Apache-2.0`, `BSD-3-Clause`, `ISC`, `Zlib`, `CC0-1.0`, `Unicode-3.0` | Permissive, no copyleft condition. Inference from the license texts. |
+| `MPL-2.0` | Compatible because its section 3.3 names the AGPL-3.0 as a secondary license (`option-ext`). Inference. |
+| `CDLA-Permissive-2.0` | A permissive data license with no copyleft condition (`webpki-roots`). Inference. |
+
+The compatibility judgments are inferences from the license texts, not legal advice. A license outside this list needs a written judgment before it is added.
+
+**Network clients.** `sh scripts/check-offline-tree.sh` inspects the normal (not dev, not build) dependency trees of `wi-mcp`, `wi-store` and `wi-index`, on the host and on `x86_64-pc-windows-msvc`. It fails when a tree contains `reqwest`, `ureq`, `hyper`, `hyper-util`, `h2`, `rustls`, `native-tls`, `openssl`, `openssl-sys`, `schannel`, `curl`, `curl-sys`, `mio`, `socket2`, `tungstenite`, `isahc`, `attohttpc`, `minreq` or `webpki-roots`, or when `tokio` has its `net` feature enabled (`cargo tree -e features`). `tokio` itself is allowed, and type-only crates such as `http` are not listed. `wi-notion` is outside the check on purpose: its `ureq` client is the optional publisher. The check covers dependency trees, not the `std::net` use of any crate and not the runtime behavior of the `wi` binary.

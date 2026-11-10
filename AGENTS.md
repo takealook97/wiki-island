@@ -10,7 +10,7 @@ Run from the repository root before any commit:
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
-Before pushing Windows-affecting code also run `cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings && cargo build --tests --workspace --target x86_64-pc-windows-gnu` (mingw-w64); runtime tests run on GitHub Actions ([CONTRIBUTING](CONTRIBUTING.md#windows)).
+Before pushing Windows-affecting code also run `cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings && cargo build --tests --workspace --target x86_64-pc-windows-gnu` (mingw-w64); runtime tests run on GitHub Actions ([CONTRIBUTING](CONTRIBUTING.md#windows)). CI also runs `cargo deny check licenses` and `sh scripts/check-offline-tree.sh`; they are not part of the local gate ([CONTRIBUTING](CONTRIBUTING.md#policy-checks)).
 
 Libraries forbid unsafe code, except `wi-sys`, which holds all Windows FFI; every unsafe block there has a `SAFETY` comment.
 
@@ -22,7 +22,7 @@ These constraints bind every change unless the owner revises them:
 
 - Human-editable Markdown and attachments are canonical.
 - The SQLite index is disposable and per device. Deleting it must lose nothing. Never sync a live SQLite file.
-- Capture and keyword search need no daemon, network or model. The engine never calls a model. Capture, search, read and every MCP tool never use the network; only the background sync and publish threads and the explicit `wi sync` and `wi publish` commands do, never while an engine lock is held.
+- Capture and keyword search need no daemon, network or model. The engine never calls a model. Capture, search, read and every MCP tool never use the network; only the background sync and publish threads, the explicit `wi sync` and `wi publish` commands, and the explicit `wi setup --github`, which asks the hosting service for the account name and finds or creates the private repository, do, never while an engine lock is held.
 - Zero touch: the owner needs no approval step, confirmation prompt or manual repair. The engine maintains itself (repair, index health, work items, skills sync) and acts without being asked.
 - Black box for non-developers: one command (`wi setup`) installs everything, and the owner afterwards only talks to their AI. Errors are plain sentences with the next step, never internals.
 - Self-maintenance is cheap: maintenance is incremental, time-sliced and model-free; agents spend tokens only when work items exist, and items are compact and byte-budgeted.

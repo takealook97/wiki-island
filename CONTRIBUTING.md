@@ -48,6 +48,20 @@ Clippy alone does not evaluate `const` assertions; the test build does. This doe
 
 `sh scripts/tests/install_test.sh` runs `scripts/install.sh` against a local server and a temporary `HOME`; run it with `shellcheck scripts/install.sh scripts/tests/*.sh` after any change to `scripts/`. `.github/workflows/install.yml` does both on Ubuntu and macOS. The cases are in [VALIDATION](docs/VALIDATION.md#installer-and-release).
 
+`scripts/install.ps1` and its test `scripts/tests/install_test.ps1` run only on Windows, so a Mac or Linux machine cannot execute them. The `install-script-windows` job in `.github/workflows/install.yml` lints both with PSScriptAnalyzer, runs the test under Windows PowerShell 5.1 and PowerShell 7, and installs the latest published release with the checked-out `install.ps1`. The test uses `scripts/tests/release_server.py` and compiles fake programs with the .NET Framework `csc.exe`, so it needs a Windows runner. The registry `Path` is saved first and restored in a `finally` block, so run it only on a machine where that is acceptable. The installer's behavior is in [OPERATIONS](docs/OPERATIONS.md#windows-installer).
+
+### Policy checks
+
+CI runs two checks in the `policy` job of `.github/workflows/ci.yml`. They are not part of the local gate above; run them after changing a dependency or a manifest:
+
+```sh
+cargo install --locked cargo-deny      # once; CI uses cargo-deny 0.20.2
+cargo deny check licenses              # every license in Cargo.lock is allowed by deny.toml
+sh scripts/check-offline-tree.sh       # the wi-mcp, wi-store and wi-index trees hold no network client
+```
+
+`deny.toml` configures only the licenses check. Add a license to its allow list only after judging that it is compatible with AGPL-3.0-only, and say why in a comment. The tree check needs only `cargo`. What each check proves and does not prove: [VALIDATION](docs/VALIDATION.md#dependency-checks).
+
 ### Releases
 
 Pushing a tag that starts with `v` runs `.github/workflows/release.yml`. It builds `wi` and `wiki-island` for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`, writes `SHA256SUMS` and publishes a GitHub Release with generated notes. Running the workflow by hand (`workflow_dispatch`, optionally with a `ref`) builds the same archives as workflow artifacts and publishes nothing. Linux archives are built on Ubuntu 22.04, which sets the glibc floor ([OPERATIONS](docs/OPERATIONS.md#install-and-release)). Cut a release only from a commit whose CI is green.
@@ -61,7 +75,7 @@ Measurement is opt-in and macOS only. Scratch paths must be new and outside the 
 - Libraries forbid unsafe code, except `wi-sys`, which holds all Windows FFI; every unsafe block there has a `SAFETY` comment. Libraries use typed errors. No `unwrap()` or `expect()` outside tests.
 - Keep `wi-note` pure. Every vault write goes through `wi-store`; every fsync through `wi_history::durable` (the workspace `clippy.toml` refuses `File::sync_all` and `sync_data`).
 - Each crate declares its own dependencies. Add one only with a written reason in [DEPENDENCIES](docs/DEPENDENCIES.md): what it does, what it costs, the alternative.
-- Never add a model call. Network requests belong only to remote sync and view publishing (`wi sync`, `wi publish` and their background threads), outside engine locks; never on capture, search, read or MCP paths.
+- Never add a model call. Network requests belong only to remote sync and view publishing (`wi sync`, `wi publish` and their background threads) and the explicit `wi setup --github`, outside engine locks; never on capture, search, read or MCP paths.
 - Test names describe behavior. Do not put phase, review or issue codes in names, comments or assertion messages.
 
 ## Where specs live
@@ -101,4 +115,4 @@ The description is imperative, lowercase and has no final period. Explain why in
 
 ## License
 
-wiki-island is licensed under the [GNU Affero General Public License v3.0 only](LICENSE). By submitting a contribution, you agree that it is licensed under the same terms and that you have the right to submit it. Do not add code copied from projects whose licenses are incompatible with AGPL-3.0. A new dependency must use an AGPL-3.0-compatible license; record it in docs/DEPENDENCIES.md as usual.
+wiki-island is licensed under the [GNU Affero General Public License v3.0 only](LICENSE). By submitting a contribution, you agree that it is licensed under the same terms and that you have the right to submit it. Do not add code copied from projects whose licenses are incompatible with AGPL-3.0. A new dependency must use an AGPL-3.0-compatible license, which CI checks with `cargo deny check licenses` ([policy checks](#policy-checks)); record it in docs/DEPENDENCIES.md as usual.
