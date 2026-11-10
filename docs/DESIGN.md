@@ -9,7 +9,7 @@
 - There is no UI, dashboard, web app or mobile app. Notes are plain files, so Obsidian or any editor is optional and works as is ([INTEGRATIONS](INTEGRATIONS.md#obsidian-and-other-editors)).
 - Private, personal use. Licensed under AGPL-3.0-only.
 - On top of notes and index the engine adds the lifecycle in [KNOWLEDGE](KNOWLEDGE.md): status, freshness, applicability, source pins, adoption gates and work items, with no human approval step.
-- The engine never calls a model. Network policy: capture, search, reads, maintenance and every MCP tool never use the network; only the background sync and publish threads and the explicit `wi sync` and `wi publish` commands do, and never while an engine lock is held. It maintains itself ([KNOWLEDGE](KNOWLEDGE.md#self-maintenance)) and a non-developer installs it with one command ([INTEGRATIONS](INTEGRATIONS.md#setup-and-uninstall)).
+- The engine never calls a model. Network policy: capture, search, reads, maintenance and every MCP tool never use the network; only the background sync and publish threads, the explicit `wi sync` and `wi publish` commands, and the explicit `wi setup --github`, which asks the hosting service for the account name and finds or creates the private repository, do, and never while an engine lock is held. `wi sync setup <url>` only stores the remote address locally. It maintains itself ([KNOWLEDGE](KNOWLEDGE.md#self-maintenance)) and a non-developer installs it with one command ([INTEGRATIONS](INTEGRATIONS.md#setup-and-uninstall)).
 
 ## Scope
 
@@ -89,12 +89,12 @@ Windows has no `openat`, so `wi-store` has a second containment backend on top o
 Twelve crates. A crate depends only on crates listed before it:
 
 0. `wi-sys` (Windows system calls: handle-relative file operations, job objects, Credential Manager, console echo) depends on no workspace crate and is empty on other platforms. It is the only crate with `unsafe` code; every other crate forbids it. Crates use it only on Windows.
-1. `wi-note` (note model, pure) and `wi-history` (git history, manifest, flush, replay, durability barriers) depend on no workspace crate other than `wi-sys` on Windows.
+1. `wi-note` (note model, pure) depends on no workspace crate; `wi-history` (git history, manifest, flush, replay, durability barriers) depends on no workspace crate other than `wi-sys` on Windows.
 2. `wi-lifecycle` (gates, eligibility, caps; pure) depends on `wi-note`.
 3. `wi-index` (SQLite index, literal fallback) depends on `wi-note` and `wi-lifecycle`.
-4. `wi-store` (write path, watcher, recovery, maintenance, lifecycle wiring) depends on `wi-note`, `wi-history`, `wi-index` and `wi-lifecycle`.
-5. `wi-export` (rules export, host table and registration, skills sync, service) depends on `wi-store`, `wi-note`, `wi-lifecycle` and `wi-history`; `wi-docs` (document and Notion import) depends on `wi-note`, `wi-store`, `wi-history` and `wi-index`.
-6. `wi-mcp` (MCP stdio server and its lifecycle `provider` module) depends on `wi-export`, `wi-store`, `wi-note` and `wi-lifecycle`.
-7. `wi-notion` (one-way Notion publisher; takes notes from the caller and never depends on `wi-store`) depends on `wi-note` and `wi-history`.
-8. `wi-cli` (the `wi` and `wiki-island` binaries) depends on `wi-export`, `wi-docs`, `wi-note`, `wi-store`, `wi-mcp`, `wi-lifecycle`, `wi-history` and `wi-notion`.
+4. `wi-store` (write path, watcher, recovery, maintenance, lifecycle wiring) depends on `wi-note`, `wi-history`, `wi-index` and `wi-lifecycle`, and on `wi-sys` on Windows.
+5. `wi-export` (rules export, host table and registration, skills sync, service) depends on `wi-store`, `wi-note`, `wi-lifecycle` and `wi-history`; `wi-docs` (document and Notion import) depends on `wi-note`, `wi-store`, `wi-history` and `wi-index`, and on `wi-sys` on Windows.
+6. `wi-mcp` (MCP stdio server and its lifecycle `provider` module) depends on `wi-export`, `wi-store` and `wi-note`; `wi-lifecycle` is a dev-dependency used by its tests.
+7. `wi-notion` (one-way Notion publisher; takes notes from the caller and never depends on `wi-store`) depends on `wi-note` and `wi-history`, and on `wi-sys` on Windows.
+8. `wi-cli` (the `wi` and `wiki-island` binaries) depends on `wi-export`, `wi-docs`, `wi-note`, `wi-store`, `wi-mcp`, `wi-lifecycle`, `wi-history` and `wi-notion`, and on `wi-index` and `wi-sys` on Windows only.
 9. `wi-bench` (opt-in measurement, not published) depends on `wi-store`, `wi-index` and `wi-history`.
