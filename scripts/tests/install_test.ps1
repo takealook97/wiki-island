@@ -162,7 +162,7 @@ static class Fake
 }
 
 # Writes zip file $Zip from $Items, each @{ Name = entry name; Source = file path, or $null for a
-# folder entry }.
+# folder entry; Attributes = optional ExternalAttributes value }.
 function Write-Zip {
     param([object[]]$Items)
     if (Test-Path -LiteralPath $Zip) { Remove-Item -LiteralPath $Zip -Force }
@@ -170,6 +170,7 @@ function Write-Zip {
     try {
         foreach ($item in $Items) {
             $entry = $archive.CreateEntry($item.Name)
+            if ($item.ContainsKey('Attributes')) { $entry.ExternalAttributes = $item.Attributes }
             if ($null -ne $item.Source) {
                 $bytes = [IO.File]::ReadAllBytes($item.Source)
                 $stream = $entry.Open()
@@ -649,6 +650,85 @@ try {
     Assert-Case 'piped failure is a catchable error' { (Test-Said 'caught') -and (Test-Said 'still-here') }
     Assert-Case 'piped failure installs nothing' { Test-NothingInstalled }
     Assert-Case 'piped failure says why in plain words' { Test-Said 'does not match its checksum' }
+
+    # 34. The install folder is a junction to another folder: nothing is read, written or removed
+    # there. The junction is deleted before the next cleanup so no recursive delete follows it.
+    Build-Release
+    $linkTarget = Join-Path $Work 'link-target'
+    Initialize-Folder $linkTarget
+    [IO.File]::WriteAllText((Join-Path $linkTarget '.wi.exe.old-keep'), "keep`n")
+    Initialize-Folder $Local
+    Initialize-Folder $UserHome
+    Initialize-Folder $Tmp
+    Write-UserPath $SavedPath
+    [void](New-Item -ItemType Directory -Path $Parent -Force)
+    [void](New-Item -ItemType Junction -Path $Bin -Target $linkTarget)
+    Invoke-Install -Keep
+    [IO.Directory]::Delete($Bin)
+    Assert-Case 'linked install folder exits non-zero' { $Rc -ne 0 }
+    Assert-Case 'linked install folder says it is a link' { Test-Said 'is a link to another place' }
+    Assert-Case 'linked install folder keeps the file in the target' { Test-Path -LiteralPath (Join-Path $linkTarget '.wi.exe.old-keep') -PathType Leaf }
+    Assert-Case 'linked install folder writes nothing into the target' { @(Get-ChildItem -LiteralPath $linkTarget -Force).Count -eq 1 }
+    Assert-Case 'linked install folder runs no setup and leaves the user Path alone' { (-not (Test-Path -LiteralPath (Join-Path $UserHome 'setup.log'))) -and (Test-PathUnchanged) }
+
+    # 35. The parent of the install folder is a junction.
+    Build-Release
+    $linkParent = Join-Path $Work 'link-parent'
+    Initialize-Folder $linkParent
+    [void](New-Item -ItemType Directory -Path (Join-Path $linkParent '.bin-stage-keep'))
+    Initialize-Folder $Local
+    Initialize-Folder $UserHome
+    Initialize-Folder $Tmp
+    Write-UserPath $SavedPath
+    [void](New-Item -ItemType Directory -Path (Join-Path $Local 'Programs') -Force)
+    [void](New-Item -ItemType Junction -Path $Parent -Target $linkParent)
+    Invoke-Install -Keep
+    [IO.Directory]::Delete($Parent)
+    Assert-Case 'linked parent folder exits non-zero' { $Rc -ne 0 }
+    Assert-Case 'linked parent folder says it is a link' { Test-Said 'is a link to another place' }
+    Assert-Case 'linked parent folder keeps the folder in the target' { Test-Path -LiteralPath (Join-Path $linkParent '.bin-stage-keep') -PathType Container }
+    Assert-Case 'linked parent folder writes nothing into the target' { @(Get-ChildItem -LiteralPath $linkParent -Force).Count -eq 1 }
+
+    # 36. An install folder name with ';' is not added to the Path; the programs are installed.
+    Build-Release
+    $semi = Join-Path $Work 'semi;dir\bin'
+    Invoke-Install -Extra @{ WI_INSTALL_DIR = $semi }
+    Assert-Case "install folder with ';' exits 0" { $Rc -eq 0 }
+    Assert-Case "install folder with ';' receives the programs" { Test-Path -LiteralPath (Join-Path $semi 'wi.exe') -PathType Leaf }
+    Assert-Case "install folder with ';' leaves the user Path as it was" { Test-PathUnchanged }
+    Assert-Case "install folder with ';' says it cannot be added to the Path" { Test-Said 'cannot be added to your user Path' }
+    Assert-Case "install folder with ';' still runs wi setup" { (Get-Content -Raw -LiteralPath (Join-Path $UserHome 'setup.log')).Contains('setup-ran setup') }
+
+    # 37. An install folder name with '%' is not added to the Path either.
+    Build-Release
+    $percent = Join-Path $Work 'pct%TEMP%dir\bin'
+    Invoke-Install -Extra @{ WI_INSTALL_DIR = $percent }
+    Assert-Case "install folder with '%' exits 0" { $Rc -eq 0 }
+    Assert-Case "install folder with '%' receives the programs" { Test-Path -LiteralPath (Join-Path $percent 'wi.exe') -PathType Leaf }
+    Assert-Case "install folder with '%' leaves the user Path as it was" { Test-PathUnchanged }
+    Assert-Case "install folder with '%' says it cannot be added to the Path" { Test-Said 'cannot be added to your user Path' }
+
+    # 38. An archive entry that carries directory attributes is refused, whatever its name.
+    Build-Release
+    Write-Archive @(
+        $Entries[0], $Entries[1], $Entries[2],
+        @{ Name = 'README.md'; Source = $Fakes.Readme; Attributes = 0x10 }
+    )
+    Invoke-Install
+    Assert-Case 'directory-attribute entry exits non-zero' { $Rc -ne 0 }
+    Assert-Case 'directory-attribute entry installs nothing' { Test-NothingInstalled }
+    Assert-Case 'directory-attribute entry says so in a plain sentence' { Test-Said 'unexpected files' }
+
+    # 39. An archive entry typed as a symbolic link in its Unix mode bits is refused.
+    Build-Release
+    $symlinkMode = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]2717908992), 0)
+    Write-Archive @(
+        $Entries[0], $Entries[1], $Entries[2],
+        @{ Name = 'README.md'; Source = $Fakes.Readme; Attributes = $symlinkMode }
+    )
+    Invoke-Install
+    Assert-Case 'symbolic-link entry exits non-zero' { $Rc -ne 0 }
+    Assert-Case 'symbolic-link entry installs nothing' { Test-NothingInstalled }
 } finally {
     if ($null -ne $Running -and -not $Running.HasExited) { $Running.Kill() }
     if ($null -ne $Server -and -not $Server.HasExited) { $Server.Kill() }

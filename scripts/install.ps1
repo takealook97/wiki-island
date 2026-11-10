@@ -212,6 +212,11 @@ function Test-WiArchive {
         if ($WiArchiveEntries -cnotcontains $name) { Invoke-WiFailure $unexpected }
         if ($seen -ccontains $name) { Invoke-WiFailure $unexpected }
         if ($entry.Name -cne $name) { Invoke-WiFailure $unexpected }
+        # Only a plain file may be extracted: reject the DOS directory bit and any Unix file type
+        # (high 16 bits of the attributes) other than a regular file.
+        $attributes = $entry.ExternalAttributes
+        $unixType = ($attributes -shr 16) -band 0xF000
+        if (($attributes -band 0x10) -ne 0 -or ($unixType -ne 0 -and $unixType -ne 0x8000)) { Invoke-WiFailure $unexpected }
         $seen += $name
     }
     if ($seen.Count -ne $WiArchiveEntries.Count) { Invoke-WiFailure $unexpected }
@@ -282,6 +287,28 @@ function Invoke-WiQuiet {
     }
 }
 
+# True when $Path exists and is a reparse point (a junction or a symbolic link).
+function Test-WiLink {
+    param([string]$Path)
+    try {
+        $attributes = [IO.File]::GetAttributes($Path)
+    } catch {
+        return $false
+    }
+    return (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+}
+
+# Stops unless the install folder $Dir and its parent folder are real folders, not links to
+# another place. Nothing is read, written or removed before this passes.
+function Assert-WiNotLinked {
+    param([string]$Dir)
+    foreach ($path in @($Dir, (Split-Path -Parent $Dir))) {
+        if (Test-WiLink $path) {
+            Invoke-WiFailure "the folder $path is a link to another place, so nothing was installed; remove the link or set WI_INSTALL_DIR to a normal folder, then run this installer again."
+        }
+    }
+}
+
 # Removes files and folders left by an earlier run that could not remove them (for example a
 # renamed wi.exe that was still running). Best effort: what cannot be removed stays for next time.
 function Clear-WiLeftover {
@@ -346,6 +373,7 @@ function Undo-WiPlacement {
 # the same volume. Any failure, including Ctrl+C, puts the older pair back.
 function Install-WiPair {
     param([string]$Stage, [string]$Dir, [string]$Id)
+    Assert-WiNotLinked $Dir
     $state = @{ Dir = $Dir; Id = $Id; Placed = @(); Aside = @() }
     $hadOlder = $false
     foreach ($name in $WiPrograms) {
@@ -502,6 +530,7 @@ function Invoke-WiInstall {
     if ($protocols -ne [Net.SecurityProtocolType]::SystemDefault) {
         [Net.ServicePointManager]::SecurityProtocol = $protocols -bor [Net.SecurityProtocolType]::Tls12
     }
+    Assert-WiNotLinked $dir
     Clear-WiLeftover $dir
 
     $id = [Guid]::NewGuid().ToString('N').Substring(0, 12)
@@ -518,6 +547,8 @@ function Invoke-WiInstall {
         }
         Get-WiRelease -Base $base -Temp $temp -Stage $stage
 
+        # The folder may have been swapped for a link while the release downloaded.
+        Assert-WiNotLinked $dir
         if (Test-Path -LiteralPath $dir -PathType Leaf) {
             Invoke-WiFailure "a file named $(Split-Path -Leaf $dir) is in the way in $parent, so nothing was installed; move it aside, then run this installer again."
         }
@@ -542,8 +573,14 @@ function Invoke-WiInstall {
         }
     }
 
-    $added = Add-WiUserPath $dir
-    if (-not (Test-WiPathEntry $env:Path $dir)) { $env:Path = "$env:Path;$dir" }
+    # A folder name with ';' or '%' cannot be stored safely in Path: ';' splits the entry and
+    # '%name%' would be expanded as a variable. The Path is left alone then.
+    $canUsePath = -not ($dir.Contains(';') -or $dir.Contains('%'))
+    $added = $false
+    if ($canUsePath) {
+        $added = Add-WiUserPath $dir
+        if (-not (Test-WiPathEntry $env:Path $dir)) { $env:Path = "$env:Path;$dir" }
+    }
 
     # Connect your notes folder and AI apps (full path, so this works right now).
     if (-not (Test-WiFlag 'WI_INSTALL_SKIP_SETUP')) {
@@ -559,7 +596,9 @@ function Invoke-WiInstall {
 
     Write-WiLine ''
     Write-WiLine 'Done. Nothing else to do: talk to your AI as usual.'
-    if ($added) {
+    if (-not $canUsePath) {
+        Write-WiLine "The programs are installed in $dir. That folder name cannot be added to your user Path, so run wi from there, or move the install by setting WI_INSTALL_DIR to a folder name without ; or % and running this installer again."
+    } elseif ($added) {
         Write-WiLine "New terminal windows will find the wi command (its folder $dir was added to your user Path)."
     } else {
         Write-WiLine "New terminal windows will find the wi command (its folder $dir is on your user Path)."
