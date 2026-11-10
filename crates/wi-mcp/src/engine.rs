@@ -554,8 +554,8 @@ impl Engine {
             "wi_list" | "wi_find" => self.list(name, a, out)?,
             "wi_history" => {
                 let path = required(a, "identifier")?;
-                match self.vault.read(path) {
-                    Ok(_) | Err(StoreError::NotFound { .. }) => {}
+                match self.vault.require_readable(path) {
+                    Ok(()) | Err(StoreError::NotFound { .. }) => {}
                     Err(e) => return Err(e.into()),
                 }
                 self.vault.flush()?;

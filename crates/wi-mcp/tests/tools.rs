@@ -1636,6 +1636,22 @@ fn oversized_files_are_refused_by_read_but_still_listed_and_moved() {
 }
 
 #[test]
+fn history_of_a_file_above_the_read_limit_behaves_like_a_small_file() {
+    const LIMIT: usize = 64;
+    let (_temp, e) = fixture_with_limit(LIMIT);
+    let root = e.vault().root().to_path_buf();
+    std::fs::write(root.join("small.md"), "small\n").unwrap();
+    std::fs::write(root.join("big.md"), "B".repeat(LIMIT * 4)).unwrap();
+    let small = good(&e, "wi_history", json!({"identifier":"small.md"}));
+    let big = good(&e, "wi_history", json!({"identifier":"big.md"}));
+    assert_eq!(big["total"], small["total"]);
+    assert_eq!(big["items"], small["items"]);
+    // A missing file still answers with an empty history, not an error.
+    let missing = good(&e, "wi_history", json!({"identifier":"missing.md"}));
+    assert_eq!(missing["total"], 0);
+}
+
+#[test]
 fn an_over_cap_search_is_an_invalid_request_with_a_fixed_message() {
     let (_temp, e) = fixture(Arc::new(Unavailable));
     write(&e, "a.md", "alpha beta\n");

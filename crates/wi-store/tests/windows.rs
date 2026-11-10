@@ -357,3 +357,29 @@ fn a_bounded_read_refuses_a_file_above_the_limit_and_still_refuses_a_junction() 
         "bounded read through a junction"
     );
 }
+
+#[test]
+fn require_readable_checks_existence_without_reading_and_refuses_a_junction() {
+    let (fx, vault) = Fixture::new();
+    drop(vault);
+    let config = fx.root_input().join(".wiki-island").join("config.toml");
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str("max_note_bytes = 16\n");
+    std::fs::write(&config, text).unwrap();
+    let vault = fx.open();
+    std::fs::write(vault.root().join("over.bin"), [7u8; 64]).unwrap();
+    vault.require_readable("over.bin").unwrap();
+    match vault.require_readable("missing.md").unwrap_err() {
+        StoreError::NotFound { path } => assert_eq!(path, "missing.md"),
+        other => panic!("{other}"),
+    }
+
+    let outside = fx.dir.path().join("outside-required");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("a.md"), "# secret\n").unwrap();
+    junction(&vault.root().join("link"), &outside);
+    assert!(
+        vault.require_readable("link/a.md").is_err(),
+        "existence check through a junction"
+    );
+}
