@@ -62,7 +62,7 @@ impl Root {
         for form in &self.forms {
             let shown = form.display().to_string();
             for separator in ['/', '\\'] {
-                text = text.replace(&format!("{shown}{separator}"), "");
+                text = strip_vault_prefix(&text, &format!("{shown}{separator}"));
             }
             text = text.replace(&shown, "your notes folder");
         }
@@ -106,6 +106,24 @@ impl Root {
         }
         Some(out)
     }
+}
+
+/// `text` with each `prefix` removed and the vault-relative span after it
+/// (up to whitespace or a quote) shown with `/` separators.
+fn strip_vault_prefix(text: &str, prefix: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(prefix) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + prefix.len()..];
+        let end = after
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`'))
+            .unwrap_or(after.len());
+        out.push_str(&display_rel(Path::new(&after[..end])));
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn name_of(path: &Path) -> String {
@@ -246,11 +264,16 @@ mod tests {
         assert_eq!(root.show(&elsewhere), "b.md");
         assert_eq!(root.show(Path::new("notes/c.md")), "notes/c.md");
         let text = format!("{} is not a regular file", inside.display());
-        // The relative part keeps the platform separator, so compare it in `/` form.
-        assert_eq!(
-            root.clean(&text).replace('\\', "/"),
-            "notes/a.md is not a regular file"
+        assert_eq!(root.clean(&text), "notes/a.md is not a regular file");
+        // A suffix spelled with the platform separator (`\` on Windows) prints with `/`.
+        let sep = std::path::MAIN_SEPARATOR;
+        let spelled = format!(
+            "{}{sep}notes{sep}sub{sep}a.md is not a regular file",
+            temp.display()
         );
+        assert_eq!(root.clean(&spelled), "notes/sub/a.md is not a regular file");
+        let quoted = format!("bad '{}{sep}notes{sep}a.md' here", temp.display());
+        assert_eq!(root.clean(&quoted), "bad 'notes/a.md' here");
         assert_eq!(
             root.clean("open (/var/x/y.md), then C:\\Users\\o\\z.md."),
             "open (y.md), then z.md."
