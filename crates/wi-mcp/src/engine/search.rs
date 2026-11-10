@@ -21,7 +21,7 @@ impl Engine {
     }
 
     fn resolve_any(&self, identifier: &str) -> Result<ReadResult> {
-        match self.vault.read(identifier) {
+        match self.vault.read_bounded(identifier) {
             Ok(r) => return Ok(r),
             Err(StoreError::NotFound { .. }) => {}
             Err(e) => return Err(e.into()),
@@ -39,7 +39,7 @@ impl Engine {
                 ));
             }
             if let Some(hit) = context.hits.first() {
-                let read = self.vault.read(&hit.rel_path.to_string_lossy())?;
+                let read = self.vault.read_bounded(&hit.rel_path.to_string_lossy())?;
                 if read.checksum != hit.content_hash
                     || self.hit(&read, false)?.permalink != identifier
                 {
@@ -71,7 +71,9 @@ impl Engine {
                 Error::Invalid("Ambiguous permalink. Use an exact file path.")
             });
         }
-        let read = self.vault.read(&matches[0].rel_path.to_string_lossy())?;
+        let read = self
+            .vault
+            .read_bounded(&matches[0].rel_path.to_string_lossy())?;
         if read.checksum != matches[0].content_hash
             || self.hit(&read, false)?.permalink != identifier
         {
@@ -155,7 +157,7 @@ impl Engine {
     pub(super) fn hydrate(&self, hits: Vec<SearchHit>, a: &Value, out: &mut Value) -> Result<()> {
         let mut delivered = Vec::new();
         for hit in hits {
-            match self.vault.read(&hit.rel_path.to_string_lossy()) {
+            match self.vault.read_bounded(&hit.rel_path.to_string_lossy()) {
                 Ok(read) if read.checksum == hit.content_hash => {
                     delivered.push(self.hit(&read, hit.fallback)?)
                 }
@@ -194,7 +196,7 @@ impl Engine {
             let path = h.rel_path.to_string_lossy().into_owned();
             *cache.entry(path).or_insert_with_key(|path| {
                 self.vault
-                    .read(path)
+                    .read_bounded(path)
                     .ok()
                     .filter(|read| read.checksum == h.content_hash)
                     .and_then(|read| Note::parse(&read.bytes).ok())

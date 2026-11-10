@@ -7,6 +7,7 @@ fn quote(s: &str) -> String {
 /// A small, safe query grammar: terms, quoted phrases and binary AND/OR/NOT.
 /// Column selectors and raw FTS expressions are never interpolated from input.
 fn words(text: &str, prefix: bool) -> Result<String> {
+    let multi_term = text.split_whitespace().nth(1).is_some();
     let mut tokens = Vec::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -51,7 +52,7 @@ fn words(text: &str, prefix: bool) -> Result<String> {
                 let term = term.trim_end_matches('*');
                 let star =
                     (prefix || caller_star) && !(term.contains('/') && term.ends_with(".md"));
-                if text.split_whitespace().count() > 1 && !term.chars().any(char::is_alphanumeric) {
+                if multi_term && !term.chars().any(char::is_alphanumeric) {
                     continue;
                 }
                 if term.is_empty() {
