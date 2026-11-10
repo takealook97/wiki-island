@@ -110,17 +110,18 @@ impl Query {
         }
     }
     pub(crate) fn validate(&self) -> Result<Vec<filters::Predicate>> {
-        if self.limit > 10_000 || self.text.len() > 16_384 {
-            return Err(Error::InvalidQuery("limit or text exceeds bounds".into()));
-        }
         // Exact permalink identities are not parsed as terms; only text and
-        // title queries reach the FTS parser and carry the cap.
+        // title queries reach the FTS parser and carry the cap, which is
+        // checked first so it holds at any size.
         if self.mode != SearchMode::Permalink {
             let bytes = self.text.len();
             let terms = self.text.split_whitespace().count();
             if bytes > MAX_QUERY_BYTES || terms > MAX_QUERY_TERMS {
                 return Err(Error::QueryTooLong { bytes, terms });
             }
+        }
+        if self.limit > 10_000 || self.text.len() > 16_384 {
+            return Err(Error::InvalidQuery("limit or text exceeds bounds".into()));
         }
         filters::parse(&self.metadata_filters)
     }

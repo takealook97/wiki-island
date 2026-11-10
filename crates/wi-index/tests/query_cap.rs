@@ -143,3 +143,32 @@ fn exact_permalink_identities_carry_no_term_cap() {
     };
     assert!(index.search(&query).is_ok());
 }
+
+#[test]
+fn a_text_or_title_query_above_the_older_bound_is_too_long_at_any_size() {
+    let (_root, _cache, index) = synced();
+    for bytes in [16_385, 100_000] {
+        for mode in [SearchMode::Text, SearchMode::Title] {
+            let query = Query {
+                text: long_term(bytes),
+                mode,
+                ..Query::default()
+            };
+            assert_too_long(index.search(&query), bytes, 1);
+        }
+    }
+}
+
+#[test]
+fn a_permalink_identity_above_the_older_bound_is_still_invalid() {
+    let (_root, _cache, index) = synced();
+    let query = Query {
+        text: long_term(16_385),
+        mode: SearchMode::Permalink,
+        ..Query::default()
+    };
+    assert!(matches!(
+        index.search(&query),
+        Err(Error::InvalidQuery(message)) if message == "limit or text exceeds bounds"
+    ));
+}
