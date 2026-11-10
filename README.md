@@ -28,7 +28,7 @@ It needs Windows 10 version 1709 or later on a 64-bit Intel or AMD computer. If 
 
 ### Check that it worked
 
-The installer downloads the latest release for your computer, checks its SHA-256 checksum, installs `wi` and `wiki-island` and runs `wi setup`. A checksum mismatch stops the install and changes nothing. It is safe to run again. Open a new terminal window and run:
+The installer downloads the latest release for your computer, checks its SHA-256 checksum, installs `wi` and `wiki-island` and runs `wi setup`. A checksum mismatch, or a download larger than any release should be, stops the install and changes nothing. On Windows the installer also refuses a program folder that is, or sits inside, a symbolic link or junction. It is safe to run again. Open a new terminal window and run:
 
 ```sh
 wi doctor
