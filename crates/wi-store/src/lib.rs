@@ -6,6 +6,8 @@
 //! See `docs/OPERATIONS.md#write-path` and `crates/wi-store/README.md`.
 #![forbid(unsafe_code)]
 
+#[cfg(any(unix, windows))]
+mod bounded;
 #[cfg(unix)]
 mod contained;
 #[cfg(windows)]

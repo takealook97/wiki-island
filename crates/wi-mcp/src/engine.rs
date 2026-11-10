@@ -710,6 +710,9 @@ fn message(code: &str) -> &'static str {
             "Copy the earlier claim into a new note so its history is kept."
         }
         "io" => "A filesystem operation failed. Check path length and local file permissions.",
+        "too-large" => {
+            "The file is larger than the read limit. Open it in its own app, or raise max_note_bytes in the settings file."
+        }
         "parse" => "The note is not valid UTF-8.",
         "history" => "The requested history operation failed. Check the commit and vault history.",
         "index" => "Search needs to recover its local cache. Retry the request.",

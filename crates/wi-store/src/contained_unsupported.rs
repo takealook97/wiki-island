@@ -34,6 +34,14 @@ impl Dir {
         Err(StoreError::UnsupportedPlatform)
     }
 
+    pub(crate) fn read_regular_bounded(
+        &self,
+        _name: &str,
+        _max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        Err(StoreError::UnsupportedPlatform)
+    }
+
     pub(crate) fn stat_regular(&self, _name: &str) -> Result<Option<(String, u64)>> {
         Err(StoreError::UnsupportedPlatform)
     }
@@ -82,5 +90,13 @@ pub(crate) fn split(_rel: &str) -> Result<(Vec<&str>, &str)> {
 }
 
 pub(crate) fn read_rel(_root: &Path, _rel: &str) -> Result<Option<Vec<u8>>> {
+    Err(StoreError::UnsupportedPlatform)
+}
+
+pub(crate) fn read_rel_bounded(
+    _root: &Path,
+    _rel: &str,
+    _max_bytes: u64,
+) -> Result<Option<Vec<u8>>> {
     Err(StoreError::UnsupportedPlatform)
 }

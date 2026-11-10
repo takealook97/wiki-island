@@ -326,3 +326,34 @@ fn a_short_name_alias_is_refused() {
     assert!(!long.join("b.md").exists());
     assert_eq!(vault.read("Long Folder Name/a.md").unwrap().bytes, b"# a\n");
 }
+
+#[test]
+fn a_bounded_read_refuses_a_file_above_the_limit_and_still_refuses_a_junction() {
+    let (fx, vault) = Fixture::new();
+    drop(vault);
+    let config = fx.root_input().join(".wiki-island").join("config.toml");
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str("max_note_bytes = 16\n");
+    std::fs::write(&config, text).unwrap();
+    let vault = fx.open();
+    std::fs::write(vault.root().join("over.bin"), [7u8; 17]).unwrap();
+    std::fs::write(vault.root().join("at.md"), [b'a'; 16]).unwrap();
+
+    match vault.read_bounded("over.bin").unwrap_err() {
+        StoreError::TooLarge { path, size, limit } => {
+            assert_eq!((path.as_str(), size, limit), ("over.bin", 17, 16));
+        }
+        other => panic!("{other}"),
+    }
+    assert_eq!(vault.read_bounded("at.md").unwrap().bytes.len(), 16);
+    assert_eq!(vault.read("over.bin").unwrap().bytes.len(), 17);
+
+    let outside = fx.dir.path().join("outside-bounded");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("a.md"), "# secret\n").unwrap();
+    junction(&vault.root().join("link"), &outside);
+    assert!(
+        vault.read_bounded("link/a.md").is_err(),
+        "bounded read through a junction"
+    );
+}

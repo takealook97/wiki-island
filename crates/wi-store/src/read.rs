@@ -14,7 +14,7 @@ use serde::Serialize;
 use wi_history::hash_bytes;
 use wi_index::{Query, SearchHit};
 
-use crate::contained::read_rel;
+use crate::contained::{read_rel, read_rel_bounded};
 use crate::error::{Result, StoreError};
 use crate::paths::resolve_readable;
 use crate::vault::Vault;
@@ -80,8 +80,25 @@ impl Vault {
         Ok(wi_history::publication_state(&self.history)?)
     }
 
-    /// Read a note or file with its checksum and generation.
+    /// Read a note or file with its checksum and generation, whatever its
+    /// size. For write-path steps and internal callers that need the whole
+    /// file; content delivered to a caller goes through [`Vault::read_bounded`].
     pub fn read(&self, path: &str) -> Result<ReadResult> {
+        self.read_with_limit(path, None)
+    }
+
+    /// [`Vault::read`] refusing a file above the vault's `max_note_bytes`
+    /// with [`StoreError::TooLarge`], without reading it whole.
+    pub fn read_bounded(&self, path: &str) -> Result<ReadResult> {
+        self.read_with_limit(path, Some(self.max_read_bytes()))
+    }
+
+    /// The byte limit for reads a caller aims at a file.
+    pub(crate) fn max_read_bytes(&self) -> u64 {
+        self.config.max_note_bytes()
+    }
+
+    fn read_with_limit(&self, path: &str, limit: Option<u64>) -> Result<ReadResult> {
         let target = resolve_readable(self.root(), path)?;
         let mut diagnostics = Vec::new();
         for attempt in 0..2 {
@@ -89,10 +106,13 @@ impl Vault {
             if let Some(hook) = &self.hooks.before_read {
                 hook(&target.abs);
             }
-            let bytes =
-                read_rel(self.root(), &target.rel)?.ok_or_else(|| StoreError::NotFound {
-                    path: target.rel.clone(),
-                })?;
+            let bytes = match limit {
+                Some(max_bytes) => read_rel_bounded(self.root(), &target.rel, max_bytes)?,
+                None => read_rel(self.root(), &target.rel)?,
+            }
+            .ok_or_else(|| StoreError::NotFound {
+                path: target.rel.clone(),
+            })?;
             let end = self.publication_state()?;
             let stable = start == end && end.1.is_none();
             if stable || attempt == 1 {
@@ -260,7 +280,11 @@ impl Vault {
             let rel = crate::paths::rel_string(&hit.rel_path);
             let current = rel
                 .as_deref()
-                .and_then(|rel| read_rel(self.root(), rel).ok().flatten())
+                .and_then(|rel| {
+                    read_rel_bounded(self.root(), rel, self.max_read_bytes())
+                        .ok()
+                        .flatten()
+                })
                 .map(|b| hash_bytes(&b));
             if current.as_deref() == Some(hit.content_hash.as_str()) {
                 hits.push(hit);

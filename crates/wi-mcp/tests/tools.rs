@@ -1559,3 +1559,78 @@ fn hit_titles_use_frontmatter_then_real_h1_then_file_stem() {
         assert_eq!(out["hits"][0]["title"], title);
     }
 }
+
+/// An engine on a vault whose `max_note_bytes` is `limit`.
+fn fixture_with_limit(limit: usize) -> (TempDir, Engine) {
+    let temp = TempDir::new().unwrap();
+    let options = || OpenOptions {
+        index_path: Some(temp.path().join("index.db")),
+    };
+    let (vault, _) = Vault::init_with(temp.path().join("vault"), options()).unwrap();
+    let config = vault.root().join(".wiki-island/config.toml");
+    drop(vault);
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str(&format!("max_note_bytes = {limit}\n"));
+    std::fs::write(&config, text).unwrap();
+    let vault = Vault::open_with(temp.path().join("vault"), options()).unwrap();
+    (temp, Engine::new(vault, Arc::new(Unavailable)))
+}
+
+#[test]
+fn oversized_files_are_refused_by_read_but_still_listed_and_moved() {
+    const LIMIT: usize = 256;
+    let (_temp, e) = fixture_with_limit(LIMIT);
+    let root = e.vault().root().to_path_buf();
+    std::fs::create_dir_all(root.join("notes")).unwrap();
+    let big_note = format!("---\ntitle: Big\n---\n{}", "B".repeat(LIMIT));
+    std::fs::write(root.join("notes/big.md"), &big_note).unwrap();
+    std::fs::write(root.join("notes/big.bin"), vec![0u8; LIMIT + 1]).unwrap();
+    write(&e, "notes/small.md", "small\n");
+
+    for identifier in ["notes/big.md", "notes/big.bin"] {
+        let refused = e.call("wi_read", json!({ "identifier": identifier }));
+        assert_eq!(refused.is_error, Some(true), "{refused:?}");
+        let error = &refused.text_value().unwrap()["error"];
+        assert_eq!(error["code"], "too-large");
+        assert_eq!(
+            error["message"],
+            "The file is larger than the read limit. Open it in its own app, or raise max_note_bytes in the settings file."
+        );
+    }
+    assert_eq!(
+        good(&e, "wi_read", json!({"identifier":"notes/small.md"}))["hits"][0]["content"],
+        "small\n"
+    );
+
+    let listed = good(&e, "wi_list", json!({"path":"notes"}));
+    let size_of = |items: &Value, path: &str| {
+        items["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["path"] == path)
+            .map(|i| i["size"].as_u64().unwrap())
+    };
+    assert_eq!(
+        size_of(&listed, "notes/big.md"),
+        Some(big_note.len() as u64)
+    );
+    assert_eq!(size_of(&listed, "notes/big.bin"), Some(LIMIT as u64 + 1));
+    let found = good(&e, "wi_find", json!({"path":"notes","name":"big*"}));
+    assert_eq!(size_of(&found, "notes/big.md"), Some(big_note.len() as u64));
+    assert_eq!(size_of(&found, "notes/big.bin"), Some(LIMIT as u64 + 1));
+    assert!(!found.to_string().contains("BBBB"));
+
+    // A directory move pins whole-file checksums, so an attachment above the
+    // read limit still moves with its folder.
+    let moved = good(
+        &e,
+        "wi_move",
+        json!({"path":"notes","destination_path":"moved"}),
+    );
+    assert_eq!(moved["data"]["moved"], 3);
+    assert_eq!(
+        e.vault().read("moved/big.bin").unwrap().bytes.len(),
+        LIMIT + 1
+    );
+}

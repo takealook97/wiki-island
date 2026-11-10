@@ -18,6 +18,9 @@ pub(crate) fn plain_error(error: &anyhow::Error) -> String {
             "Search is recovering its local cache. Your notes are safe.".into()
         }
         Some(StoreError::LifecycleRefused { message, .. }) => message.clone(),
+        Some(StoreError::TooLarge { path, .. }) => format!(
+            "{path} is larger than the read limit. Open it in its own app, or raise max_note_bytes in .wiki-island/config.toml."
+        ),
         _ => format!("{error:#}"),
     }
 }

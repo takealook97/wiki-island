@@ -226,6 +226,19 @@ impl Dir {
         Ok(Some(bytes))
     }
 
+    /// `read_regular` that refuses a file above `max_bytes` with
+    /// [`StoreError::TooLarge`], reading at most `max_bytes + 1` bytes.
+    pub(crate) fn read_regular_bounded(
+        &self,
+        name: &str,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(file) = self.open(name, false)? else {
+            return Ok(None);
+        };
+        crate::bounded::read_capped(file, max_bytes, &self.path.join(name)).map(Some)
+    }
+
     fn stat_file(&self, name: &str) -> Result<Option<sys::Stat>> {
         match self.dir.stat(name) {
             Ok(Some(stat)) if stat.kind == Kind::File => Ok(Some(stat)),
@@ -449,6 +462,17 @@ pub(crate) fn split(rel: &str) -> Result<(Vec<&str>, &str)> {
 pub(crate) fn read_rel(root: &Path, rel: &str) -> Result<Option<Vec<u8>>> {
     match Dir::open_parent(root, rel)? {
         Some((dir, name)) => dir.read_regular(&name),
+        None => Ok(None),
+    }
+}
+
+/// `read_rel` that refuses a file above `max_bytes` with
+/// [`StoreError::TooLarge`] naming `rel`, without reading it whole.
+pub(crate) fn read_rel_bounded(root: &Path, rel: &str, max_bytes: u64) -> Result<Option<Vec<u8>>> {
+    match Dir::open_parent(root, rel)? {
+        Some((dir, name)) => dir
+            .read_regular_bounded(&name, max_bytes)
+            .map_err(|e| crate::bounded::name_rel(e, rel)),
         None => Ok(None),
     }
 }

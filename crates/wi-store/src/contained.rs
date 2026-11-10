@@ -151,31 +151,26 @@ impl Dir {
 
     /// Read a regular file without following a symlink; `None` if absent.
     pub(crate) fn read_regular(&self, name: &str) -> Result<Option<Vec<u8>>> {
-        let path = self.path.join(name);
-        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-        let fd = match rustix::fs::openat(&self.file, name, flags, Mode::empty()) {
-            Ok(fd) => fd,
-            Err(Errno::NOENT) => return Ok(None),
-            Err(Errno::LOOP) => {
-                return Err(StoreError::Protected {
-                    path: path.display().to_string(),
-                    reason: "symlink",
-                });
-            }
-            Err(e) => return Err(io_err(&path, e)),
+        let Some(mut file) = self.open_regular(name)? else {
+            return Ok(None);
         };
-        let stat = rustix::fs::fstat(&fd).map_err(|e| io_err(&path, e))?;
-        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-            return Err(StoreError::Invalid(format!(
-                "{} is not a regular file",
-                path.display()
-            )));
-        }
         let mut bytes = Vec::new();
-        File::from(fd)
-            .read_to_end(&mut bytes)
-            .map_err(|e| StoreError::io(&path, e))?;
+        file.read_to_end(&mut bytes)
+            .map_err(|e| StoreError::io(self.path.join(name), e))?;
         Ok(Some(bytes))
+    }
+
+    /// `read_regular` that refuses a file above `max_bytes` with
+    /// [`StoreError::TooLarge`], reading at most `max_bytes + 1` bytes.
+    pub(crate) fn read_regular_bounded(
+        &self,
+        name: &str,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(file) = self.open_regular(name)? else {
+            return Ok(None);
+        };
+        crate::bounded::read_capped(file, max_bytes, &self.path.join(name)).map(Some)
     }
 
     /// `(mtime_ns, size)` of a regular file without following a symlink, in
@@ -314,6 +309,17 @@ pub(crate) fn split(rel: &str) -> Result<(Vec<&str>, &str)> {
 pub(crate) fn read_rel(root: &Path, rel: &str) -> Result<Option<Vec<u8>>> {
     match Dir::open_parent(root, rel)? {
         Some((dir, name)) => dir.read_regular(&name),
+        None => Ok(None),
+    }
+}
+
+/// `read_rel` that refuses a file above `max_bytes` with
+/// [`StoreError::TooLarge`] naming `rel`, without reading it whole.
+pub(crate) fn read_rel_bounded(root: &Path, rel: &str, max_bytes: u64) -> Result<Option<Vec<u8>>> {
+    match Dir::open_parent(root, rel)? {
+        Some((dir, name)) => dir
+            .read_regular_bounded(&name, max_bytes)
+            .map_err(|e| crate::bounded::name_rel(e, rel)),
         None => Ok(None),
     }
 }

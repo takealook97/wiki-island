@@ -83,6 +83,8 @@ pub enum StoreError {
         #[source]
         source: std::io::Error,
     },
+    #[error("{path} is {size} bytes, above the {limit}-byte read limit")]
+    TooLarge { path: String, size: u64, limit: u64 },
     #[error("watcher: {0}")]
     Watch(String),
     #[error(
@@ -129,6 +131,7 @@ impl StoreError {
             Self::Index(_) => "index",
             Self::Config(_) => "config",
             Self::Io { .. } => "io",
+            Self::TooLarge { .. } => "too-large",
             Self::Watch(_) => "watch",
             Self::RecoveryHeld { .. } => "recovery-held",
             Self::NotInitialised(_) => "not-initialised",

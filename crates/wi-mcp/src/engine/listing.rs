@@ -251,7 +251,17 @@ impl Engine {
     }
 
     fn name_item(&self, path: &str) -> Result<Value> {
-        let read = self.vault.read(path)?;
+        let read = match self.vault.read_bounded(path) {
+            Ok(read) => read,
+            Err(StoreError::TooLarge { .. }) => {
+                // Above the read limit: the name stays discoverable from its
+                // metadata, without loading the body (as for an unparsable file).
+                let stat = self.vault.name_stat(path)?;
+                return Ok(json!({"path":path,"kind":"file","size":stat.size,
+                    "title":null,"permalink":generate_permalink(path)}));
+            }
+            Err(e) => return Err(e.into()),
+        };
         // Binary and oversized files still have discoverable names; bodies
         // and lifecycle qualifiers are delivered only by wi_read.
         let note = Note::parse(&read.bytes).ok();

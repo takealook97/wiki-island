@@ -237,7 +237,7 @@ pub(crate) fn run_in_vault(vault: &Session, command: Command) -> Result<Output> 
             write_output(vault, result, "archived to")
         }
         Command::Read { path } => {
-            let read = vault.read(&path)?;
+            let read = vault.read_bounded(&path)?;
             let text = String::from_utf8_lossy(&read.bytes).into_owned();
             let mut json = serde_json::to_value(&read)?;
             json["content"] = Value::String(text.clone());
