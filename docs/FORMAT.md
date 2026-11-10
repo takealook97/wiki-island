@@ -45,7 +45,7 @@ Vault config is `.wiki-island/config.toml`. Its keys:
 | `export_paths` | list of vault-relative paths | no additional paths; ordinary tools refuse to write under them |
 | `export_codex_path`, `export_claude_path`, `export_gemini_path` | vault-relative generated fragment | `.wiki-island/exports/AGENTS.md`, `.wiki-island/exports/CLAUDE.md`, `exports/GEMINI.md` |
 | `watch_debounce_ms` | positive integer | `200`, unmeasured policy choice |
-| `max_note_bytes` | positive integer | 8 MiB, unmeasured policy choice |
+| `max_note_bytes` | positive integer | 8 MiB, unmeasured policy choice. Bounds what the index parses and what a read aimed at a file delivers, for every file type ([PROTOCOL](PROTOCOL.md#read-limit-and-query-cap)) |
 
 The config also records which hosts have skills sync enabled ([INTEGRATIONS](INTEGRATIONS.md#skills-export)). `vault_id` is a UUIDv4 written by `wi init`. Unknown TOML keys and comments are preserved. `.wiki-island/local/` is per-device and gitignored. The publisher lock and manifest live in `.git/wi/`. The other defaults (the change-cap budget, 16384 bytes, 8 hits) are in [KNOWLEDGE](KNOWLEDGE.md); all are unmeasured.
 

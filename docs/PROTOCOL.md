@@ -46,6 +46,20 @@ Find uses the index's metadata predicates. The subtree is applied before the del
 
 List, find (including folders), search, history and recent-history reads accept `limit: 1..8` (default 8) and either `offset: 0..4294967295` (default 0) or `page: 1..4294967295` (one-based); combining them is refused. They return `offset`, an observed `total`, `total_capped` (search and metadata find), a nullable `next_offset`, and `withheld: [{reason:"hit-limit",count}]` for the remaining rows. Reuse the same filter and limit with `next_offset`. These are live offset pages, not a frozen snapshot. Byte omissions report `does-not-fit` separately. Search and metadata find rank and limit candidates in the index: a page examines about four times `offset + limit` candidates, doubling (at most 8 rounds) only while an observation-category or folder filter or hash verification leaves it short, never more than 10000; `window_truncated: true` marks that the window reached 10000 with matches unexamined. Without a post-filter, `total` is a SQL count capped at 1000 and `total_capped: true` means more matches exist.
 
+### Read limit and query cap
+
+A read a caller aims at a file is bounded by the vault config key `max_note_bytes` ([FORMAT](FORMAT.md#vault-layout-and-config)), 8 MiB (8388608 bytes) by default, for every file type, Markdown or attachment. It covers `wi_read`, the identifier resolution behind `wi_context` and `wi_edit`, the delivery of `wi_search` hits and, on the command line, `wi read`. A file above the limit is refused with `too-large` and the fixed message `The file is larger than the read limit. Open it in its own app, or raise max_note_bytes in the settings file.` without being read into memory: the size comes from the open file handle, and a read stops after `limit + 1` bytes if the file grows meanwhile. A file exactly at the limit is read. The owner raises the limit with the same key the index uses; the new value applies when the vault is next opened.
+
+- `wi_list` and `wi_find` never drop a file above the limit: its row carries the real `size`, `title: null` and the generated permalink, and its body is not loaded.
+- A `wi_search` hit whose file is above the limit is withheld as `changed-after-index`, like an unreadable hit, and does not match a `categories` filter.
+- `wi_edit` of a note above the limit is refused with `too-large`, because identity resolution shares the bounded read. Such notes are already skipped by the index. Raise `max_note_bytes` to edit one.
+- `wi_history` returns no file content and is not refused for the size of the file.
+- Not bounded by this limit: write-path checks, directory-move checksums, crash recovery, ingest, import, publish, maintenance and lifecycle-internal reads. They still read whole files. The limit is a policy choice and unmeasured.
+
+A text or title query above 2048 bytes (the raw text) or 64 terms (whitespace-separated units) is refused with `invalid-request` and the fixed message `The search text is too long. Search for a few key words instead.` The caps apply to `mode: text` and `mode: title` only; permalink identities, `wi_find` glob patterns and exact context identities have no term cap. A query at both caps is accepted. An over-cap query never selects the literal scan fallback. The existing 16384-byte bound on every query mode is unchanged. Both caps are unmeasured policy choices.
+
+Existing vaults keep working: there is no format, config or index-schema change and no index rebuild, and the existing `max_note_bytes` key gains a second use. What changes for them: a direct read of a file above `max_note_bytes` is refused instead of delivered, and a text or title query above the caps is refused instead of searched.
+
 ### Directory moves
 
 A directory move selects visible files recursively without following symlinks, pins each current checksum, and applies the same store and lifecycle rules as individual moves. It is a sequence of durable publications, not an atomic rename: a later refusal reports partial progress and completed members stay moved. Ignored files, symlinks and empty source directories remain. Per-file `expected_checksum` and `operation_id` are refused; resume remaining members by path. `data.moved` records the full completed count.
@@ -98,7 +112,8 @@ Refusal messages are plain sentences that say what to do next and never expose r
 | `terminal-note`, `claim-edit-requires-candidate`, `lifecycle-revert-requires-fork` | Revise through a candidate or `restores` fork |
 | `claim-edit-mixed`, `claim-edit-refused`, `revert-refused`, `rule-retirement`, `work-close-refused` | Lifecycle mutation policy refusal |
 | `capture-dropped`, `capture-empty`, `budget-exhausted`, `lifecycle-unavailable` | Capture, change cap or provider refusal (`budget-exhausted` carries `retry_at`, `spent` and `work`) |
-| `edit-refused`, `invalid-request`, `unsupported` | Unsupported format or edit, bad arguments or operation |
+| `edit-refused`, `invalid-request`, `unsupported` | Unsupported format or edit, bad arguments or operation; `invalid-request` also covers a text or title query above the [query cap](#read-limit-and-query-cap) |
+| `too-large` | A file above the [read limit](#read-limit-and-query-cap); the message is fixed and says to open the file in its own app or raise `max_note_bytes` |
 | `future-timestamp`, `unparseable-timestamp` | A lifecycle timestamp is in the future or unreadable |
 | `io`, `parse`, `history`, `index`, `config`, `watch`, `not-initialised` | Filesystem, encoding, history, cache, config, watcher or vault failure |
 | `generation-unavailable`, `service-unavailable` | No trustworthy generation or unavailable service; observation fields are null |

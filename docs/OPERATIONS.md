@@ -199,6 +199,14 @@ A work item is a `type: work` note under `.wiki-island/work/<device_id>/` with `
 
 Originals stay inside the git repository by default and import never modifies them. For attachments above an unmeasured 20 MiB threshold, `wi doctor` warns and recommends considering Git LFS. LFS setup is never automatic. A hash folder outside git is not provided: it needs another backup and sync contract.
 
+## Read limit and CLI errors
+
+- **Read limit.** `wi read` and every tool that delivers a file a caller named refuse a file above `max_note_bytes` (default 8 MiB) without reading it; the rules and the list of what is bounded are in [PROTOCOL](PROTOCOL.md#read-limit-and-query-cap). The CLI prints `<note path> is larger than the read limit. Open it in its own app, or raise max_note_bytes in .wiki-island/config.toml.`, reports the code `too-large` with `--json` and exits 1. Reads inside the write path, recovery, ingest, import, publish and maintenance still load whole files.
+- **Query cap.** `wi search` with a text or title query above 2048 bytes or 64 terms prints `The search text is too long. Search for a few key words instead.`, reports `invalid-request` with `--json` and exits 1. Exit 2 stays reserved for usage errors.
+- **Plain errors.** Every error the CLI prints is one or two plain sentences with the next step. It never prints an absolute filesystem path, the text of an operating-system error, an error chain, a type name or engine jargon. A path inside the notes folder is shown relative to it and any other path by its file name. An I/O error has its own sentence for permission denied, storage full (also quota exceeded), file not found and every other case. Installer, service, document-import, lifecycle and note-parsing errors keep their own plain message; any other error prints `Something went wrong and wi could not finish. Run wi doctor to check your notes folder.` With `--json` the error object keeps exactly `code`, `message` and `hint`.
+- **`WI_DEBUG`.** With `WI_DEBUG=1` the CLI also writes the full original error chain to standard error on a separate line that starts with `detail: `. Without it nothing internal is printed. The installer for Windows reads the same variable ([Install and release](#install-and-release)).
+- **Compatibility.** No format, config or index-schema change. The only change to an existing error code is that an over-cap query reports `invalid-request` instead of `index`.
+
 ## Document import
 
 `wi import` prints the reason for each failed file in its human output.
