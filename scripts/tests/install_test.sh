@@ -307,6 +307,32 @@ check "upgrade exits 0" "$(cond [ "$RC" -eq 0 ])"
 check "upgrade replaces both programs" "$(cond grep -q fake-wiki-island "$BIN/wiki-island")"
 check "upgrade leaves no staging files" "$(cond [ -z "$(find "$BIN" -name '.*' -type f)" ])"
 
+# 22. An archive larger than the size limit (lowered for the test): stop, nothing installed, no
+# source build. Then the same without a Content-Length header, and an archive exactly at the limit.
+make_release good
+ASSET_SIZE=$(wc -c < "$REL/$ASSET" | tr -d ' ')
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD" WI_INSTALL_MAX_ASSET_BYTES=$((ASSET_SIZE - 1))
+check "oversized archive exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "oversized archive installs nothing" "$(cond nothing_installed)"
+check "oversized archive says so in a plain sentence" "$(cond grep -q 'larger than any release should be' "$WORK/out")"
+: > "$WORK/site/NO_LENGTH"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD" WI_INSTALL_MAX_ASSET_BYTES=$((ASSET_SIZE - 1))
+rm "$WORK/site/NO_LENGTH"
+check "oversized archive without a stated size exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "oversized archive without a stated size installs nothing" "$(cond nothing_installed)"
+check "oversized archive without a stated size says so" "$(cond grep -q 'larger than any release should be' "$WORK/out")"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD" WI_INSTALL_MAX_ASSET_BYTES="$ASSET_SIZE"
+check "archive exactly at the limit installs" "$(cond [ "$RC" -eq 0 ])"
+check "archive exactly at the limit installs the release" "$(cond grep -q fake-wi "$BIN/wi")"
+
+# 23. A checksum list larger than 64 KiB: stop, nothing installed, no source build.
+make_release good
+awk 'BEGIN { for (i = 0; i < 1100; i++) printf "%064d  padding-%d\n", 0, i }' >> "$REL/SHA256SUMS"
+run_install WI_INSTALL_SOURCE_CMD="$SOURCE_CMD"
+check "oversized checksum list exits non-zero" "$(cond [ "$RC" -ne 0 ])"
+check "oversized checksum list installs nothing" "$(cond nothing_installed)"
+check "oversized checksum list says so in a plain sentence" "$(cond grep -q 'checksum list is larger' "$WORK/out")"
+
 # True when both programs are the new release and no staging files are left.
 # shellcheck disable=SC2329,SC2317  # called through cond
 new_pair_intact() {
@@ -337,7 +363,7 @@ SHIM
   chmod 755 "$1/$2"
 }
 
-# 22. Every move onto wiki-island fails (a persistent destination error): the older pair is kept.
+# 24. Every move onto wiki-island fails (a persistent destination error): the older pair is kept.
 make_release good
 rm -rf "$WORK/shim-persist"
 fail_shim "$WORK/shim-persist" mv '*/wiki-island'
@@ -348,7 +374,7 @@ check "persistent rename failure exits non-zero" "$(cond [ "$RC" -ne 0 ])"
 check "persistent rename failure keeps the older pair" "$(cond old_pair_intact)"
 check "persistent rename failure says the previous programs were kept" "$(cond grep -q 'previous ones were kept' "$WORK/out")"
 
-# 23. The restore also fails: the installer says the installation is incomplete and exits non-zero.
+# 25. The restore also fails: the installer says the installation is incomplete and exits non-zero.
 make_release good
 rm -rf "$WORK/shim-restore"
 fail_shim "$WORK/shim-restore" mv '*/wiki-island | */.wi.old.*'
@@ -360,7 +386,7 @@ check "failed restore says the installation is incomplete" "$(cond grep -q 'inco
 check "failed restore does not claim the previous programs were kept" "$(cond no_kept_claim)"
 check "failed restore leaves both names runnable" "$(cond [ -x "$BIN/wi" ] && [ -x "$BIN/wiki-island" ])"
 
-# 24. TERM arrives at each step of the replacement: both names stay runnable as one pair and
+# 26. TERM arrives at each step of the replacement: both names stay runnable as one pair and
 # nothing is left behind. The shim signals the installer once, then lets the step itself run.
 for step in "cp:*/.wi.new.*" "cp:*/.wiki-island.new.*" "cp:*/.wi.old.*" "cp:*/.wiki-island.old.*" \
   "mv:*/.wi.new.*" "mv:*/.wiki-island.new.*" "rm:*/.wi.old.*"; do

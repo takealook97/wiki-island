@@ -9,6 +9,8 @@
 #   WI_INSTALL_FROM_SOURCE  Set to 1 to skip the release download and build from source.
 #   WI_INSTALL_SOURCE_CMD   Tests only: a shell command that replaces the source build. It must
 #                           put working `wi` and `wiki-island` programs into $HOME/.cargo/bin.
+#   WI_INSTALL_MAX_ASSET_BYTES  Tests only: a smaller size limit for the release archive, in bytes
+#                           (1 to 9 digits); a value at or above the normal limit is ignored.
 set -eu
 
 say() { printf '%s\n' "$*"; }
@@ -23,6 +25,18 @@ PROGRAMS="wi wiki-island"
 # Downloads use https only; a test base URL may also use http.
 PROTO="=https"
 [ -z "${WI_INSTALL_BASE_URL:-}" ] || PROTO="=http,https"
+# Download size limits in bytes: 256 MiB for the release archive, 64 KiB for SHA256SUMS. They are
+# unmeasured policy values well above the current release (an archive is about 18 MB).
+MAX_ASSET_BYTES=268435456
+MAX_SUMS_BYTES=65536
+case "${WI_INSTALL_MAX_ASSET_BYTES:-}" in
+  "" | *[!0-9]*) ;;
+  *)
+    if [ "${#WI_INSTALL_MAX_ASSET_BYTES}" -le 9 ] && [ "$WI_INSTALL_MAX_ASSET_BYTES" -lt "$MAX_ASSET_BYTES" ]; then
+      MAX_ASSET_BYTES=$WI_INSTALL_MAX_ASSET_BYTES
+    fi
+    ;;
+esac
 
 OS=$(uname -s)
 case "$OS" in
@@ -55,20 +69,26 @@ release_target() {
   esac
 }
 
-# Downloads $1 to $2. Sets FETCH to ok, missing (HTTP 404) or error (anything else).
+# Downloads $1 to $2, at most $3 bytes. Sets FETCH to ok, missing (HTTP 404), toolarge (more than
+# $3 bytes, partial file removed) or error (anything else). curl stops early when the server states
+# a larger size (exit 63); the size check afterwards also covers a server that states none.
 fetch() {
   rc=0
-  code=$(curl -sS -L --proto "$PROTO" --connect-timeout 20 --max-time 900 \
+  code=$(curl -sS -L --proto "$PROTO" --connect-timeout 20 --max-time 900 --max-filesize "$3" \
     -o "$2" -w '%{http_code}' "$1" 2>/dev/null) || rc=$?
-  if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -eq 63 ]; then
+    FETCH=toolarge
+  elif [ "$rc" -ne 0 ]; then
     FETCH=error
   elif [ "$code" = "200" ]; then
     FETCH=ok
+    [ "$(wc -c < "$2" | tr -d ' ')" -le "$3" ] || FETCH=toolarge
   elif [ "$code" = "404" ]; then
     FETCH=missing
   else
     FETCH=error
   fi
+  [ "$FETCH" != toolarge ] || rm -f "$2"
 }
 
 # Prints the SHA-256 of file $1.
@@ -158,7 +178,8 @@ LIST
 }
 
 # Tries the release install. Returns 0 when the programs are staged in $TMP/stage and 1 when the
-# source build should run instead. A failed checksum stops the whole installer.
+# source build should run instead. A failed checksum or an oversized download stops the whole
+# installer.
 try_release() {
   [ "${WI_INSTALL_FROM_SOURCE:-}" != "1" ] || return 1
   target=$(release_target)
@@ -179,9 +200,12 @@ try_release() {
 
   asset="wiki-island-$tag-$target.tar.gz"
   say "Downloading wiki-island $tag..."
-  fetch "$BASE/releases/download/$tag/$asset" "$TMP/$asset"
+  fetch "$BASE/releases/download/$tag/$asset" "$TMP/$asset" "$MAX_ASSET_BYTES"
   case "$FETCH" in
     ok) ;;
+    toolarge)
+      fail "the downloaded program is larger than any release should be, so nothing was installed. Run this installer again later, or report it at $ISSUES."
+      ;;
     missing)
       say "This release has no program for this computer, so wiki-island will be built from source."
       return 1
@@ -191,9 +215,12 @@ try_release() {
       return 1
       ;;
   esac
-  fetch "$BASE/releases/download/$tag/SHA256SUMS" "$TMP/SHA256SUMS"
+  fetch "$BASE/releases/download/$tag/SHA256SUMS" "$TMP/SHA256SUMS" "$MAX_SUMS_BYTES"
   case "$FETCH" in
     ok) ;;
+    toolarge)
+      fail "the published checksum list is larger than it should be, so nothing was installed. Run this installer again later, or report it at $ISSUES."
+      ;;
     missing)
       say "This release has no checksum list, so wiki-island will be built from source."
       return 1

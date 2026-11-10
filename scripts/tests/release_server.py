@@ -3,7 +3,9 @@
 Serves files below the given root. GET /releases/latest answers 302 to
 /releases/tag/<tag> when the file <root>/LATEST_TAG exists, 302 to the path
 in <root>/LATEST_REDIRECT when that file exists (GitHub answers 302 to
-/releases when a repository has no release), and 404 otherwise.
+/releases when a repository has no release), and 404 otherwise. While the file
+<root>/NO_LENGTH exists, files are served without a Content-Length header (the
+body ends when the connection closes).
 """
 import functools
 import http.server
@@ -12,6 +14,8 @@ import sys
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    hide_length = False
+
     def do_GET(self):
         if self.path == "/releases/latest":
             redirect = os.path.join(self.directory, "LATEST_REDIRECT")
@@ -32,7 +36,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        self.hide_length = os.path.exists(os.path.join(self.directory, "NO_LENGTH"))
         super().do_GET()
+
+    def send_header(self, keyword, value):
+        if self.hide_length and keyword.lower() == "content-length":
+            return
+        super().send_header(keyword, value)
 
     def redirect(self, location: str) -> None:
         self.send_response(302)
