@@ -14,7 +14,7 @@ use serde::Serialize;
 use wi_history::hash_bytes;
 use wi_index::{Query, SearchHit};
 
-use crate::contained::{read_rel, read_rel_bounded};
+use crate::contained::{open_rel_regular, read_rel, read_rel_bounded};
 use crate::error::{Result, StoreError};
 use crate::paths::resolve_readable;
 use crate::vault::Vault;
@@ -91,6 +91,19 @@ impl Vault {
     /// with [`StoreError::TooLarge`], without reading it whole.
     pub fn read_bounded(&self, path: &str) -> Result<ReadResult> {
         self.read_with_limit(path, Some(self.max_read_bytes()))
+    }
+
+    /// Succeed when [`Vault::read`] would find the file: resolves `path` the
+    /// same way and opens it through the same contained, no-follow,
+    /// regular-file checks, but reads no bytes. A missing file is
+    /// [`StoreError::NotFound`] with the vault-relative path.
+    pub fn require_readable(&self, path: &str) -> Result<()> {
+        let target = resolve_readable(self.root(), path)?;
+        if open_rel_regular(self.root(), &target.rel)? {
+            Ok(())
+        } else {
+            Err(StoreError::NotFound { path: target.rel })
+        }
     }
 
     /// The byte limit for reads a caller aims at a file.

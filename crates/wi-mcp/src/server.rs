@@ -330,7 +330,7 @@ pub async fn serve_stdio_with(
 ) -> std::result::Result<(), ServerError> {
     let (server, _runtime) = Server::open(root, lifecycle)?;
     let service = server
-        .serve(rmcp::transport::stdio())
+        .serve((tokio::io::stdin(), tokio::io::stdout()))
         .await
         .map_err(|e| ServerError::Transport(e.to_string()))?;
     service

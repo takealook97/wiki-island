@@ -96,3 +96,43 @@ fn read_bounded_keeps_not_found_and_default_limit() {
     std::fs::write(vault.root().join("small.md"), b"# Small\n").unwrap();
     assert_eq!(vault.read_bounded("small.md").unwrap().bytes, b"# Small\n");
 }
+
+#[test]
+fn require_readable_succeeds_on_a_file_above_the_limit_without_reading_it() {
+    let (fx, vault) = Fixture::new();
+    drop(vault);
+    let vault = vault_with_limit(&fx, LIMIT);
+    std::fs::write(vault.root().join("big.bin"), vec![b'd'; LIMIT * 4]).unwrap();
+    vault.require_readable("big.bin").unwrap();
+    assert!(matches!(
+        vault.read_bounded("big.bin"),
+        Err(StoreError::TooLarge { .. })
+    ));
+}
+
+#[test]
+fn require_readable_reports_a_missing_file_as_not_found() {
+    let (_fx, vault) = Fixture::new();
+    match vault.require_readable("gone/missing.md").unwrap_err() {
+        StoreError::NotFound { path } => assert_eq!(path, "gone/missing.md"),
+        other => panic!("{other}"),
+    }
+    match vault.read("gone/missing.md").unwrap_err() {
+        StoreError::NotFound { path } => assert_eq!(path, "gone/missing.md"),
+        other => panic!("{other}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn require_readable_refuses_a_symlink_and_a_directory_like_read() {
+    let (_fx, vault) = Fixture::new();
+    std::fs::write(vault.root().join("real.md"), b"# Real\n").unwrap();
+    std::os::unix::fs::symlink("real.md", vault.root().join("link.md")).unwrap();
+    std::fs::create_dir(vault.root().join("folder")).unwrap();
+    for path in ["link.md", "folder"] {
+        let read = vault.read(path).unwrap_err().to_string();
+        let required = vault.require_readable(path).unwrap_err().to_string();
+        assert_eq!(required, read, "{path}");
+    }
+}

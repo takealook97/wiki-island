@@ -313,6 +313,16 @@ pub(crate) fn read_rel(root: &Path, rel: &str) -> Result<Option<Vec<u8>>> {
     }
 }
 
+/// Whether the regular file at the vault-relative `rel` can be opened through
+/// the checked directories, reading no bytes; `false` when it or a directory
+/// is absent. Links and non-regular files give the errors `read_rel` gives.
+pub(crate) fn open_rel_regular(root: &Path, rel: &str) -> Result<bool> {
+    match Dir::open_parent(root, rel)? {
+        Some((dir, name)) => Ok(dir.open_regular(&name)?.is_some()),
+        None => Ok(false),
+    }
+}
+
 /// `read_rel` that refuses a file above `max_bytes` with
 /// [`StoreError::TooLarge`] naming `rel`, without reading it whole.
 pub(crate) fn read_rel_bounded(root: &Path, rel: &str, max_bytes: u64) -> Result<Option<Vec<u8>>> {

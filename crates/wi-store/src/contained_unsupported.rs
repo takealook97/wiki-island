@@ -93,6 +93,10 @@ pub(crate) fn read_rel(_root: &Path, _rel: &str) -> Result<Option<Vec<u8>>> {
     Err(StoreError::UnsupportedPlatform)
 }
 
+pub(crate) fn open_rel_regular(_root: &Path, _rel: &str) -> Result<bool> {
+    Err(StoreError::UnsupportedPlatform)
+}
+
 pub(crate) fn read_rel_bounded(
     _root: &Path,
     _rel: &str,
