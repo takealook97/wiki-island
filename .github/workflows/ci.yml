@@ -75,6 +75,25 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
 
+  # Licence compatibility with AGPL-3.0-only and the proof that the capture, search and MCP
+  # library crates carry no network client. Neither check builds anything.
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal
+          rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny check licenses
+      - run: sh scripts/check-offline-tree.sh
+
   # A real systemd user manager: wi setup installs and starts the unit, doctor reports it and
   # uninstall removes it. Lingering starts the runner user's manager without a login session.
   linux-systemd:

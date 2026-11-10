@@ -1,0 +1,28 @@
+# Licence policy for the dependency tree, checked in CI with `cargo deny check licenses`.
+# The workspace is AGPL-3.0-only, so every dependency licence must be compatible with it.
+# Compatibility below is an inference from the licence texts, not legal advice.
+# Only licences the tree needs are listed; add a licence only after judging its compatibility.
+# Only the licences check is configured; there are no advisories, bans or sources checks.
+
+[graph]
+# Judge every optional feature and every target, including Windows-only crates.
+all-features = true
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    # Our own licence, for the workspace crates.
+    "AGPL-3.0-only",
+    # Permissive licences with no copyleft condition.
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "CC0-1.0",
+    "Unicode-3.0",
+    # MPL-2.0 section 3.3 names the AGPL-3.0 as a secondary licence (option-ext).
+    "MPL-2.0",
+    # A permissive data licence with no copyleft condition (webpki-roots).
+    "CDLA-Permissive-2.0",
+]
