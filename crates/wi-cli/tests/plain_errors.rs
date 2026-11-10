@@ -114,3 +114,51 @@ fn wi_search_refuses_an_over_cap_query_as_an_invalid_request() {
     let out = env.wi(&["--json", "search", &vec!["alpha"; 64].join(" ")]);
     assert!(out.status.success(), "{out:?}");
 }
+
+#[test]
+fn wi_debug_adds_the_original_detail_on_its_own_line() {
+    let env = Env::new();
+    let plain = env.wi(&["read", "missing.md"]);
+    assert_eq!(plain.status.code(), Some(1), "{plain:?}");
+    let text = stderr(&plain);
+    assert!(text.contains("error: missing.md does not exist."), "{text}");
+    assert!(!text.contains("detail:"), "{text}");
+
+    let debug = env
+        .command(&["read", "missing.md"])
+        .env("WI_DEBUG", "1")
+        .output()
+        .unwrap();
+    assert_eq!(debug.status.code(), plain.status.code());
+    let text = stderr(&debug);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("error: missing.md does not exist.")),
+        "{text}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("detail: ") && l.contains("does not exist")),
+        "{text}"
+    );
+
+    // JSON output gains no field.
+    let json = env
+        .command(&["--json", "read", "missing.md"])
+        .env("WI_DEBUG", "1")
+        .output()
+        .unwrap();
+    let body: Value = serde_json::from_slice(&json.stdout).unwrap();
+    let mut keys: Vec<&str> = body["error"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["code", "hint", "message"]);
+    assert_eq!(body["error"]["code"], "not-found");
+}

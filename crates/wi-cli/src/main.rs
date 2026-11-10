@@ -6,6 +6,7 @@ mod brief;
 mod dispatch;
 mod doctor;
 mod error_codes;
+mod error_text;
 mod errors;
 mod import_paths;
 mod lifecycle_cmd;
@@ -27,7 +28,7 @@ use args::{Command, parse_args};
 use dispatch::run;
 // Sibling command modules reach these through `super::`.
 pub(crate) use args::ServiceCommand;
-use errors::{IngestWarnings, hint, plain_error};
+use errors::{IngestWarnings, Root, hint, plain_error};
 pub(crate) use session::{Session, flushed};
 
 pub(crate) struct Output {
@@ -39,6 +40,7 @@ pub(crate) fn main() -> Result<()> {
     let cli = parse_args();
     let json = cli.json && !matches!(cli.command, Command::Mcp { command: None });
     let ndjson = matches!(cli.command, Command::Watch { .. });
+    let root = Root::new(&session::vault_root(&cli.vault));
     match run(cli) {
         Ok(out) => {
             let failed_import = out
@@ -68,12 +70,13 @@ pub(crate) fn main() -> Result<()> {
                 Some(e) => (e.code(), hint(e)),
                 None => (error_codes::code(&error), None),
             };
+            let message = plain_error(&error, &root);
             if json {
                 let warnings = error
                     .downcast_ref::<IngestWarnings>()
                     .map(|w| w.0.as_slice())
                     .unwrap_or(&[]);
-                let body = json!({"error": {"code": code, "message": plain_error(&error), "hint": hint}, "warnings": warnings});
+                let body = json!({"error": {"code": code, "message": message, "hint": hint}, "warnings": warnings});
                 println!(
                     "{}",
                     if ndjson {
@@ -83,13 +86,21 @@ pub(crate) fn main() -> Result<()> {
                     }
                 );
             }
-            eprintln!("error: {}", plain_error(&error));
+            eprintln!("error: {message}");
             if let Some(hint) = hint {
                 eprintln!("hint: {hint}");
+            }
+            if debug_requested() {
+                eprintln!("detail: {error:#}");
             }
             std::process::exit(1);
         }
     }
+}
+
+/// `WI_DEBUG=1` adds the full original error chain on a `detail:` line.
+fn debug_requested() -> bool {
+    std::env::var_os("WI_DEBUG").is_some_and(|v| v == "1")
 }
 
 #[cfg(test)]
