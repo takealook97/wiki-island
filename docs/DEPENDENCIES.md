@@ -1,6 +1,6 @@
 # Dependencies
 
-Versions are manifest ranges; `Cargo.lock` records exact resolved versions. Capture, search, reads and MCP use local runtime code only. Only `wi sync`, `wi publish` and their background threads use the network, outside engine locks; crate downloads are build-time only. Each crate declares its own dependencies. A new dependency needs a written reason here: what it does, what it costs, what the alternative was. Release builds use thin LTO, one codegen unit and symbol stripping; panic behavior stays Rust's default because a workspace-wide abort would also affect libraries.
+Versions are manifest ranges; `Cargo.lock` records exact resolved versions. Capture, search, reads and MCP use local runtime code only. Only the background sync and publish threads, the explicit `wi sync` and `wi publish` commands and the explicit `wi setup --github` (which asks the hosting service for the account name and finds or creates the private repository) use the network, outside engine locks; `wi sync setup <url>` only stores the remote address. Crate downloads are build-time only. Each crate declares its own dependencies. A new dependency needs a written reason here: what it does, what it costs, what the alternative was. Release builds use thin LTO, one codegen unit and symbol stripping; panic behavior stays Rust's default because a workspace-wide abort would also affect libraries.
 
 ## wi-sys
 

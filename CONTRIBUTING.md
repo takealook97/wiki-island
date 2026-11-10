@@ -61,7 +61,7 @@ Measurement is opt-in and macOS only. Scratch paths must be new and outside the 
 - Libraries forbid unsafe code, except `wi-sys`, which holds all Windows FFI; every unsafe block there has a `SAFETY` comment. Libraries use typed errors. No `unwrap()` or `expect()` outside tests.
 - Keep `wi-note` pure. Every vault write goes through `wi-store`; every fsync through `wi_history::durable` (the workspace `clippy.toml` refuses `File::sync_all` and `sync_data`).
 - Each crate declares its own dependencies. Add one only with a written reason in [DEPENDENCIES](docs/DEPENDENCIES.md): what it does, what it costs, the alternative.
-- Never add a model call. Network requests belong only to remote sync and view publishing (`wi sync`, `wi publish` and their background threads), outside engine locks; never on capture, search, read or MCP paths.
+- Never add a model call. Network requests belong only to remote sync and view publishing (`wi sync`, `wi publish` and their background threads) and the explicit `wi setup --github`, outside engine locks; never on capture, search, read or MCP paths.
 - Test names describe behavior. Do not put phase, review or issue codes in names, comments or assertion messages.
 
 ## Where specs live

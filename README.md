@@ -122,7 +122,7 @@ This removes the background service and every AI-app connection and skill that w
 
 ## Privacy
 
-Your notes stay on your computer unless you connect a remote or a Notion view. Saving, searching, reading and every AI-app tool work offline; only `wi sync`, `wi publish` and the background care you set up for them use the network. wiki-island calls no AI model. Your AI apps read notes only through the local connection `wi setup` registered.
+Your notes stay on your computer unless you connect a remote or a Notion view. Saving, searching, reading and every AI-app tool work offline; only `wi sync`, `wi publish`, `wi setup --github` (which asks GitHub for your account name and finds or creates your private notes repository) and the background care you set up for sync and publishing use the network. `wi sync setup <url>` only remembers the address. wiki-island calls no AI model. Your AI apps read notes only through the local connection `wi setup` registered.
 
 ## Everyday commands
 
