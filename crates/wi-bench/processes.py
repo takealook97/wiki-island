@@ -31,6 +31,15 @@ def clean_metric(values, unit="ms", target=None):
 
 
 
+def tool_result(response):
+    """Envelope of a tool result: one TextContent block of compact JSON, no
+    structuredContent (docs/PROTOCOL.md). An error result fails the run."""
+    assert not response.get("isError"), response
+    content = response.get("content", [])
+    assert len(content) == 1 and content[0].get("type") == "text", response
+    return json.loads(content[0]["text"])
+
+
 class Mcp:
     def __init__(self, base, env, stderr_path):
         self.err = stderr_path.open("w")
@@ -65,9 +74,7 @@ class Mcp:
             selector.close()
 
     def call(self, name, **args):
-        response = self.request("tools/call", dict(name=name, arguments=args))
-        assert not response.get("isError"), response
-        return response["structuredContent"]
+        return tool_result(self.request("tools/call", dict(name=name, arguments=args)))
 
     def close(self):
         self.p.stdin.close()
