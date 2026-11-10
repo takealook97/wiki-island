@@ -11,7 +11,7 @@ wi-export = { path = "../wi-export" }
 wi-store = { path = "../wi-store" }
 wi-note = { path = "../wi-note" }
 serde = { version = "1", features = ["derive"] }
-rmcp = { version = "3.8", default-features = false, features = ["server", "transport-io"] }
+rmcp = { version = "3.8", default-features = false, features = ["server", "transport-async-rw"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "io-std", "macros"] }
 serde_json = "1"
 thiserror = "2"
