@@ -52,12 +52,12 @@ for crate in $CRATES; do
         bad=1
       fi
     done
-    features=$(tree "$crate" "$target" -e features) || {
-      echo "error: cargo tree -e features failed for $crate on $target" >&2
+    features=$(tree "$crate" "$target" -e normal,features) || {
+      echo "error: cargo tree -e normal,features failed for $crate on $target" >&2
       exit 2
     }
     if printf '%s\n' "$features" | grep -q 'tokio feature "net"'; then
-      echo "FAIL $crate $target: tokio has its 'net' feature enabled. See: cargo tree -p $crate -e features $(target_flag "$target") -i tokio" >&2
+      echo "FAIL $crate $target: tokio has its 'net' feature enabled. See: cargo tree -p $crate -e normal,features $(target_flag "$target") -i tokio" >&2
       bad=1
     fi
     if [ "$bad" -eq 0 ]; then

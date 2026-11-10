@@ -75,7 +75,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
 
-  # Licence compatibility with AGPL-3.0-only and the proof that the capture, search and MCP
+  # License compatibility with AGPL-3.0-only and the proof that the capture, search and MCP
   # library crates carry no network client. Neither check builds anything.
   policy:
     runs-on: ubuntu-latest
