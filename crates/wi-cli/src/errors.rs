@@ -232,15 +232,17 @@ fn install_sentence(error: &wi_export::install::Error, root: &Root) -> String {
     use wi_export::install::Error;
     match error {
         Error::Io(e) => io_sentence(e.kind(), "an AI app settings file"),
-        Error::Config(message) | Error::Service(message) | Error::Unsupported(message) => root
-            .sentence(message)
-            .or_else(|| {
-                // Keep the owner-facing first clause, drop the tool output after it.
-                let head = message.split(": ").next()?;
-                root.sentence(head)
-                    .map(|head| format!("{head} Run wi doctor to see what needs attention."))
-            })
-            .unwrap_or_else(|| GENERIC.to_owned()),
+        Error::Config(message) | Error::Service(message) | Error::Unsupported(message) => {
+            multi_line_sentence(message)
+                .or_else(|| root.sentence(message))
+                .or_else(|| {
+                    // Keep the owner-facing first clause, drop the tool output after it.
+                    let head = message.split(": ").next()?;
+                    root.sentence(head)
+                        .map(|head| format!("{head} Run wi doctor to see what needs attention."))
+                })
+                .unwrap_or_else(|| GENERIC.to_owned())
+        }
         Error::Stale => {
             "An AI app settings file changed while wi was working. Run the command again.".into()
         }
@@ -249,6 +251,33 @@ fn install_sentence(error: &wi_export::install::Error, root: &Root) -> String {
                 .into()
         }
     }
+}
+
+/// A parser diagnostic that echoes lines of the settings file is never
+/// shown. Only the Codex settings file is TOML (`config.toml`), so a TOML
+/// diagnostic names that file and keeps its line and column.
+fn multi_line_sentence(message: &str) -> Option<String> {
+    if !message.contains('\n') {
+        return None;
+    }
+    let first = message.lines().next().unwrap_or_default();
+    let place = first
+        .strip_prefix("TOML parse error ")
+        .filter(|place| {
+            place.starts_with("at line ")
+                && place
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase() || " ,".contains(c))
+        })
+        .map(|place| format!(" ({place})"))
+        .unwrap_or_default();
+    Some(match first.starts_with("TOML parse error") {
+        true => format!(
+            "The settings file config.toml of an AI app is not valid{place}. Fix or remove that line, then run the command again."
+        ),
+        false => "A settings file of an AI app is not valid. Fix or remove it, then run the command again."
+            .into(),
+    })
 }
 
 fn revision_sentence(error: &wi_lifecycle::RevisionError, root: &Root) -> String {

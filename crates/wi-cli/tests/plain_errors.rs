@@ -166,3 +166,41 @@ fn wi_debug_adds_the_original_detail_on_its_own_line() {
     assert_eq!(keys, ["code", "hint", "message"]);
     assert_eq!(body["error"]["code"], "not-found");
 }
+
+#[test]
+fn a_broken_settings_file_error_names_the_file_and_hides_absolute_paths() {
+    let env = Env::new();
+    let home = env._dir.path().join("home");
+    let codex = env._dir.path().join("codex-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&codex).unwrap();
+    let hidden = "/private/review-hidden/secret.md";
+    std::fs::write(
+        codex.join("config.toml"),
+        format!("path=\"{hidden}\" garbage\n"),
+    )
+    .unwrap();
+    let out = env
+        .command(&["--json", "mcp", "install", "--host", "codex"])
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("CODEX_HOME", &codex)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let error = json_error(&out);
+    assert_eq!(error["code"], "install-config");
+    let message = error["message"].as_str().unwrap();
+    let text = stderr(&out);
+    for shown in [message, text.as_str()] {
+        assert!(!shown.contains(hidden), "{shown}");
+        assert!(!shown.contains("review-hidden"), "{shown}");
+        assert!(!shown.contains("garbage"), "{shown}");
+        assert!(!shown.trim().contains('\n'), "{shown}");
+    }
+    assert!(message.contains("config.toml"), "{message}");
+    assert!(
+        message.contains("wi doctor") || message.contains("Fix"),
+        "{message}"
+    );
+}

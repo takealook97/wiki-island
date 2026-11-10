@@ -64,18 +64,20 @@ impl Root {
             }
             text = text.replace(&shown, "your notes folder");
         }
-        text.split_inclusive(char::is_whitespace)
+        clean_quoted(&text)
+            .split_inclusive(char::is_whitespace)
             .map(clean_token)
             .collect()
     }
 
-    /// `clean(text)` when it reads as owner-facing text: no engine jargon,
-    /// no OS error text and no `: ` joining nested errors. `None` otherwise,
+    /// `clean(text)` when it reads as owner-facing text: a single line with
+    /// no engine jargon, no OS error text and no `: ` joining nested errors. `None` otherwise,
     /// so the caller falls back to a fixed sentence.
     pub(crate) fn plain(&self, text: &str) -> Option<String> {
         let cleaned = self.clean(text);
         let trimmed = cleaned.trim();
         let internal = trimmed.is_empty()
+            || trimmed.contains('\n')
             || has_jargon(trimmed)
             || outside_quotes(trimmed).contains(": ")
             || trimmed.contains("os error");
@@ -154,27 +156,71 @@ fn is_absolute(text: &str) -> bool {
             && matches!(bytes[2], b'\\' | b'/'))
 }
 
-/// One whitespace-terminated token with an absolute path replaced by its
-/// file name, keeping surrounding punctuation.
+/// Characters after which an absolute path may begin inside a token.
+const PATH_LEADS: &[char] = &['(', '[', '"', '\'', '`', '=', ':', '<'];
+
+/// `text` with every quoted absolute path, spaces included, replaced by its
+/// file name. A quote that is never closed is left to the token pass.
+fn clean_quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(['"', '\'', '`']) {
+        let quote = rest[at..].chars().next().unwrap_or('"');
+        let after = &rest[at + 1..];
+        let closed = after
+            .find(quote)
+            .filter(|end| is_absolute(after) && !after[..*end].contains('\n'));
+        match closed {
+            Some(end) => {
+                out.push_str(&rest[..=at]);
+                out.push_str(file_name_of(&after[..end]));
+                out.push(quote);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[..=at]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The last non-empty segment of an absolute path in either separator form.
+fn file_name_of(path: &str) -> &str {
+    path.rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or("a file")
+}
+
+/// Where an absolute path starts in `body`: at its start or right after a
+/// quote, `=`, `(`, `:`, `<` or `[`. A `//` after a colon is a web address.
+fn path_start(body: &str) -> Option<usize> {
+    body.char_indices().find_map(|(i, _)| {
+        let leads = i == 0 || body[..i].ends_with(PATH_LEADS);
+        let url = i > 0 && body[..i].ends_with(':') && body[i..].starts_with("//");
+        (leads && !url && is_absolute(&body[i..])).then_some(i)
+    })
+}
+
+/// One whitespace-terminated token with each absolute path in it replaced
+/// by its file name, keeping the surrounding punctuation.
 fn clean_token(token: &str) -> String {
     let body = token.trim_end_matches(char::is_whitespace);
     let space = &token[body.len()..];
-    let start = body
-        .find(|c: char| !matches!(c, '(' | '[' | '"' | '\'' | '`'))
-        .unwrap_or(body.len());
+    let Some(start) = path_start(body) else {
+        return token.to_owned();
+    };
     let (lead, rest) = body.split_at(start);
     let core = rest.trim_end_matches(|c: char| {
-        matches!(c, ')' | ']' | '"' | '\'' | '`' | ',' | ';' | ':' | '.')
+        matches!(
+            c,
+            ')' | ']' | '>' | '"' | '\'' | '`' | ',' | ';' | ':' | '.'
+        )
     });
-    if !is_absolute(core) {
-        return token.to_owned();
-    }
-    let tail = &rest[core.len()..];
-    let name = core
-        .rsplit(['/', '\\'])
-        .find(|part| !part.is_empty())
-        .unwrap_or("a file");
-    format!("{lead}{name}{tail}{space}")
+    let tail = clean_token(&rest[core.len()..]);
+    format!("{lead}{}{tail}{space}", file_name_of(core))
 }
 
 #[cfg(test)]
@@ -220,5 +266,50 @@ mod tests {
             Root::default().sentence("try again in a moment").as_deref(),
             Some("Try again in a moment.")
         );
+    }
+
+    #[test]
+    fn paths_embedded_in_a_token_are_cleaned() {
+        let root = Root::default();
+        let cases = [
+            (
+                "path=\"/private/hidden/secret.md\" x",
+                "path=\"secret.md\" x",
+            ),
+            ("path='/private/hidden/secret.md' x", "path='secret.md' x"),
+            ("key=/private/hidden/secret.md", "key=secret.md"),
+            ("open(/private/hidden/secret.md)", "open(secret.md)"),
+            ("file:/private/hidden/secret.md", "file:secret.md"),
+            ("<C:\\Users\\o\\secret.md>", "<secret.md>"),
+            ("path=C:\\Users\\o\\secret.md,", "path=secret.md,"),
+            ("at=\\\\server\\share\\secret.md.", "at=secret.md."),
+            (
+                "path=\"/private/my dir/secret file.md\" x",
+                "path=\"secret file.md\" x",
+            ),
+            (
+                "path=\"C:\\My Docs\\secret file.md\" x",
+                "path=\"secret file.md\" x",
+            ),
+            (
+                "a=\"/x/one.md\" b=\"/y/two.md\"",
+                "a=\"one.md\" b=\"two.md\"",
+            ),
+        ];
+        for (input, expected) in cases {
+            let cleaned = root.clean(input);
+            assert_eq!(cleaned, expected, "{input}");
+            assert!(!cleaned.contains("private"), "{cleaned}");
+        }
+        // Web addresses and relative paths are left alone.
+        assert_eq!(
+            root.clean("see https://example.com/a and notes/a.md"),
+            "see https://example.com/a and notes/a.md"
+        );
+    }
+
+    #[test]
+    fn text_over_several_lines_is_not_plain() {
+        assert!(Root::default().plain("first line\nsecond line").is_none());
     }
 }
