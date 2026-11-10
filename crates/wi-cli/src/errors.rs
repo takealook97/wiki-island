@@ -661,7 +661,8 @@ mod tests {
         assert_eq!(plain_error(&anyhow::Error::new(json), &root), GENERIC);
         let jargon = anyhow::anyhow!("manifest seq 3 is held");
         assert_eq!(plain_error(&jargon, &root), GENERIC);
-        let io = anyhow::Error::new(IoError::from_raw_os_error(13)).context("read standard input");
+        let io = anyhow::Error::new(IoError::from(ErrorKind::PermissionDenied))
+            .context("read standard input");
         assert_eq!(
             plain_error(&io, &root),
             "wi could not read standard input. Check the file's permissions, then try again."

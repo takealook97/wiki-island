@@ -212,9 +212,12 @@ fn a_failed_service_command_is_reported_as_a_service_problem() {
 
     let env = Env::new();
     let script = env._dir.path().join("failing-service-tool");
+    // The tool answers the systemd user-manager probe, so Linux treats the manager as present
+    // and calls it to stop the unit; every other call, on any platform, fails with raw text.
     std::fs::write(
         &script,
-        "#!/bin/sh\necho 'Operation not permitted' >&2\necho 'Try running again.' >&2\nexit 1\n",
+        "#!/bin/sh\nfor arg in \"$@\"; do [ \"$arg\" = show-environment ] && exit 0; done\n\
+         echo 'Operation not permitted' >&2\necho 'Try running again.' >&2\nexit 1\n",
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();

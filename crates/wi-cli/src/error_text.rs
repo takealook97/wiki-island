@@ -233,10 +233,22 @@ mod tests {
         let root = Root::new(&temp);
         let inside = temp.join("notes").join("a.md");
         assert_eq!(root.show(&inside), "notes/a.md");
-        assert_eq!(root.show(Path::new("/elsewhere/b.md")), "b.md");
+        // The filesystem root of the temporary folder: `/`, or a drive such as `C:\`.
+        let elsewhere = temp
+            .ancestors()
+            .last()
+            .unwrap()
+            .join("elsewhere")
+            .join("b.md");
+        assert!(elsewhere.is_absolute(), "{}", elsewhere.display());
+        assert_eq!(root.show(&elsewhere), "b.md");
         assert_eq!(root.show(Path::new("notes/c.md")), "notes/c.md");
         let text = format!("{} is not a regular file", inside.display());
-        assert_eq!(root.clean(&text), "notes/a.md is not a regular file");
+        // The relative part keeps the platform separator, so compare it in `/` form.
+        assert_eq!(
+            root.clean(&text).replace('\\', "/"),
+            "notes/a.md is not a regular file"
+        );
         assert_eq!(
             root.clean("open (/var/x/y.md), then C:\\Users\\o\\z.md."),
             "open (y.md), then z.md."
