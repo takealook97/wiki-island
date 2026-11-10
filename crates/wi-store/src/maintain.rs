@@ -19,7 +19,8 @@
 //! recovery, the index and procedure change detection.
 //!
 //! With a time budget a pass stops between stages or between chunks of
-//! the work-note migration or the note scan, reports `complete: false`
+//! the index rebuild, the work-note migration or the note scan, reports
+//! `complete: false`
 //! and records where it stopped in the per-device local directory (device-local,
 //! never committed). The next budgeted pass resumes there, so a slice
 //! exceeds its budget by at most one stage or chunk. A pass without a
@@ -296,7 +297,12 @@ impl Vault {
             }
             match stage {
                 Stage::Recovery => self.maintain_recovery(report)?,
-                Stage::Index => self.maintain_index(report, opts.full || cursor.full)?,
+                Stage::Index => {
+                    let budget = opts.time_budget.map(|_| over);
+                    if !self.maintain_index(report, opts.full || cursor.full, budget)? {
+                        return Ok(false);
+                    }
+                }
                 Stage::Migrate if primary => {
                     if !self.maintain_migrate(report, cursor, over)? {
                         return Ok(false);
@@ -406,8 +412,48 @@ impl Vault {
     }
 
     /// Repair a pending index; rebuild an unusable one or one without a
-    /// complete walk. Never asks anyone to run a command.
-    fn maintain_index(&self, report: &mut MaintainReport, full: bool) -> Result<()> {
+    /// complete walk. Never asks anyone to run a command. With a budget
+    /// (`over`) the rebuild is time-sliced and resumes on later passes;
+    /// false when the budget stopped it before the rebuild finished.
+    fn maintain_index(
+        &self,
+        report: &mut MaintainReport,
+        full: bool,
+        over: Option<&dyn Fn() -> bool>,
+    ) -> Result<bool> {
+        let Some(over) = over else {
+            self.maintain_index_whole(report, full)?;
+            return Ok(true);
+        };
+        let rebuilding = self.index_rebuilding();
+        let mut restart = false;
+        if !self.index_pending().is_empty() {
+            match self.repair_index() {
+                Ok(paths) => report.repaired += paths.len(),
+                Err(_) => {
+                    // An unfinished rebuild continues; otherwise begin one.
+                    self.close_index();
+                    restart = !rebuilding;
+                }
+            }
+        }
+        if !restart && !rebuilding && matches!(self.index_as_of(), Ok(Some(_))) {
+            if full {
+                self.maintain_catch_up(report)?;
+            }
+            return Ok(true);
+        }
+        match self.reindex_slice(restart, over)? {
+            Some(_) => {
+                report.index_rebuilt = true;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// [`Self::maintain_index`] without a budget: rebuild in one step.
+    fn maintain_index_whole(&self, report: &mut MaintainReport, full: bool) -> Result<()> {
         if !self.index_pending().is_empty() {
             match self.repair_index() {
                 Ok(paths) => report.repaired += paths.len(),
@@ -427,11 +473,17 @@ impl Vault {
             return Ok(());
         }
         if full {
-            let sync = self.catch_up()?;
-            report.repaired += sync.added + sync.updated + sync.removed;
-            // Deletions no watcher saw become owner commits.
-            report.repaired += self.record_missing()?.len();
+            self.maintain_catch_up(report)?;
         }
+        Ok(())
+    }
+
+    /// The full pass's stat-walk catch-up.
+    fn maintain_catch_up(&self, report: &mut MaintainReport) -> Result<()> {
+        let sync = self.catch_up()?;
+        report.repaired += sync.added + sync.updated + sync.removed;
+        // Deletions no watcher saw become owner commits.
+        report.repaired += self.record_missing()?.len();
         Ok(())
     }
 

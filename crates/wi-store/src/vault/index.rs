@@ -11,6 +11,9 @@ const INDEX_PENDING: &str = "index-pending";
 const INDEX_PENDING_LOCK: &str = "index-pending.lock";
 /// Prefix of a pending-marker claim: `index-pending.claim-<pid>-<n>-<ns>`.
 const INDEX_PENDING_CLAIM: &str = "index-pending.claim-";
+/// Files one chunk of a time-sliced rebuild stores before the budget is
+/// checked again (an unmeasured policy value).
+const REBUILD_CHUNK: usize = 128;
 
 use super::{CACHE_DIR_ENV, IndexState, Vault};
 
@@ -308,6 +311,65 @@ impl Vault {
         self.settle_pending(&claimed)?;
         let missing = self.record_missing()?;
         Ok((report, missing))
+    }
+
+    /// One slice of a time-sliced rebuild (budgeted maintenance): rebuild
+    /// chunks of paths until `over()` says stop, resuming the rebuild an
+    /// earlier slice left (progress lives in the index, committed with each
+    /// chunk). With `restart` a new rebuild begins first. An index that
+    /// cannot be opened or rebuilt is discarded and the slice retried on a
+    /// fresh database. When the slice finishes the rebuild, the claimed
+    /// pending paths are re-read and settled and missing notes recorded, as
+    /// [`Vault::reindex`] does; returns the final report then.
+    pub(crate) fn reindex_slice(
+        &self,
+        restart: bool,
+        over: &dyn Fn() -> bool,
+    ) -> Result<Option<wi_index::SyncReport>> {
+        let claimed = self.claim_pending()?;
+        let slice = |restart: bool| {
+            self.with_index(|index| {
+                if restart {
+                    index.begin_rebuild()?;
+                }
+                Ok(index.rebuild_slice(REBUILD_CHUNK, over)?)
+            })
+        };
+        let done = match slice(restart) {
+            Ok(done) => done,
+            Err(first) => {
+                self.close_index();
+                if !self.discard_index_database() {
+                    return Err(first);
+                }
+                slice(true)?
+            }
+        };
+        // Unfinished: the claims stay for the next repair or slice.
+        let Some(report) = done else {
+            return Ok(None);
+        };
+        if !claimed.paths.is_empty() {
+            let mut paths = claimed.paths.clone();
+            paths.sort();
+            paths.dedup();
+            let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+            self.with_index(|index| Ok(index.update_paths(&paths)?))?;
+        }
+        if let Some(hook) = &self.hooks.after_index_repair {
+            hook(&self.pending_path());
+        }
+        self.settle_pending(&claimed)?;
+        self.record_missing()?;
+        Ok(Some(report))
+    }
+
+    /// Whether a time-sliced rebuild of the device index is unfinished.
+    pub fn index_rebuilding(&self) -> bool {
+        matches!(
+            self.with_index(|index| Ok(index.rebuild_progress()?)),
+            Ok(Some(_))
+        )
     }
 
     /// Remove an unusable index database (a file, its WAL files, or an

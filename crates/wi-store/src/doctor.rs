@@ -98,6 +98,7 @@ impl Vault {
         });
         let pending = self.index_pending();
         let index = self.with_index(|index| Ok(index.index_as_of()?));
+        let rebuilding = self.index_rebuilding();
         // The index is a disposable cache: maintenance repairs or rebuilds
         // it by itself, so nothing here asks anyone to run a command.
         const SELF_REPAIR: &str = "repairs itself on the next maintenance pass";
@@ -109,6 +110,12 @@ impl Vault {
                 "index",
                 "warn",
                 format!("{} path(s) pending re-index; {SELF_REPAIR}", pending.len()),
+                None,
+            ),
+            Ok(None) if rebuilding => check(
+                "index",
+                "warn",
+                "rebuild in progress; search uses the literal fallback until it finishes, and maintenance continues it by itself".into(),
                 None,
             ),
             Ok(None) => check(
