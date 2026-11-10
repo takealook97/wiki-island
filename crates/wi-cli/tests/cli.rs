@@ -50,6 +50,10 @@ fn both_cli_names_report_version() {
     for binary in [env!("CARGO_BIN_EXE_wi"), env!("CARGO_BIN_EXE_wiki-island")] {
         let result = Command::new(binary).arg("--version").output().unwrap();
         assert!(result.status.success());
-        assert!(String::from_utf8(result.stdout).unwrap().contains("0.1.0"));
+        assert!(
+            String::from_utf8(result.stdout)
+                .unwrap()
+                .contains(env!("CARGO_PKG_VERSION"))
+        );
     }
 }
