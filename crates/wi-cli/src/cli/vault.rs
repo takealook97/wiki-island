@@ -8,6 +8,7 @@ use wi_store::{BodyEdit, EditRequest, Ingress, MoveRequest, Query, SearchMode, W
 
 use super::Output;
 use super::args::*;
+use super::display_path::display_rel;
 use super::doctor::doctor;
 use super::errors::document_message;
 use super::session::{Session, flushed, ingest_warnings};
@@ -272,7 +273,7 @@ pub(crate) fn run_in_vault(vault: &Session, command: Command) -> Result<Output> 
             for hit in &response.hits {
                 human.push_str(&format!(
                     "{}  {}{}\n",
-                    hit.rel_path.display(),
+                    display_rel(&hit.rel_path),
                     hit.title,
                     if hit.fallback { "  [fallback]" } else { "" }
                 ));

@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use super::display_path::display_rel;
+
 /// Words that name engine internals rather than anything the owner sees.
 const JARGON: &[&str] = &[
     "engine-owned",
@@ -40,14 +42,14 @@ impl Root {
     /// its file name.
     pub(crate) fn show(&self, path: &Path) -> String {
         if path.is_relative() {
-            return path.display().to_string();
+            return display_rel(path);
         }
         for form in &self.forms {
             if path == form {
                 return name_of(path);
             }
             if let Ok(rel) = path.strip_prefix(form) {
-                return rel.to_string_lossy().replace('\\', "/");
+                return display_rel(rel);
             }
         }
         name_of(path)

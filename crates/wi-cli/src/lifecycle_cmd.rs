@@ -9,6 +9,7 @@ use wi_store::{
     SnapshotInput, Vault, WorkClose,
 };
 
+use super::display_path::display_rel;
 use super::{Output, Session, flushed};
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -102,7 +103,7 @@ pub(crate) fn search(
         .hits
         .iter()
         .filter_map(|h| {
-            let path = h.rel_path.to_string_lossy().into_owned();
+            let path = display_rel(&h.rel_path);
             vault.read(&path).ok().map(|r| (path, r.bytes))
         })
         .collect();
