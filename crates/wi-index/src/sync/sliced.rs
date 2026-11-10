@@ -13,9 +13,10 @@
 //!
 //! When no path is left after the cursor, the last step reparses, in
 //! chunks too, every file whose stat differs from its row (edits to
-//! already rebuilt paths, files added before the cursor). It then removes
-//! rows of files gone, resolves links and records the walk in one
-//! transaction, like [`Index::sync`].
+//! already rebuilt paths, files added before the cursor). Files changed
+//! again behind its cursor are a queue read a chunk at a time; the queue's
+//! last chunk is read in the transaction that removes rows of files gone,
+//! resolves links and records the walk, like [`Index::sync`].
 
 use super::*;
 use rusqlite::OptionalExtension;
@@ -231,16 +232,36 @@ impl Index {
             tx.commit()?;
             return Ok(Step::Stored);
         }
-        // Rows this pass already went past may have changed again since;
-        // files whose read failed in this rebuild are not retried.
+        // Rows the pass already went past may have changed again since:
+        // they form a queue read in path order, one chunk per transaction,
+        // without moving the cursor back. When the queue fits one chunk it
+        // is read in the finalizing transaction itself, so edits landing
+        // between slices cannot keep the walk from being recorded. Files
+        // whose read failed in this rebuild are not retried.
         let skipped: BTreeSet<String> = stored_skipped(&tx)?.iter().map(|p| path_key(p)).collect();
-        let again = slice.files.iter().any(|(p, s)| {
-            !touched.contains(p) && !skipped.contains(p) && stale(p, s, &existing, max)
-        });
-        if again {
-            upsert(&tx, FINISH, "")?;
+        let queue: Vec<(&String, &Stamp)> = slice
+            .files
+            .iter()
+            .filter(|(p, s)| {
+                !touched.contains(*p) && !skipped.contains(*p) && stale(p, s, &existing, max)
+            })
+            .take(slice.chunk + 1)
+            .collect();
+        if queue.len() > slice.chunk {
+            store_chunk(
+                &tx,
+                &root,
+                &queue[..slice.chunk],
+                Some(&existing),
+                max,
+                touched,
+                report,
+            )?;
             tx.commit()?;
             return Ok(Step::Stored);
+        }
+        if !queue.is_empty() {
+            store_chunk(&tx, &root, &queue, Some(&existing), max, touched, report)?;
         }
         let done = finish_rebuild(&tx, slice, &existing, touched, std::mem::take(report))?;
         tx.commit()?;

@@ -185,3 +185,47 @@ fn a_database_deleted_mid_rebuild_restarts_on_the_same_handle() {
     assert!(!fallback);
     assert_eq!(paths.len(), NOTES);
 }
+
+#[test]
+fn steady_edits_to_one_file_do_not_starve_budgeted_maintenance() {
+    let (f, vault) = Fixture::new();
+    std::fs::write(vault.root().join("z.md"), "last").unwrap();
+    vault.reindex().unwrap();
+    drop(vault);
+    std::fs::remove_file(f.cache.path().join("index.sqlite3")).unwrap();
+    let vault = f.open();
+    let db = rusqlite::Connection::open(f.cache.path().join("index.sqlite3")).unwrap();
+    let cursor = || -> Option<String> {
+        db.query_row(
+            "SELECT value FROM index_meta WHERE key='rebuild_after'",
+            [],
+            |r| r.get(0),
+        )
+        .ok()
+    };
+    for _ in 0..10 {
+        assert!(!vault.maintain(&tiny()).unwrap().index_rebuilt);
+        if cursor().as_deref() == Some("z.md") {
+            break;
+        }
+    }
+    assert_eq!(cursor().as_deref(), Some("z.md"));
+    std::fs::write(vault.root().join("a.md"), "new").unwrap();
+    assert!(!vault.maintain(&tiny()).unwrap().index_rebuilt);
+    // a.md changes before every pass and never stops changing.
+    let mut rebuilt = false;
+    for n in 0..30 {
+        std::fs::write(vault.root().join("a.md"), "x".repeat(10 + n)).unwrap();
+        let report = vault.maintain(&tiny()).unwrap();
+        rebuilt |= report.index_rebuilt;
+        if rebuilt {
+            assert!(vault.index_as_of().unwrap().is_some());
+        }
+        if report.complete {
+            assert!(rebuilt && n < 30);
+            assert!(!answer(&vault, "last").0, "search leaves the fallback");
+            return;
+        }
+    }
+    panic!("budgeted maintenance never completed under steady edits (rebuilt: {rebuilt})");
+}

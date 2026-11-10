@@ -417,3 +417,63 @@ fn a_cursor_left_next_to_a_recorded_walk_restarts_the_rebuild() {
     assert_eq!(index.rebuild_progress().unwrap(), None);
     assert_eq!(unresolved(&cache), 0);
 }
+
+#[test]
+fn steady_edits_to_one_file_do_not_stop_the_last_step() {
+    let vault = TempDir::new().unwrap();
+    write(vault.path(), "z.md", "last note");
+    let cache = TempDir::new().unwrap();
+    let mut index = open(vault.path(), &cache);
+    assert!(index.rebuild_slice(128, &|| true).unwrap().is_none());
+    write(vault.path(), "a.md", "new note");
+    // The last step reads a.md; from then on it changes before every slice.
+    assert!(index.rebuild_slice(128, &|| true).unwrap().is_none());
+    let mut slices = 0;
+    loop {
+        slices += 1;
+        assert!(slices <= 3, "the last step never finished under edits");
+        // A growing size changes the stamp regardless of mtime resolution.
+        write(vault.path(), "a.md", &"x".repeat(10 + slices));
+        if index.rebuild_slice(128, &|| true).unwrap().is_some() {
+            break;
+        }
+        assert_eq!(index.index_as_of().unwrap(), None);
+    }
+    assert!(index.index_as_of().unwrap().is_some());
+    assert!(!hits(&index, "xxxxxxxxxx").0, "search leaves the fallback");
+    let fresh = TempDir::new().unwrap();
+    open(vault.path(), &fresh).rebuild().unwrap();
+    assert_eq!(dump(&cache), dump(&fresh));
+}
+
+#[test]
+fn edits_behind_the_cursor_larger_than_a_chunk_drain_as_a_queue() {
+    let vault = TempDir::new().unwrap();
+    write(vault.path(), "z.md", "last note");
+    let cache = TempDir::new().unwrap();
+    let mut index = open(vault.path(), &cache);
+    assert!(index.rebuild_slice(2, &|| true).unwrap().is_none());
+    for name in ["b0.md", "b1.md", "b2.md", "b3.md"] {
+        write(vault.path(), name, "new note");
+    }
+    // The last step reads b0..b3 in two chunks.
+    assert!(index.rebuild_slice(2, &|| true).unwrap().is_none());
+    assert!(index.rebuild_slice(2, &|| true).unwrap().is_none());
+    // Three files change behind its cursor: more than one chunk.
+    for name in ["b0.md", "b1.md", "b2.md"] {
+        write(vault.path(), name, "edited behind the cursor");
+    }
+    let calls = std::cell::Cell::new(0);
+    let over = || {
+        calls.set(calls.get() + 1);
+        true
+    };
+    assert!(index.rebuild_slice(2, &over).unwrap().is_none());
+    assert_eq!(calls.get(), 1, "one chunk of the queue, then the budget");
+    // b0 changes again; the rest of the queue still fits one chunk.
+    write(vault.path(), "b0.md", "edited once more");
+    assert!(index.rebuild_slice(2, &over).unwrap().is_some());
+    let fresh = TempDir::new().unwrap();
+    open(vault.path(), &fresh).rebuild().unwrap();
+    assert_eq!(dump(&cache), dump(&fresh));
+}
