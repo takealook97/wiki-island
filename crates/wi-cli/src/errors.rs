@@ -228,13 +228,27 @@ fn bare_io_sentence(error: &anyhow::Error, io: &std::io::Error, root: &Root) -> 
     }
 }
 
+const SERVICE_FAILED: &str =
+    "The background service could not be changed. Run wi doctor to see what needs attention.";
+
 fn install_sentence(error: &wi_export::install::Error, root: &Root) -> String {
     use wi_export::install::Error;
     match error {
         Error::Io(e) => io_sentence(e.kind(), "an AI app settings file"),
         Error::Config(message) | Error::Service(message) | Error::Unsupported(message) => {
-            multi_line_sentence(message)
-                .or_else(|| root.sentence(message))
+            // Only a settings parse failure is a settings diagnostic; a service
+            // runner's multi-line stderr is tool output and never shown.
+            let multi_line = message.contains('\n');
+            let settings = matches!(error, Error::Config(_))
+                .then(|| multi_line_sentence(message))
+                .flatten();
+            let tool_output = match error {
+                Error::Service(_) if multi_line => Some(SERVICE_FAILED.to_owned()),
+                _ => None,
+            };
+            settings
+                .or(tool_output)
+                .or_else(|| root.sentence(message).filter(|_| !multi_line))
                 .or_else(|| {
                     // Keep the owner-facing first clause, drop the tool output after it.
                     let head = message.split(": ").next()?;

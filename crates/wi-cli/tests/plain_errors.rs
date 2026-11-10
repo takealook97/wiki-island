@@ -204,3 +204,39 @@ fn a_broken_settings_file_error_names_the_file_and_hides_absolute_paths() {
         "{message}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_failed_service_command_is_reported_as_a_service_problem() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    let script = env._dir.path().join("failing-service-tool");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\necho 'Operation not permitted' >&2\necho 'Try running again.' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = env
+        .command(&["--json", "service", "uninstall"])
+        .env("WI_LAUNCHCTL", &script)
+        .env("WI_SYSTEMCTL", &script)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let error = json_error(&out);
+    assert_eq!(error["code"], "service", "{error}");
+    let message = error["message"].as_str().unwrap();
+    let text = stderr(&out);
+    for shown in [message, text.as_str()] {
+        assert!(!shown.contains("settings file"), "{shown}");
+        assert!(!shown.contains("Operation not permitted"), "{shown}");
+        assert!(
+            !shown.contains(env._dir.path().to_str().unwrap()),
+            "{shown}"
+        );
+    }
+    assert!(message.contains("background"), "{message}");
+    assert!(message.contains("Run wi doctor"), "{message}");
+}
