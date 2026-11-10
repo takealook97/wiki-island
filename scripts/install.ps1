@@ -14,6 +14,8 @@
 #   WI_INSTALL_ARCH        Tests only: replaces the detected processor architecture.
 #   WI_INSTALL_TEST_FAIL   Tests only: comma-separated replacement steps that fail on purpose,
 #                          each `aside:<program>`, `place:<program>` or `restore:<program>`.
+#   WI_INSTALL_MAX_ASSET_BYTES  Tests only: a smaller size limit for the release archive, in bytes;
+#                          a value at or above the normal limit is ignored.
 #   WI_DEBUG               Set to 1 to print the details of an unexpected error.
 
 $WiRepoUrl = 'https://github.com/takealook97/wiki-island'
@@ -22,6 +24,10 @@ $WiBuildDocs = "$WiRepoUrl#windows"
 $WiPrograms = @('wi.exe', 'wiki-island.exe')
 $WiArchiveEntries = @('wi.exe', 'wiki-island.exe', 'LICENSE', 'README.md')
 $WiKeep = 'check that your user folder has free space and can be written to, then run this installer again.'
+# Download size limits in bytes: 256 MiB for the release archive, 64 KiB for SHA256SUMS. They are
+# unmeasured policy values well above the current release (an archive is about 18 MB).
+$WiMaxAssetBytes = [long]268435456
+$WiMaxSumsBytes = [long]65536
 
 # Writes one line for the person running the installer.
 function Write-WiLine {
@@ -88,6 +94,15 @@ function Get-WiInstallDir {
     return [IO.Path]::GetFullPath($dir).TrimEnd('\')
 }
 
+# Returns the size limit for the release archive: $WiMaxAssetBytes, or the smaller test value in
+# WI_INSTALL_MAX_ASSET_BYTES.
+function Get-WiAssetLimit {
+    $forced = [Environment]::GetEnvironmentVariable('WI_INSTALL_MAX_ASSET_BYTES')
+    $value = [long]0
+    if ([long]::TryParse([string]$forced, [ref]$value) -and $value -gt 0 -and $value -lt $WiMaxAssetBytes) { return $value }
+    return $WiMaxAssetBytes
+}
+
 # True when $Uri uses https, or http when WI_INSTALL_BASE_URL is set (tests serve over http).
 function Test-WiScheme {
     param([Uri]$Uri)
@@ -145,9 +160,12 @@ function Get-WiLatestTag {
     return $tag
 }
 
-# Downloads $Url to $OutFile. Returns 'ok', 'missing' (HTTP 404) or 'error' (anything else).
+# Downloads $Url to $OutFile, at most $MaxBytes bytes. Returns 'ok', 'missing' (HTTP 404),
+# 'toolarge' (the stated size or the bytes received exceed $MaxBytes; the partial file is removed)
+# or 'error' (anything else). Bytes are counted while they arrive, so a server that states no size
+# or a false one cannot get past the limit.
 function Get-WiDownload {
-    param([string]$Url, [string]$OutFile)
+    param([string]$Url, [string]$OutFile, [long]$MaxBytes)
     try {
         $response = (Get-WiRequest $Url $true).GetResponse()
     } catch {
@@ -160,13 +178,30 @@ function Get-WiDownload {
     }
     try {
         if ([int]$response.StatusCode -ne 200 -or -not (Test-WiScheme $response.ResponseUri)) { return 'error' }
+        if ($response.ContentLength -gt $MaxBytes) { return 'toolarge' }
         $source = $response.GetResponseStream()
         $target = [IO.File]::Open($OutFile, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+        $isTooLarge = $false
         try {
-            $source.CopyTo($target)
+            $buffer = New-Object byte[] 65536
+            $received = [long]0
+            $count = $source.Read($buffer, 0, $buffer.Length)
+            while ($count -gt 0) {
+                $received += $count
+                if ($received -gt $MaxBytes) {
+                    $isTooLarge = $true
+                    break
+                }
+                $target.Write($buffer, 0, $count)
+                $count = $source.Read($buffer, 0, $buffer.Length)
+            }
         } finally {
             $target.Dispose()
             $source.Dispose()
+        }
+        if ($isTooLarge) {
+            Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+            return 'toolarge'
         }
     } catch {
         return 'error'
@@ -298,14 +333,17 @@ function Test-WiLink {
     return (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
 }
 
-# Stops unless the install folder $Dir and its parent folder are real folders, not links to
-# another place. Nothing is read, written or removed before this passes.
+# Stops unless the install folder $Dir and every existing folder above it, up to the drive root,
+# are real folders, not links to another place (a symbolic link or junction). Nothing is read,
+# written or removed before this passes.
 function Assert-WiNotLinked {
     param([string]$Dir)
-    foreach ($path in @($Dir, (Split-Path -Parent $Dir))) {
+    $path = $Dir
+    while (-not [string]::IsNullOrEmpty($path)) {
         if (Test-WiLink $path) {
             Invoke-WiFailure "the folder $path is a link to another place, so nothing was installed; remove the link or set WI_INSTALL_DIR to a normal folder, then run this installer again."
         }
+        $path = [IO.Path]::GetDirectoryName($path)
     }
 }
 
@@ -483,11 +521,13 @@ function Get-WiRelease {
     $zip = Join-Path $Temp $asset
     $manifest = Join-Path $Temp 'SHA256SUMS'
     Write-WiLine "Downloading wiki-island $tag..."
-    switch (Get-WiDownload "$Base/releases/download/$tag/$asset" $zip) {
+    switch (Get-WiDownload "$Base/releases/download/$tag/$asset" $zip (Get-WiAssetLimit)) {
+        'toolarge' { Invoke-WiFailure "the downloaded program is larger than any release should be, so nothing was installed. Run this installer again later, or report it at $WiIssues." }
         'missing' { Invoke-WiFailure "this release has no program for Windows, so nothing was installed; to build it from source, follow $WiBuildDocs." }
         'error' { Invoke-WiFailure 'the download did not finish, so nothing was installed; check your internet connection, then run this installer again.' }
     }
-    switch (Get-WiDownload "$Base/releases/download/$tag/SHA256SUMS" $manifest) {
+    switch (Get-WiDownload "$Base/releases/download/$tag/SHA256SUMS" $manifest $WiMaxSumsBytes) {
+        'toolarge' { Invoke-WiFailure "the published checksum list is larger than it should be, so nothing was installed. Run this installer again later, or report it at $WiIssues." }
         'missing' { Invoke-WiFailure "this release has no checksum list, so nothing was installed. Run this installer again later, or report it at $WiIssues." }
         'error' { Invoke-WiFailure 'the checksum list did not download, so nothing was installed; check your internet connection, then run this installer again.' }
     }

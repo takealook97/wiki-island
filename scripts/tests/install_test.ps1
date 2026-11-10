@@ -737,6 +737,49 @@ try {
     Invoke-Install
     Assert-Case 'symbolic-link entry exits non-zero' { $Rc -ne 0 }
     Assert-Case 'symbolic-link entry installs nothing' { Test-NothingInstalled }
+
+    # 40. An archive larger than the size limit (lowered for the test): stop, nothing installed.
+    Build-Release
+    $limit = (Get-Item -LiteralPath $Zip).Length - 1
+    Invoke-Install -Extra @{ WI_INSTALL_MAX_ASSET_BYTES = $limit }
+    Assert-Case 'oversized archive exits non-zero' { $Rc -ne 0 }
+    Assert-Case 'oversized archive installs nothing' { Test-NothingInstalled }
+    Assert-Case 'oversized archive says so in a plain sentence' { Test-Said 'larger than any release should be' }
+
+    # 41. The same archive served without a Content-Length header: the bytes are counted.
+    [IO.File]::WriteAllText((Join-Path $Site 'NO_LENGTH'), '')
+    Invoke-Install -Extra @{ WI_INSTALL_MAX_ASSET_BYTES = $limit }
+    Remove-Item -LiteralPath (Join-Path $Site 'NO_LENGTH') -Force
+    Assert-Case 'oversized archive without a stated size exits non-zero' { $Rc -ne 0 }
+    Assert-Case 'oversized archive without a stated size installs nothing' { Test-NothingInstalled }
+    Assert-Case 'oversized archive without a stated size says so' { Test-Said 'larger than any release should be' }
+
+    # 42. A checksum list larger than 64 KiB: stop, nothing installed.
+    Build-Release
+    $padding = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt 1100; $i++) { [void]$padding.Append(('0' * 64) + "  padding-$i`n") }
+    [IO.File]::AppendAllText($Manifest, $padding.ToString())
+    Invoke-Install
+    Assert-Case 'oversized checksum list exits non-zero' { $Rc -ne 0 }
+    Assert-Case 'oversized checksum list installs nothing' { Test-NothingInstalled }
+    Assert-Case 'oversized checksum list says so in a plain sentence' { Test-Said 'checksum list is larger' }
+
+    # 43. A folder two levels above the install folder is a junction: refused, target untouched.
+    Build-Release
+    $linkGrand = Join-Path $Work 'link-grandparent'
+    Initialize-Folder $linkGrand
+    Initialize-Folder $Local
+    Initialize-Folder $UserHome
+    Initialize-Folder $Tmp
+    Write-UserPath $SavedPath
+    $programs = Join-Path $Local 'Programs'
+    [void](New-Item -ItemType Junction -Path $programs -Target $linkGrand)
+    Invoke-Install -Keep
+    [IO.Directory]::Delete($programs)
+    Assert-Case 'linked grandparent folder exits non-zero' { $Rc -ne 0 }
+    Assert-Case 'linked grandparent folder names the link' { Test-Said '\Programs is a link to another place' }
+    Assert-Case 'linked grandparent folder writes nothing into the target' { @(Get-ChildItem -LiteralPath $linkGrand -Force).Count -eq 0 }
+    Assert-Case 'linked grandparent folder runs no setup and leaves the user Path alone' { (-not (Test-Path -LiteralPath (Join-Path $UserHome 'setup.log'))) -and (Test-PathUnchanged) }
 } finally {
     if ($null -ne $Running -and -not $Running.HasExited) { $Running.Kill() }
     if ($null -ne $Server -and -not $Server.HasExited) { $Server.Kill() }
