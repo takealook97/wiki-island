@@ -1,6 +1,8 @@
 //! Expand vault-relative directory arguments without following symlinks.
 use std::path::{Component, Path};
 
+use super::display_path::display_rel;
+
 #[derive(Default)]
 pub(crate) struct Expansion {
     pub paths: Vec<String>,
@@ -10,7 +12,7 @@ pub(crate) struct Expansion {
 impl Expansion {
     fn failed(&mut self, path: &Path, code: &str, error: impl std::fmt::Display) {
         self.failures.push(serde_json::json!({
-            "path": path.to_string_lossy(), "status": "failed", "code": code,
+            "path": display_rel(path), "status": "failed", "code": code,
             "error": error.to_string(),
         }));
     }
@@ -103,7 +105,7 @@ fn walk(root: &Path, rel: &Path, result: &mut Expansion) {
             }
         };
         if kind.is_dir() {
-            let rel = relative_string(&path);
+            let rel = display_rel(&path);
             if wi_docs::notion::is_export(root, &rel) {
                 result.paths.push(rel);
             } else {
@@ -112,19 +114,8 @@ fn walk(root: &Path, rel: &Path, result: &mut Expansion) {
             }
         } else if kind.is_file() && supported(&path) {
             // Each component was checked above; rel starts from a UTF-8 argument.
-            result.paths.push(relative_string(&path));
+            result.paths.push(display_rel(&path));
         }
-    }
-}
-
-fn relative_string(path: &Path) -> String {
-    #[cfg(windows)]
-    {
-        path.to_string_lossy().replace('\\', "/")
-    }
-    #[cfg(not(windows))]
-    {
-        path.to_string_lossy().into_owned()
     }
 }
 

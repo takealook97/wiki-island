@@ -4,6 +4,7 @@ mod adoption_view;
 mod args;
 mod brief;
 mod dispatch;
+mod display_path;
 mod doctor;
 mod error_codes;
 mod error_text;
