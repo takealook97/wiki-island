@@ -24,3 +24,39 @@ jobs:
         run: shellcheck scripts/install.sh scripts/tests/*.sh
       - name: Test
         run: sh scripts/tests/install_test.sh
+
+  install-script-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # The fake release server is scripts/tests/release_server.py, shared with the shell test.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Lint
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+            Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -Force
+          }
+          # The installer talks to the person running it, so it writes to the host on purpose.
+          $findings = foreach ($file in 'scripts/install.ps1', 'scripts/tests/install_test.ps1') {
+            Invoke-ScriptAnalyzer -Path $file -Severity Warning, Error -ExcludeRule PSAvoidUsingWriteHost
+          }
+          $findings | Format-Table -AutoSize | Out-String -Width 240 | Write-Output
+          if ($findings) { exit 1 }
+      - name: Test (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./scripts/tests/install_test.ps1
+      - name: Test (PowerShell 7)
+        shell: pwsh
+        run: ./scripts/tests/install_test.ps1
+      - name: Install the latest published release
+        shell: powershell
+        env:
+          WI_INSTALL_SKIP_SETUP: '1'
+        run: |
+          Get-Content -Raw -LiteralPath scripts/install.ps1 | Invoke-Expression
+          & "$env:LOCALAPPDATA\Programs\wiki-island\bin\wi.exe" --version
+          & "$env:LOCALAPPDATA\Programs\wiki-island\bin\wiki-island.exe" --version
