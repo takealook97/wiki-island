@@ -359,12 +359,20 @@ try {
     $serverInfo.Arguments = "`"$(Join-Path $Here 'release_server.py')`" `"$Site`" `"$portFile`""
     $serverInfo.UseShellExecute = $false
     $serverInfo.CreateNoWindow = $true
+    # The server is silent while it runs, so stderr holds only a start-up failure; read it after exit.
+    $serverInfo.RedirectStandardError = $true
     $Server = [System.Diagnostics.Process]::Start($serverInfo)
-    for ($i = 0; $i -lt 100 -and -not ((Test-Path -LiteralPath $portFile) -and (Get-Item -LiteralPath $portFile).Length -gt 0); $i++) {
+    $serverWaitSteps = 600
+    for ($i = 0; $i -lt $serverWaitSteps -and -not $Server.HasExited -and -not ((Test-Path -LiteralPath $portFile) -and (Get-Item -LiteralPath $portFile).Length -gt 0); $i++) {
         Start-Sleep -Milliseconds 100
     }
     if (-not (Test-Path -LiteralPath $portFile) -or (Get-Item -LiteralPath $portFile).Length -eq 0) {
-        throw 'The release server did not start.'
+        if ($Server.HasExited) {
+            $serverError = $Server.StandardError.ReadToEnd().Trim()
+            [IO.File]::WriteAllText((Join-Path $Work 'release_server.err'), $serverError)
+            throw "The release server did not start: it exited with code $($Server.ExitCode). stderr: $serverError"
+        }
+        throw 'The release server did not start within 60 seconds.'
     }
     $Url = "http://127.0.0.1:$([IO.File]::ReadAllText($portFile).Trim())"
 
