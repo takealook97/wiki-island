@@ -4619,7 +4619,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "wi-bench"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -4636,7 +4636,7 @@ dependencies = [
 
 [[package]]
 name = "wi-docs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "csv",
@@ -4659,7 +4659,7 @@ dependencies = [
 
 [[package]]
 name = "wi-export"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "percent-encoding",
  "serde",
@@ -4675,7 +4675,7 @@ dependencies = [
 
 [[package]]
 name = "wi-history"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "gix",
  "rustix",
@@ -4691,7 +4691,7 @@ dependencies = [
 
 [[package]]
 name = "wi-index"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "criterion",
@@ -4713,7 +4713,7 @@ dependencies = [
 
 [[package]]
 name = "wi-lifecycle"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "proptest",
@@ -4727,7 +4727,7 @@ dependencies = [
 
 [[package]]
 name = "wi-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "globset",
@@ -4747,7 +4747,7 @@ dependencies = [
 
 [[package]]
 name = "wi-note"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mime_guess",
  "proptest",
@@ -4764,7 +4764,7 @@ dependencies = [
 
 [[package]]
 name = "wi-notion"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pulldown-cmark",
  "serde",
@@ -4780,7 +4780,7 @@ dependencies = [
 
 [[package]]
 name = "wi-store"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "criterion",
@@ -4807,7 +4807,7 @@ dependencies = [
 
 [[package]]
 name = "wi-sys"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
@@ -4815,7 +4815,7 @@ dependencies = [
 
 [[package]]
 name = "wiki-island"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
