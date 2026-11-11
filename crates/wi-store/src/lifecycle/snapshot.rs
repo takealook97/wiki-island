@@ -18,25 +18,41 @@ use crate::vault::Vault;
 /// index_as_of).
 type BuiltKey = (u64, Option<String>);
 
-/// Parsed lifecycle notes of the latest listing, each under the hash it
-/// was resolved for. One instance is shared by the handles of a vault on
-/// the same index in a process ([`Cache::shared`]): they list the same
-/// hashes, so a note resolved for a hash is the same whichever handle
-/// resolved it.
+/// The bytes a cached note was parsed from: their hash, and the file's
+/// stamp `(mtime_ns, size)` when they were read (`stat` before `read`, so
+/// a change during the read leaves an older stamp and forces a re-read).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Source {
+    hash: String,
+    stamp: (String, u64),
+}
+
+/// Parsed lifecycle notes of the latest listing, each with the source it
+/// was parsed from. One instance is shared by the handles of a vault on
+/// the same index in a process ([`Cache::shared`]). A note is reused only
+/// while its file still has the stamp it was parsed at, so it answers the
+/// same whichever handle parsed it and however stale the index is.
 #[derive(Debug, Default)]
 pub(crate) struct Parsed {
-    /// path → hash of the parsed bytes of the note `notes` holds for it
-    hashes: BTreeMap<String, String>,
+    /// path → source of the note `notes` holds for it
+    sources: BTreeMap<String, Source>,
     /// The notes of the latest listing, sorted by path.
     notes: Snapshot,
 }
 
 impl Parsed {
-    /// The cached snapshot of `path` when it was parsed from `hash`.
-    fn hit(&self, path: &str, hash: &str) -> Option<&NoteSnapshot> {
-        (self.hashes.get(path).map(String::as_str) == Some(hash))
-            .then(|| self.notes.get(path))
-            .flatten()
+    /// Whether the cached note of `path` was parsed from the bytes with
+    /// `hash`.
+    fn parsed_from(&self, path: &str, hash: &str) -> bool {
+        self.sources.get(path).is_some_and(|s| s.hash == hash)
+    }
+
+    /// The cached source of `path` when the file still has the stamp it
+    /// was parsed at.
+    fn hit(&self, path: &str, stamp: &(String, u64)) -> Option<&Source> {
+        self.sources
+            .get(path)
+            .filter(|s| s.stamp == *stamp && self.notes.get(path).is_some())
     }
 }
 
@@ -116,26 +132,22 @@ impl Listed {
     }
 }
 
-/// One resolved listing entry: its path, the hash it was parsed from, and
-/// the parsed note, or `None` when the parse cache already holds the note
-/// for that hash (resolved without a copy). Boxed: a listing holds one
-/// entry per lifecycle note, and most are cache hits.
-type Resolved = (String, String, Option<Box<NoteSnapshot>>);
+/// One resolved listing entry: its path, the source it was parsed from,
+/// and the parsed note, or `None` when the parse cache already holds the
+/// note for that source (resolved without a copy). Boxed: a listing holds
+/// one entry per lifecycle note, and most are cache hits.
+type Resolved = (String, Source, Option<Box<NoteSnapshot>>);
 
-/// Resolve one directory's listed notes: a cached snapshot of the indexed
-/// hash; else the materialized snapshot when the file's stamp still equals
-/// the indexed stamp (the stat-walk rule); else the file's current bytes.
-/// The directory chain is opened once, without following symlinks.
+/// Resolve one directory's listed notes from the file's current stamp: the
+/// cached note when it was parsed at that stamp; else the materialized
+/// snapshot when the stamp equals the indexed stamp (the stat-walk rule);
+/// else the file's current bytes, keyed by their own hash. The directory
+/// chain is opened once, without following symlinks.
 fn resolve_group(root: &Path, group: Vec<Listed>, cached: &Parsed) -> Vec<Option<Resolved>> {
     let mut dir: Option<Option<Dir>> = None;
     group
         .into_iter()
         .map(|entry| {
-            if let Some(hash) = &entry.hash
-                && cached.hit(&entry.path, hash).is_some()
-            {
-                return Some((entry.path, hash.clone(), None));
-            }
             let opened = dir.get_or_insert_with(|| {
                 Dir::open_parent(root, &entry.path)
                     .ok()
@@ -145,12 +157,20 @@ fn resolve_group(root: &Path, group: Vec<Listed>, cached: &Parsed) -> Vec<Option
             let (Some(d), Ok((_, name))) = (opened.as_ref(), split(&entry.path)) else {
                 return None;
             };
-            if let (Some(hash), Some(stamp), Some(text)) =
+            let stamp = d.stat_regular(name).ok().flatten()?;
+            if let Some(source) = cached.hit(&entry.path, &stamp) {
+                return Some((entry.path, source.clone(), None));
+            }
+            if let (Some(hash), Some(indexed), Some(text)) =
                 (&entry.hash, &entry.stamp, &entry.materialized)
-                && d.stat_regular(name).ok().flatten().as_ref() == Some(stamp)
+                && *indexed == stamp
                 && let Some(snap) = NoteSnapshot::from_materialized(&entry.path, text)
             {
-                return Some((entry.path, hash.clone(), Some(Box::new(snap))));
+                let source = Source {
+                    hash: hash.clone(),
+                    stamp,
+                };
+                return Some((entry.path, source, Some(Box::new(snap))));
             }
             let Ok(Some(bytes)) = d.read_regular(name) else {
                 return None;
@@ -160,8 +180,13 @@ fn resolve_group(root: &Path, group: Vec<Listed>, cached: &Parsed) -> Vec<Option
             if entry.hash.is_none() && !lifecycle {
                 return None;
             }
-            let key = entry.hash.unwrap_or_else(|| hash_bytes(&bytes));
-            Some((entry.path, key, Some(Box::new(snap))))
+            // Keyed by the bytes read, never by the indexed hash: a stale
+            // index must not label other bytes with its hash.
+            let source = Source {
+                hash: hash_bytes(&bytes),
+                stamp,
+            };
+            Some((entry.path, source, Some(Box::new(snap))))
         })
         .collect()
 }
@@ -213,7 +238,7 @@ impl Vault {
             .filter(|l| {
                 l.hash
                     .as_ref()
-                    .is_some_and(|h| cache.hit(&l.path, h).is_none())
+                    .is_some_and(|h| !cache.parsed_from(&l.path, h))
             })
             .map(|l| l.path.as_str())
             .collect();
@@ -313,17 +338,17 @@ impl Vault {
             .flat_map_iter(|group| resolve_group(root, group, cached))
             .flatten()
             .collect();
-        let mut hashes = BTreeMap::new();
+        let mut sources = BTreeMap::new();
         let mut kept = Vec::with_capacity(resolved.len());
-        for (path, key, snap) in resolved {
+        for (path, source, snap) in resolved {
             // The first entry of a path wins, as in `Snapshot::new`.
-            if let std::collections::btree_map::Entry::Vacant(slot) = hashes.entry(path.clone()) {
-                slot.insert(key);
+            if let std::collections::btree_map::Entry::Vacant(slot) = sources.entry(path.clone()) {
+                slot.insert(source);
                 kept.push((path, snap));
             }
         }
-        if hashes == cache.hashes {
-            // Same paths and hashes: every note is a cache hit, nothing to copy.
+        if sources == cache.sources {
+            // Same paths and sources: every note is a cache hit, nothing to copy.
             drop(cache);
             return Ok(parsed);
         }
@@ -337,7 +362,7 @@ impl Vault {
             .collect();
         // Read snapshots built from the previous notes keep sharing them.
         *cache = Parsed {
-            hashes,
+            sources,
             notes: Snapshot::new(notes, Default::default()),
         };
         drop(cache);
