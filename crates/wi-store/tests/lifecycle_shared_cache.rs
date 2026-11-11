@@ -162,3 +162,34 @@ fn live_handles_follow_the_files_while_the_index_is_stale_and_after_catch_up() {
         assert_eq!(observed(&fresh), expected, "fresh handle, edit {i}");
     }
 }
+
+fn set_modified(path: &Path, time: std::time::SystemTime) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(time))
+        .unwrap();
+}
+
+#[test]
+fn a_restored_stamp_never_overrides_a_newer_indexed_hash() {
+    let temp = TempDir::new().unwrap();
+    let owner = init(&temp);
+    let path = owner.root().join("work.md");
+    std::fs::write(&path, work("before")).unwrap();
+    owner.catch_up().unwrap();
+    let old_time = std::fs::metadata(&path).unwrap().modified().unwrap();
+    assert_eq!(reasons(&owner), [Some("before".to_owned())]);
+    // Same size, so only the modification time tells the bytes apart.
+    std::fs::write(&path, work("after!")).unwrap();
+    set_modified(&path, old_time + std::time::Duration::from_secs(2));
+    owner.catch_up().unwrap();
+    set_modified(&path, old_time);
+    owner.catch_up().unwrap();
+    let reader = open(&temp, owner.root());
+    let expected = reasons(&files_only(&temp, owner.root()));
+    assert_eq!(expected, [Some("after!".to_owned())]);
+    assert_eq!(reasons(&reader), expected);
+    assert_eq!(reasons(&owner), expected);
+}

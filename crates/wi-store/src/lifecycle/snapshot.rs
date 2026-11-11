@@ -30,8 +30,10 @@ struct Source {
 /// Parsed lifecycle notes of the latest listing, each with the source it
 /// was parsed from. One instance is shared by the handles of a vault on
 /// the same index in a process ([`Cache::shared`]). A note is reused only
-/// while its file still has the stamp it was parsed at, so it answers the
-/// same whichever handle parsed it and however stale the index is.
+/// when it was parsed from the bytes the index lists for the file's
+/// current stamp, or, with the index behind the file, from bytes read at
+/// that stamp ([`Parsed::hit`]). So it answers the same whichever handle
+/// parsed it and however stale the index is.
 #[derive(Debug, Default)]
 pub(crate) struct Parsed {
     /// path → source of the note `notes` holds for it
@@ -47,12 +49,28 @@ impl Parsed {
         self.sources.get(path).is_some_and(|s| s.hash == hash)
     }
 
-    /// The cached source of `path` when the file still has the stamp it
-    /// was parsed at.
-    fn hit(&self, path: &str, stamp: &(String, u64)) -> Option<&Source> {
-        self.sources
-            .get(path)
-            .filter(|s| s.stamp == *stamp && self.notes.get(path).is_some())
+    /// The source to reuse the cached note of `path` under, given the
+    /// file's current `stamp` and the listing's indexed hash and stamp.
+    /// When the index saw the file at this stamp, its hash decides: the
+    /// cached note must have been parsed from those bytes, whatever stamp
+    /// it was read at (a restored stamp can hide newer indexed bytes).
+    /// Otherwise the index is behind the file, and the note is reused only
+    /// if it was parsed from bytes read at this stamp.
+    fn hit(
+        &self,
+        path: &str,
+        stamp: &(String, u64),
+        indexed: (Option<&String>, Option<&(String, u64)>),
+    ) -> Option<Source> {
+        let cached = self.sources.get(path)?;
+        self.notes.get(path)?;
+        match indexed {
+            (Some(hash), Some(at)) if at == stamp => (cached.hash == *hash).then(|| Source {
+                hash: hash.clone(),
+                stamp: stamp.clone(),
+            }),
+            _ => (cached.stamp == *stamp).then(|| cached.clone()),
+        }
     }
 }
 
@@ -139,7 +157,7 @@ impl Listed {
 type Resolved = (String, Source, Option<Box<NoteSnapshot>>);
 
 /// Resolve one directory's listed notes from the file's current stamp: the
-/// cached note when it was parsed at that stamp; else the materialized
+/// cached note when [`Parsed::hit`] accepts it; else the materialized
 /// snapshot when the stamp equals the indexed stamp (the stat-walk rule);
 /// else the file's current bytes, keyed by their own hash. The directory
 /// chain is opened once, without following symlinks.
@@ -158,8 +176,9 @@ fn resolve_group(root: &Path, group: Vec<Listed>, cached: &Parsed) -> Vec<Option
                 return None;
             };
             let stamp = d.stat_regular(name).ok().flatten()?;
-            if let Some(source) = cached.hit(&entry.path, &stamp) {
-                return Some((entry.path, source.clone(), None));
+            let indexed = (entry.hash.as_ref(), entry.stamp.as_ref());
+            if let Some(source) = cached.hit(&entry.path, &stamp, indexed) {
+                return Some((entry.path, source, None));
             }
             if let (Some(hash), Some(indexed), Some(text)) =
                 (&entry.hash, &entry.stamp, &entry.materialized)
