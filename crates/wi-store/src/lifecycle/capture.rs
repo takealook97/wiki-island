@@ -55,7 +55,7 @@ fn reasons(outcome: &FilterOutcome) -> Value {
 impl Vault {
     fn body_hashes(&self) -> Result<BTreeSet<String>> {
         Ok(self
-            .lifecycle_notes()?
+            .lifecycle_notes_where(|n| n.body_hash.is_some())?
             .into_iter()
             .filter_map(|n| n.body_hash)
             .collect())

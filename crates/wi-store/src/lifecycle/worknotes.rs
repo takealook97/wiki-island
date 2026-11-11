@@ -151,10 +151,11 @@ impl Vault {
 
     /// Every work note, sorted by path.
     pub fn work_list(&self) -> Result<Vec<WorkEntry>> {
-        let notes = self.lifecycle_notes()?;
+        let notes = self.lifecycle_notes_where(|n| {
+            n.lifecycle.lifecycle_type == wi_note::LifecycleType::Work
+        })?;
         Ok(notes
             .iter()
-            .filter(|n| n.lifecycle.lifecycle_type == wi_note::LifecycleType::Work)
             .map(|n| {
                 let work = n.lifecycle.work.as_ref();
                 let state = work.and_then(|w| w.state.as_ref()).and_then(|s| {

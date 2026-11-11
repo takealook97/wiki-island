@@ -454,7 +454,7 @@ impl Vault {
             pending_deletions: RefCell::default(),
             import_batch_id: RefCell::new(None),
             open_report: OpenReport::default(),
-            lifecycle_cache: RefCell::new(crate::lifecycle::Cache::default()),
+            lifecycle_cache: RefCell::default(),
             clock: std::cell::Cell::new(None),
             published: RefCell::default(),
             held: RefCell::default(),
@@ -465,6 +465,11 @@ impl Vault {
             maintain_basis: std::cell::Cell::new(None),
             former_archive_dirs: Vec::new(),
         };
+        vault.lifecycle_cache = RefCell::new(crate::lifecycle::Cache::shared(
+            vault.root(),
+            &vault.vault_id,
+            vault.index_path(),
+        ));
         vault.former_archive_dirs = vault.record_archive_dir();
         vault.open_report = vault.recover()?;
         vault.cleanup_sync_scratch()?;

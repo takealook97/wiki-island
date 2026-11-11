@@ -85,7 +85,7 @@ impl Vault {
             }
         }
         let evidence = self.evidence_for(named);
-        Ok(Snapshot::new(base.into_notes(), evidence))
+        Ok(base.with_evidence(evidence))
     }
 
     /// Run the gates on `path` and apply the outcome. Lifecycle off, plain
@@ -299,7 +299,7 @@ impl Vault {
     pub(crate) fn sweep_items(&self, summary: &mut SweepSummary) -> Result<()> {
         let base = self.lifecycle_snapshot(&[])?;
         let evidence = self.evidence_for(base.notes().iter().filter(|n| n.is_memory()));
-        let snapshot = Snapshot::new(base.into_notes(), evidence);
+        let snapshot = base.with_evidence(evidence);
         let report = self
             .lifecycle_engine()
             .sweep(&Context::new(&snapshot, self.lifecycle_now()));

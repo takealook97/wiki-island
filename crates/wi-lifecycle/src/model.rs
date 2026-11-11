@@ -374,9 +374,12 @@ impl Evidence {
 }
 
 /// A consistent view of the vault: notes sorted by path plus their evidence.
+///
+/// The notes are immutable and shared: cloning a snapshot copies no note,
+/// so views that differ only in evidence share one copy of the notes.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
-    notes: Vec<NoteSnapshot>,
+    notes: std::sync::Arc<Vec<NoteSnapshot>>,
     pub evidence: Evidence,
 }
 
@@ -385,16 +388,24 @@ impl Snapshot {
         let mut notes = notes;
         notes.sort_by(|a, b| a.path.cmp(&b.path));
         notes.dedup_by(|a, b| a.path == b.path);
-        Self { notes, evidence }
+        Self {
+            notes: std::sync::Arc::new(notes),
+            evidence,
+        }
     }
 
-    /// The notes, sorted by path, without a copy.
+    /// The notes, sorted by path; copied only while another view shares them.
     pub fn into_notes(self) -> Vec<NoteSnapshot> {
-        self.notes
+        std::sync::Arc::unwrap_or_clone(self.notes)
     }
 
     pub fn notes(&self) -> &[NoteSnapshot] {
         &self.notes
+    }
+
+    /// The same notes with `evidence`, without a copy of the notes.
+    pub fn with_evidence(self, evidence: Evidence) -> Self {
+        Self { evidence, ..self }
     }
 
     pub fn get(&self, path: &str) -> Option<&NoteSnapshot> {

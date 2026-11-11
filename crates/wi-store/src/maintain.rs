@@ -713,10 +713,10 @@ impl Vault {
     fn work_paths(&self) -> Result<BTreeSet<String>> {
         Ok(self
             .lifecycle_snapshot(&[])?
-            .into_notes()
-            .into_iter()
+            .notes()
+            .iter()
             .filter(|n| n.lifecycle.lifecycle_type == wi_note::LifecycleType::Work)
-            .map(|n| n.path)
+            .map(|n| n.path.clone())
             .collect())
     }
 
@@ -747,7 +747,7 @@ impl Vault {
     ) -> Result<()> {
         let base = self.lifecycle_snapshot(&[])?;
         let evidence = self.evidence_for(base.notes().iter().filter(|n| n.is_memory()));
-        let snapshot = Snapshot::new(base.into_notes(), evidence);
+        let snapshot = base.with_evidence(evidence);
         let ctx = Context::new(&snapshot, self.lifecycle_now());
         let policy = self.lifecycle_policy();
         let engine = self.lifecycle_engine();
@@ -948,11 +948,8 @@ impl Vault {
     /// Whether any procedure note changed since the last pass on this
     /// device; remembers the current set.
     fn maintain_procedures(&self, report: &mut MaintainReport) -> Result<()> {
-        let notes = self.lifecycle_notes()?;
-        let procedures: Vec<_> = notes
-            .iter()
-            .filter(|n| n.lifecycle.kind == Some(wi_note::Kind::Procedure))
-            .collect();
+        let procedures =
+            self.lifecycle_notes_where(|n| n.lifecycle.kind == Some(wi_note::Kind::Procedure))?;
         let digest = wi_lifecycle::sha256(
             serde_json::to_string(&procedures)
                 .map_err(|e| StoreError::Invalid(e.to_string()))?

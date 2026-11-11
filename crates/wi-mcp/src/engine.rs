@@ -91,11 +91,12 @@ impl Engine {
         self.foreground_catch_ups.load(Ordering::SeqCst)
     }
 
-    /// Build the lifecycle read snapshot ahead of the first read, so it
+    /// Parse the lifecycle notes ahead of the first read, so parsing
     /// overlaps the client's handshake instead of the first tool call. It
-    /// judges no note, reads no note body and never runs a catch-up.
+    /// judges no note and never runs a catch-up; the first read builds its
+    /// snapshot from the parsed notes.
     pub fn warm(&self) {
-        let _ = self.vault.classify(&[], &Value::Null);
+        let _ = self.vault.warm_lifecycle_notes();
     }
 
     /// Queries that rank over the index need a complete walk. When the index

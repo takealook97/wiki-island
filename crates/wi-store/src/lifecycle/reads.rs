@@ -221,11 +221,8 @@ impl Vault {
     /// ones and the earliest `valid_until`. Interface for export.
     pub fn current_rules(&self) -> Result<RuleSet> {
         let generation = self.generation()?;
-        let notes = self.lifecycle_notes()?;
-        let rule_like: Vec<&NoteSnapshot> = notes
-            .iter()
-            .filter(|n| n.is_memory() && n.is_rule_like())
-            .collect();
+        let notes = self.lifecycle_notes_where(|n| n.is_memory() && n.is_rule_like())?;
+        let rule_like: Vec<&NoteSnapshot> = notes.iter().collect();
         let classified = self.classify_paths(&rule_like)?;
         let mut rules = Vec::new();
         let mut omitted = Vec::new();
@@ -280,11 +277,10 @@ impl Vault {
 
     /// Procedure notes (`kind: procedure`) for skills.
     pub fn procedures(&self, mode: ProcedureMode) -> Result<Vec<Classified>> {
-        let notes = self.lifecycle_notes()?;
-        let procedures: Vec<&NoteSnapshot> = notes
-            .iter()
-            .filter(|n| n.is_memory() && n.lifecycle.kind == Some(Kind::Procedure))
-            .collect();
+        let notes = self.lifecycle_notes_where(|n| {
+            n.is_memory() && n.lifecycle.kind == Some(Kind::Procedure)
+        })?;
+        let procedures: Vec<&NoteSnapshot> = notes.iter().collect();
         let classified = self.classify_paths(&procedures)?;
         Ok(classified
             .into_iter()
@@ -358,7 +354,7 @@ impl Vault {
         };
         let evidence = self.evidence_for(targets.iter().copied());
         let paths: Vec<String> = targets.iter().map(|n| n.path.clone()).collect();
-        let snapshot = Snapshot::new(base.into_notes(), evidence);
+        let snapshot = base.with_evidence(evidence);
         let ctx = Context::new(&snapshot, self.lifecycle_now());
         let engine = self.lifecycle_engine();
         Ok(paths

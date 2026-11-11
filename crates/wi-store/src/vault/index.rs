@@ -18,7 +18,7 @@ const REBUILD_CHUNK: usize = 128;
 use super::{CACHE_DIR_ENV, IndexState, Vault};
 
 impl Vault {
-    fn index_path(&self) -> Option<PathBuf> {
+    pub(crate) fn index_path(&self) -> Option<PathBuf> {
         if let Some(path) = &self.options.index_path {
             return Some(path.clone());
         }
