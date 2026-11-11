@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use sha2::{Digest, Sha256};
 use wi_note::{Kind, LifecycleType, Note, Status};
 
 use crate::{NoteSnapshot, Policy, Timestamp, Trigger, WorkItem, WorkKind, parse_time, sha256};
@@ -19,13 +20,54 @@ pub const MAX_NEW_DUPLICATES: usize = 5;
 /// Ephemeral detector input. It is rebuilt from files, never added to the index format.
 #[derive(Debug, Clone)]
 pub struct DetectionNote {
-    snapshot: NoteSnapshot,
+    snapshot: Facts,
     title: String,
-    raw_body_hash: String,
-    content_hash: String,
+    /// Raw SHA-256 digests: they are only compared for equality.
+    raw_body_hash: [u8; 32],
+    content_hash: [u8; 32],
     body: String,
     date: Option<String>,
+    /// Relation targets and source references; kept for procedure notes
+    /// only, the one kind whose references the detectors read.
     references: Vec<String>,
+}
+
+/// The part of a [`NoteSnapshot`] the detectors read. A maintenance pass
+/// holds one detector input per Markdown note at once, so the full
+/// snapshot (most of it unused here) is not kept.
+#[derive(Debug, Clone)]
+struct Facts {
+    path: String,
+    permalink: Option<String>,
+    unparseable: bool,
+    lifecycle: LifecycleFacts,
+}
+
+#[derive(Debug, Clone)]
+struct LifecycleFacts {
+    lifecycle_type: LifecycleType,
+    status: Option<Status>,
+    kind: Option<Kind>,
+    scope: Option<String>,
+    excluded: Option<bool>,
+}
+
+impl From<NoteSnapshot> for Facts {
+    fn from(note: NoteSnapshot) -> Self {
+        let lifecycle = note.lifecycle;
+        Self {
+            path: note.path,
+            permalink: note.permalink,
+            unparseable: note.unparseable.is_some(),
+            lifecycle: LifecycleFacts {
+                lifecycle_type: lifecycle.lifecycle_type,
+                status: lifecycle.status,
+                kind: lifecycle.kind,
+                scope: lifecycle.scope,
+                excluded: lifecycle.excluded,
+            },
+        }
+    }
 }
 
 impl DetectionNote {
@@ -57,24 +99,27 @@ impl DetectionNote {
             })
         });
         let date = authored.map(|t| t.date_naive().to_string());
-        let references = note
-            .relations()
-            .into_iter()
-            .map(|r| r.target)
-            .chain(
-                snapshot
-                    .lifecycle
-                    .sources
-                    .iter()
-                    .flatten()
-                    .map(|s| s.reference.clone()),
-            )
-            .collect();
+        let references = if snapshot.lifecycle.kind == Some(Kind::Procedure) {
+            note.relations()
+                .into_iter()
+                .map(|r| r.target)
+                .chain(
+                    snapshot
+                        .lifecycle
+                        .sources
+                        .iter()
+                        .flatten()
+                        .map(|s| s.reference.clone()),
+                )
+                .collect()
+        } else {
+            Vec::new()
+        };
         Self {
-            snapshot,
+            snapshot: snapshot.into(),
             title: normalize(&field("title").unwrap_or_default()),
-            raw_body_hash: sha256(note.body().as_bytes()),
-            content_hash: sha256(note.to_bytes()),
+            raw_body_hash: Sha256::digest(note.body().as_bytes()).into(),
+            content_hash: Sha256::digest(note.to_bytes()).into(),
             body: normalize(note.body()),
             date,
             references,
@@ -91,7 +136,7 @@ impl DetectionNote {
 
     fn live(&self, policy: &Policy) -> bool {
         let note = &self.snapshot;
-        note.unparseable.is_none()
+        !note.unparseable
             && note.lifecycle.lifecycle_type != LifecycleType::Work
             && note.lifecycle.excluded != Some(true)
             && !matches!(
@@ -629,5 +674,36 @@ mod tests {
         b.snapshot.lifecycle.excluded = None;
         b.snapshot.lifecycle.status = Some(Status::Archived);
         assert!(duplicates(&[a, b], &Policy::default(), now()).is_empty());
+    }
+
+    #[test]
+    fn detection_input_stays_small_per_note() {
+        // A maintenance pass holds one per Markdown note of the vault at
+        // once, so it keeps only what the detectors read.
+        assert!(std::mem::size_of::<DetectionNote>() <= 256);
+    }
+
+    #[test]
+    fn detection_input_keeps_what_the_detectors_read() {
+        let text = "---\ntitle: Kept\npermalink: kept-note\ntype: memory\nkind: procedure\nstatus: archived\nscope: team\nexcluded: true\n---\nbody\n";
+        let parsed = Note::parse(text.as_bytes()).unwrap();
+        let full = NoteSnapshot::from_note("dir/kept.md", &parsed);
+        let kept = DetectionNote::from_note("dir/kept.md", &parsed).snapshot;
+        assert_eq!(kept.path, full.path);
+        assert_eq!(kept.permalink, full.permalink);
+        assert_eq!(kept.unparseable, full.unparseable.is_some());
+        assert_eq!(kept.lifecycle.lifecycle_type, full.lifecycle.lifecycle_type);
+        assert_eq!(kept.lifecycle.status, full.lifecycle.status);
+        assert_eq!(kept.lifecycle.kind, full.lifecycle.kind);
+        assert_eq!(kept.lifecycle.scope, full.lifecycle.scope);
+        assert_eq!(kept.lifecycle.excluded, full.lifecycle.excluded);
+        assert_eq!(kept.lifecycle.kind, Some(Kind::Procedure));
+        assert_eq!(kept.lifecycle.scope.as_deref(), Some("team"));
+        let broken = Note::parse(b"---\nstatus: [\n---\nbody\n");
+        if let Ok(parsed) = broken {
+            let full = NoteSnapshot::from_note("broken.md", &parsed);
+            let kept = DetectionNote::from_note("broken.md", &parsed).snapshot;
+            assert_eq!(kept.unparseable, full.unparseable.is_some());
+        }
     }
 }
