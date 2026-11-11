@@ -388,6 +388,11 @@ impl Snapshot {
         Self { notes, evidence }
     }
 
+    /// The notes, sorted by path, without a copy.
+    pub fn into_notes(self) -> Vec<NoteSnapshot> {
+        self.notes
+    }
+
     pub fn notes(&self) -> &[NoteSnapshot] {
         &self.notes
     }

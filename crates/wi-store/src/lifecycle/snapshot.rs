@@ -295,14 +295,21 @@ impl Vault {
     /// (a note just written may not be indexed yet). Evidence is empty; add
     /// it with `evidence_for`.
     pub(crate) fn lifecycle_snapshot(&self, fresh: &[NoteSnapshot]) -> Result<Snapshot> {
-        let listed = self.lifecycle_notes()?;
-        let notes = listed
-            .into_iter()
+        self.refresh_lifecycle_notes()?;
+        // Clone only the kept notes from the handle cache, not the whole
+        // listing first: a pass takes several snapshots of a large vault.
+        let notes = self
+            .lifecycle_cache
+            .borrow()
+            .notes
+            .notes()
+            .iter()
             .filter(|n| !fresh.iter().any(|f| f.path == n.path))
             .filter(|n| {
                 n.lifecycle.lifecycle_type != wi_note::LifecycleType::Work
                     || self.owns_work_path(&n.path)
             })
+            .cloned()
             .chain(fresh.iter().cloned())
             .collect();
         Ok(Snapshot::new(notes, Default::default()))

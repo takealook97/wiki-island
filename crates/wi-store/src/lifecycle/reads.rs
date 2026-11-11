@@ -358,7 +358,7 @@ impl Vault {
         };
         let evidence = self.evidence_for(targets.iter().copied());
         let paths: Vec<String> = targets.iter().map(|n| n.path.clone()).collect();
-        let snapshot = Snapshot::new(base.notes().to_vec(), evidence);
+        let snapshot = Snapshot::new(base.into_notes(), evidence);
         let ctx = Context::new(&snapshot, self.lifecycle_now());
         let engine = self.lifecycle_engine();
         Ok(paths

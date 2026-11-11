@@ -588,7 +588,7 @@ impl Vault {
             }
             _ => slot.insert(self.start_scan()?),
         };
-        let snapshot = self.lifecycle_snapshot(&[])?;
+        let work = self.work_paths()?;
         loop {
             cursor.offset = scan.next;
             cursor.generation = Some(scan.mark.generation());
@@ -596,7 +596,7 @@ impl Vault {
                 return Ok(true);
             }
             let end = (scan.next + SCAN_CHUNK).min(scan.paths.len());
-            self.read_scan_paths(&snapshot, scan, end)?;
+            self.read_scan_paths(&work, scan, end)?;
             if scan.next < scan.paths.len() && !whole && over() {
                 cursor.offset = scan.next;
                 return Ok(false);
@@ -617,9 +617,9 @@ impl Vault {
     }
 
     /// Read `scan.paths[scan.next..end]`.
-    fn read_scan_paths(&self, snapshot: &Snapshot, scan: &mut Scan, end: usize) -> Result<()> {
+    fn read_scan_paths(&self, work: &BTreeSet<String>, scan: &mut Scan, end: usize) -> Result<()> {
         for path in &scan.paths[scan.next..end] {
-            match self.detection_note(snapshot, path)? {
+            match self.detection_note(work, path)? {
                 Some(note) => {
                     scan.notes.insert(path.clone(), note);
                 }
@@ -678,9 +678,11 @@ impl Vault {
         if budgeted && scan.paths.len() - scan.next > SCAN_CHUNK {
             return Ok(None);
         }
-        let snapshot = self.lifecycle_snapshot(&[])?;
         let end = scan.paths.len();
-        self.read_scan_paths(&snapshot, scan, end)?;
+        if scan.next < end {
+            let work = self.work_paths()?;
+            self.read_scan_paths(&work, scan, end)?;
+        }
         let Some(scan) = slot.take() else {
             return Ok(None);
         };
@@ -706,17 +708,26 @@ impl Vault {
             .collect())
     }
 
-    /// Detector input for one path; none for work notes and unreadable or
-    /// vanished files.
+    /// Paths of the lifecycle snapshot's work notes. A scan keeps only
+    /// these while it reads, not the whole snapshot.
+    fn work_paths(&self) -> Result<BTreeSet<String>> {
+        Ok(self
+            .lifecycle_snapshot(&[])?
+            .into_notes()
+            .into_iter()
+            .filter(|n| n.lifecycle.lifecycle_type == wi_note::LifecycleType::Work)
+            .map(|n| n.path)
+            .collect())
+    }
+
+    /// Detector input for one path; none for work notes (`work`) and
+    /// unreadable or vanished files.
     fn detection_note(
         &self,
-        snapshot: &Snapshot,
+        work: &BTreeSet<String>,
         path: &str,
     ) -> Result<Option<wi_lifecycle::detect::DetectionNote>> {
-        if snapshot
-            .get(path)
-            .is_some_and(|n| n.lifecycle.lifecycle_type == wi_note::LifecycleType::Work)
-        {
+        if work.contains(path) {
             return Ok(None);
         }
         // An unreadable file has its own ingest-failed item; it never stops the pass.
@@ -736,7 +747,7 @@ impl Vault {
     ) -> Result<()> {
         let base = self.lifecycle_snapshot(&[])?;
         let evidence = self.evidence_for(base.notes().iter().filter(|n| n.is_memory()));
-        let snapshot = Snapshot::new(base.notes().to_vec(), evidence);
+        let snapshot = Snapshot::new(base.into_notes(), evidence);
         let ctx = Context::new(&snapshot, self.lifecycle_now());
         let policy = self.lifecycle_policy();
         let engine = self.lifecycle_engine();
