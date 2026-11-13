@@ -135,7 +135,7 @@ fn watch_reconciles_files_created_while_it_was_not_running() {
 }
 
 #[test]
-fn init_prints_the_service_next_step() {
+fn init_prints_the_setup_next_step() {
     let dir = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_wi"))
@@ -147,7 +147,7 @@ fn init_prints_the_service_next_step() {
     assert!(out.status.success(), "{out:?}");
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(
-        text.contains("next: wi service install --yes  (keeps this vault committed and indexed in the background)"),
+        text.contains("next: wi setup --vault ") && text.contains("(connects your AI apps and keeps this vault committed and indexed in the background)"),
         "{text}"
     );
 }

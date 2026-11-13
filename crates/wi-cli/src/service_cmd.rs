@@ -292,7 +292,7 @@ pub(crate) fn doctor_check(vault_id: &str) -> Option<wi_store::Check> {
                 name: "service",
                 status: "warn",
                 detail: "A different scheduled task with this vault's name exists, so background care is not running.".into(),
-                fix: Some("rename or remove that task in Task Scheduler, then run wi setup".into()),
+                fix: Some(format!("rename or remove that task in Task Scheduler, then run {}", super::setup_cmd::SETUP_COMMAND)),
             },
             Ok(care) => {
                 let running = care == Care::Running;
@@ -305,14 +305,14 @@ pub(crate) fn doctor_check(vault_id: &str) -> Option<wi_store::Check> {
                     "Background care is not running."
                 }
                 .into(),
-                fix: (!running).then(|| "run wi setup".into()),
+                fix: (!running).then(|| format!("run {}", super::setup_cmd::SETUP_COMMAND)),
             }
             }
             Err(_) => wi_store::Check {
                 name: "service",
                 status: "warn",
                 detail: "Background care could not be checked.".into(),
-                fix: Some("run wi setup".into()),
+                fix: Some(format!("run {}", super::setup_cmd::SETUP_COMMAND)),
             },
         },
     )

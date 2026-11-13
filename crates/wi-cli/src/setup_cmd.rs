@@ -63,6 +63,23 @@ pub(crate) fn root(root: &Option<PathBuf>, home: &Path) -> PathBuf {
     root.clone().unwrap_or_else(|| home.join("wiki-island"))
 }
 
+/// The command every message names as the next step to connect AI apps and start background care.
+pub(crate) const SETUP_COMMAND: &str = "wi setup";
+
+/// `SETUP_COMMAND`, plus `--vault` when plain `wi setup` would pick a different notes folder.
+pub(crate) fn setup_command_for(vault: &Path, selected: &Option<PathBuf>) -> String {
+    let default = home().map(|home| root(selected, &home)).ok();
+    let same = default.is_some_and(|default| {
+        std::fs::canonicalize(&default)
+            .is_ok_and(|a| std::fs::canonicalize(vault).is_ok_and(|b| a == b))
+    });
+    if same {
+        SETUP_COMMAND.to_owned()
+    } else {
+        format!("{SETUP_COMMAND} --vault {}", vault.display())
+    }
+}
+
 /// First maintenance pass: take in existing files, then run the shared maintenance pass.
 fn run_first_maintenance(vault: &Vault) -> Result<()> {
     vault.auto_ingest()?;

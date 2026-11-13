@@ -665,3 +665,27 @@ fn watcher_continues_when_previous_log_is_a_directory() {
         assert_eq!(fs::metadata(log).unwrap().len(), 1_100_000);
     }
 }
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn init_and_doctor_name_same_next_step() {
+    let f = Fixture::new();
+    let init = f.run(&["init"]);
+    assert!(init.status.success(), "{init:?}");
+    let init_text = String::from_utf8(init.stdout).unwrap();
+    let init_step = init_text
+        .lines()
+        .find_map(|line| line.strip_prefix("next: "))
+        .and_then(|rest| rest.split("  (").next())
+        .unwrap_or_else(|| panic!("{init_text}"))
+        .to_owned();
+    let doctor = f.run(&["doctor"]);
+    let doctor_text = String::from_utf8(doctor.stdout).unwrap();
+    let doctor_step = doctor_text
+        .lines()
+        .find_map(|line| line.split("run ").nth(1))
+        .unwrap_or_else(|| panic!("{doctor_text}"))
+        .trim();
+    assert_eq!(init_step, doctor_step, "{init_text}\n{doctor_text}");
+    assert_eq!(init_step, "wi setup");
+}
