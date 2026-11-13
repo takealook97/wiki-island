@@ -203,6 +203,11 @@ impl Engine {
                     {
                         out["error"]["message"] = json!(message);
                     }
+                    if let Error::Store(StoreError::Edit(refusal))
+                    | Error::Lifecycle(LifecycleError::Store(StoreError::Edit(refusal))) = &e
+                    {
+                        out["error"]["message"] = json!(refusal.owner_sentence());
+                    }
                     if let Error::Store(StoreError::Stale { current, .. })
                     | Error::Lifecycle(LifecycleError::Store(StoreError::Stale {
                         current,

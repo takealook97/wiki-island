@@ -1669,3 +1669,34 @@ fn an_over_cap_search_is_an_invalid_request_with_a_fixed_message() {
     let found = good(&e, "wi_search", json!({ "query": at_caps }));
     assert_eq!(found["hits"].as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn edit_refused_names_reason() {
+    let (_temp, e) = fixture(Arc::new(wi_mcp::provider::VaultLifecycle));
+    engine_write(&e, "good.md", "---\ntitle: x\n---\nalpha\n");
+    engine_write(&e, "bad.md", "---\ntitle: [a\n---\nsecret body\n");
+
+    let result = e.call(
+        "wi_edit",
+        json!({"identifier":"bad.md","command":"set_metadata","metadata":{"a":"1"}}),
+    );
+    assert_eq!(result.is_error, Some(true), "{result:?}");
+    let error = result.text_value().unwrap()["error"].clone();
+    assert_eq!(error["code"], "edit-refused");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("Invalid frontmatter near line "),
+        "{message}"
+    );
+    assert!(!message.contains("secret body"), "{message}");
+
+    let result = e.call(
+        "wi_edit",
+        json!({"identifier":"good.md","command":"find_replace","find_text":"absent","content":"new"}),
+    );
+    let error = result.text_value().unwrap()["error"].clone();
+    assert_eq!(error["code"], "edit-refused");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("found 0 time(s)"), "{message}");
+    assert!(message.contains("expected 1"), "{message}");
+}

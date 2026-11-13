@@ -112,7 +112,7 @@ Refusal messages are plain sentences that say what to do next and never expose r
 | `terminal-note`, `claim-edit-requires-candidate`, `lifecycle-revert-requires-fork` | Revise through a candidate or `restores` fork |
 | `claim-edit-mixed`, `claim-edit-refused`, `revert-refused`, `rule-retirement`, `work-close-refused` | Lifecycle mutation policy refusal |
 | `capture-dropped`, `capture-empty`, `budget-exhausted`, `lifecycle-unavailable` | Capture, change cap or provider refusal (`budget-exhausted` carries `retry_at`, `spent` and `work`) |
-| `edit-refused`, `invalid-request`, `unsupported` | Unsupported format or edit, bad arguments or operation; `invalid-request` also covers a text or title query above the [query cap](#read-limit-and-query-cap) |
+| `edit-refused`, `invalid-request`, `unsupported` | Unsupported format or edit, bad arguments or operation; the `edit-refused` message names the reason (the frontmatter line and fix, the invalid key, the lock, or the unmet replacement count) and never echoes note text; `invalid-request` also covers a text or title query above the [query cap](#read-limit-and-query-cap) |
 | `too-large` | A file above the [read limit](#read-limit-and-query-cap); the message is fixed and says to open the file in its own app or raise `max_note_bytes` |
 | `future-timestamp`, `unparseable-timestamp` | A lifecycle timestamp is in the future or unreadable |
 | `io`, `parse`, `history`, `index`, `config`, `watch`, `not-initialised` | Filesystem, encoding, history, cache, config, watcher or vault failure |
