@@ -307,6 +307,20 @@ fn revision_sentence(error: &wi_lifecycle::RevisionError, root: &Root) -> String
     }
 }
 
+/// The `hint:` line for a terminal. `None` when the error sentence already names the next step,
+/// so the line would repeat it; JSON output keeps `hint()` unchanged.
+pub(crate) fn human_hint(error: &StoreError) -> Option<&'static str> {
+    match error {
+        StoreError::Stale { .. }
+        | StoreError::Exists { .. }
+        | StoreError::NotInitialised(_)
+        | StoreError::Locked { .. }
+        | StoreError::History(_)
+        | StoreError::Protected { .. } => None,
+        other => hint(other),
+    }
+}
+
 pub(crate) fn hint(error: &StoreError) -> Option<&'static str> {
     match error {
         StoreError::NotInitialised(_) => {
@@ -381,6 +395,25 @@ pub(crate) fn document_message(error: &wi_docs::Error) -> &'static str {
         _ => {
             "The import could not finish. Check that the source is a supported document or a Markdown and CSV notes export."
         }
+    }
+}
+
+/// The sentence for a refused edit: why, from the typed reason, and the next step. It bypasses
+/// `plain()`, which drops any reason that contains `": "`.
+fn edit_refused(root: &Root, refusal: &wi_store::EditRefusal) -> String {
+    use wi_store::EditRefusal;
+    match refusal {
+        EditRefusal::Frontmatter(_) => format!(
+            "The edit was refused. {} Fix the frontmatter in an editor, then try again.",
+            refusal.owner_sentence()
+        ),
+        EditRefusal::Other(text) => match root.sentence(text) {
+            Some(reason) => format!(
+                "The edit was refused. {reason} Read the note again and adjust the request."
+            ),
+            None => "The edit was refused. Read the note again and adjust the request.".into(),
+        },
+        _ => format!("The edit was refused. {}", refusal.owner_sentence()),
     }
 }
 
@@ -673,24 +706,5 @@ mod tests {
             plain_error(&io, &root),
             "wi could not read standard input. Check the file's permissions, then try again."
         );
-    }
-}
-
-/// The sentence for a refused edit: why, from the typed reason, and the next step. It bypasses
-/// `plain()`, which drops any reason that contains `": "`.
-fn edit_refused(root: &Root, refusal: &wi_store::EditRefusal) -> String {
-    use wi_store::EditRefusal;
-    match refusal {
-        EditRefusal::Frontmatter(_) => format!(
-            "The edit was refused. {} Fix the frontmatter in an editor, then try again.",
-            refusal.owner_sentence()
-        ),
-        EditRefusal::Other(text) => match root.sentence(text) {
-            Some(reason) => format!(
-                "The edit was refused. {reason} Read the note again and adjust the request."
-            ),
-            None => "The edit was refused. Read the note again and adjust the request.".into(),
-        },
-        _ => format!("The edit was refused. {}", refusal.owner_sentence()),
     }
 }

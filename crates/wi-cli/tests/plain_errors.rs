@@ -296,3 +296,51 @@ fn edit_refused_locked_note() {
         "edit-refused"
     );
 }
+
+#[test]
+fn hint_line_not_repeated_stale() {
+    let env = Env::new();
+    let out = env.wi(&["write", "a.md", "--content", "one\n"]);
+    assert!(out.status.success(), "{out:?}");
+    let out = env.wi(&[
+        "edit",
+        "a.md",
+        "--append",
+        "two",
+        "--expected-checksum",
+        "sha256:00",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let text = stderr(&out);
+    assert!(text.contains("changed since it was read"), "{text}");
+    assert!(!text.contains("hint:"), "{text}");
+    let out = env.wi(&[
+        "--json",
+        "edit",
+        "a.md",
+        "--append",
+        "two",
+        "--expected-checksum",
+        "sha256:00",
+    ]);
+    assert!(!json_error(&out)["hint"].is_null(), "{out:?}");
+}
+
+#[test]
+fn hint_line_not_repeated_not_initialised() {
+    let env = Env::new();
+    let empty = env.cache.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let args = ["read", "a.md"];
+    let mut cmd = env.command(&args);
+    cmd.env("WI_VAULT", &empty);
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let text = stderr(&out);
+    assert!(text.contains("error:"), "{text}");
+    assert!(!text.contains("hint:"), "{text}");
+    let mut cmd = env.command(&["--json", "read", "a.md"]);
+    cmd.env("WI_VAULT", &empty);
+    let out = cmd.output().unwrap();
+    assert!(!json_error(&out)["hint"].is_null(), "{out:?}");
+}

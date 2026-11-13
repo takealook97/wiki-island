@@ -88,7 +88,10 @@ pub(crate) fn main() -> Result<()> {
                 );
             }
             eprintln!("error: {message}");
-            if let Some(hint) = hint {
+            if let Some(hint) = error
+                .downcast_ref::<StoreError>()
+                .and_then(errors::human_hint)
+            {
                 eprintln!("hint: {hint}");
             }
             if debug_requested() {
