@@ -19,6 +19,10 @@ mod contained;
 mod doctor;
 mod error;
 mod exchange;
+#[cfg(feature = "fault-injection")]
+#[doc(hidden)]
+pub mod fault;
+#[cfg(not(feature = "fault-injection"))]
 mod fault;
 mod generated;
 mod import;
