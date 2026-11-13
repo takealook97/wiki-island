@@ -3,11 +3,11 @@
 # in the target file, and the tests that docs/VALIDATION.md names exist.
 #
 # Links. Files checked: README.md, CONTRIBUTING.md, AGENTS.md and docs/**/*.md. Links in fenced
-# code blocks and inline code spans are ignored, as are links with a URL scheme (http:, mailto:).
+# code blocks (tracked by marker character and length) and inline code spans are ignored, as are links with a URL scheme (http:, mailto:).
 # A link target must exist as a file or directory, relative to the linking file (a leading `/`
 # means the repository root). An anchor is checked only against Markdown targets, using GitHub's
 # heading slug rule: lowercase, keep letters, digits, spaces, hyphens and underscores, turn
-# spaces into hyphens, and suffix repeated slugs with -1, -2, ...
+# spaces into hyphens, and suffix repeated slugs with -1, -2, ... ATX and Setext headings count.
 #
 # VALIDATION citation format. docs/VALIDATION.md cites tests inside backticks on the same line:
 #   - A file path: `crates/wi-store/tests/query_cap.rs`, or the same without the leading
@@ -20,6 +20,7 @@
 #     cites no .rs file.
 #   - A name prefix for a group of tests: a snake_case prefix ending in `_` or `_*` with at least
 #     two underscores (`require_readable_*`). Some `fn <prefix>...` must exist, found the same way.
+# Function citations with fewer than three underscores are not checked, by design.
 # Other backticked text (commands, environment variables, short identifiers) is not checked.
 #
 # Run from anywhere: sh scripts/check-docs.sh
@@ -47,12 +48,37 @@ list_docs() {
   fi
 }
 
+# Shared awk function: fence_skip() is true for a line that opens, closes or sits inside a fenced
+# code block. An opening fence is up to 3 spaces then 3+ backticks or 3+ tildes; the block closes
+# only on the same character repeated at least as many times, followed by nothing but spaces.
+# shellcheck disable=SC2016
+FENCE_AWK='
+  function fence_skip(   t, m) {
+    t = $0
+    if (fchar == "") {
+      if (match(t, /^ ? ? ?(```+|~~~+)/)) {
+        m = substr(t, RSTART, RLENGTH)
+        sub(/^ +/, "", m)
+        fchar = substr(m, 1, 1)
+        flen = length(m)
+        return 1
+      }
+      return 0
+    }
+    if (match(t, /^ ? ? ?(```+|~~~+)[ \t]*$/)) {
+      m = t
+      gsub(/[ \t]/, "", m)
+      if (substr(m, 1, 1) == fchar && length(m) >= flen) { fchar = ""; flen = 0 }
+    }
+    return 1
+  }
+'
+
 # Plain awk only (no regex intervals, no gawk extensions): macOS awk and Ubuntu mawk must agree.
 # Prints "line<TAB>target" for every link in a Markdown file.
 extract_links() {
-  awk '
-    /^[ \t]*(```|~~~)/ { fence = !fence; next }
-    fence { next }
+  awk "$FENCE_AWK"'
+    fence_skip() { next }
     {
       line = $0
       # Drop inline code spans so that examples are not treated as links.
@@ -83,17 +109,8 @@ extract_links() {
 
 # Prints the heading slugs of a Markdown file, one per line, with GitHub duplicate suffixes.
 heading_slugs() {
-  awk '
-    /^[ \t]*(```|~~~)/ { fence = !fence; next }
-    fence { next }
-    /^ ? ? ?#+[ \t]/ {
-      text = $0
-      sub(/^ ? ? ?/, "", text)
-      hashes = text
-      sub(/[ \t].*$/, "", hashes)
-      if (length(hashes) > 6) next
-      sub(/^#+[ \t]+/, "", text)
-      sub(/[ \t]+#+[ \t]*$/, "", text)
+  awk "$FENCE_AWK"'
+    function emit(text) {
       # A link renders as its text.
       while (match(text, /\[[^]]*\]\([^)]*\)/)) {
         piece = substr(text, RSTART, RLENGTH)
@@ -111,6 +128,31 @@ heading_slugs() {
         seen[text] = 1
         print text
       }
+    }
+    fence_skip() { prev = ""; next }
+    /^ ? ? ?#+[ \t]/ {
+      prev = ""
+      text = $0
+      sub(/^ ? ? ?/, "", text)
+      hashes = text
+      sub(/[ \t].*$/, "", hashes)
+      if (length(hashes) > 6) next
+      sub(/^#+[ \t]+/, "", text)
+      sub(/[ \t]+#+[ \t]*$/, "", text)
+      emit(text)
+      next
+    }
+    prev != "" && /^ ? ? ?(=+|-+)[ \t]*$/ {
+      emit(prev)
+      prev = ""
+      next
+    }
+    /^[ \t]*$/ { prev = ""; next }
+    /^[ \t]*([-*+]|[0-9]+[.)])([ \t]|$)/ { prev = ""; next }
+    {
+      prev = $0
+      sub(/^[ \t]+/, "", prev)
+      sub(/[ \t]+$/, "", prev)
     }
   ' "$1"
 }
@@ -160,9 +202,8 @@ check_links() {
 # Prints "line<TAB>kind<TAB>token" for every checkable backticked token in VALIDATION.md.
 # kind is file, name or prefix; a line's file tokens are printed before its name tokens.
 extract_citations() {
-  awk '
-    /^[ \t]*(```|~~~)/ { fence = !fence; next }
-    fence { next }
+  awk "$FENCE_AWK"'
+    fence_skip() { next }
     {
       rest = $0
       nf = 0; nn = 0

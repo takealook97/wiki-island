@@ -112,4 +112,18 @@ make_tree "$tmp/file"
 printf -- '- Gone (`wi-demo/tests/missing.rs`).\n' >>"$tmp/file/docs/VALIDATION.md"
 expect_fail "missing test file fails" "$tmp/file" "cited file wi-demo/tests/missing.rs does not exist"
 
+make_tree "$tmp/fence4"
+# shellcheck disable=SC2016
+printf '\n````md\n```\n[inside](nowhere.md)\n````\n\n[gone](docs/GONE.md)\n' >>"$tmp/fence4/docs/DESIGN.md"
+expect_fail "four-backtick fence ignores a short fence line" "$tmp/fence4" "docs/DESIGN.md:12: broken link"
+
+make_tree "$tmp/mixed"
+# shellcheck disable=SC2016
+printf '\n```md\n~~~\n[inside](nowhere.md)\n```\n\n[gone](docs/GONE.md)\n' >>"$tmp/mixed/docs/DESIGN.md"
+expect_fail "tilde line does not close a backtick fence" "$tmp/mixed" "docs/DESIGN.md:12: broken link"
+
+make_tree "$tmp/setext"
+printf '\nDemo\n====\n\nSee [demo](#demo).\n' >>"$tmp/setext/docs/DESIGN.md"
+expect_pass "setext heading provides an anchor" "$tmp/setext"
+
 exit "$failed"
