@@ -1,5 +1,5 @@
 //! Shared, content-free diagnostics for note creation on CLI and MCP.
-use wi_note::{Note, ReadOnlyReason};
+use wi_note::Note;
 use wi_store::StoreError;
 
 /// Validate that provenance can be recorded without rewriting unsupported YAML.
@@ -13,32 +13,9 @@ pub fn validate_frontmatter(bytes: &[u8]) -> wi_store::Result<()> {
     };
     let text = std::str::from_utf8(bytes).unwrap_or_default();
     let opening = text[..front.content_range.start].lines().count();
-    let (line, hint) = match reason {
-        ReadOnlyReason::InvalidYaml(detail) => {
-            let line = detail
-                .split("line ")
-                .nth(1)
-                .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(1);
-            (
-                opening + line,
-                "Check YAML indentation and quote values containing ': '.",
-            )
-        }
-        ReadOnlyReason::DuplicateKey(_) => (opening + 1, "Remove the duplicate metadata key."),
-        ReadOnlyReason::Unterminated => (
-            opening,
-            "Close the metadata block with a line containing --- .",
-        ),
-        _ => (
-            opening + 1,
-            "Use a simple YAML mapping with one key per line; avoid aliases and flow mappings.",
-        ),
-    };
     Err(StoreError::LifecycleRefused {
         code: "frontmatter-invalid",
-        message: format!("Invalid frontmatter near line {line}. {hint}"),
+        message: reason.owner_sentence_at(opening),
     })
 }
 

@@ -33,6 +33,43 @@ pub enum ReadOnlyReason {
     UnsupportedSyntax(String),
 }
 
+impl ReadOnlyReason {
+    /// The owner-facing sentence for a frontmatter that cannot be edited safely. `opening_lines`
+    /// is the number of lines before the YAML content (1 for a block opened on the first line).
+    /// Names the line and the fix; never echoes note content.
+    pub fn owner_sentence_at(&self, opening_lines: usize) -> String {
+        let (line, hint) = match self {
+            Self::InvalidYaml(detail) => {
+                let line = detail
+                    .split("line ")
+                    .nth(1)
+                    .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(1);
+                (
+                    opening_lines + line,
+                    "Check YAML indentation and quote values containing ': '.",
+                )
+            }
+            Self::DuplicateKey(_) => (opening_lines + 1, "Remove the duplicate metadata key."),
+            Self::Unterminated => (
+                opening_lines,
+                "Close the metadata block with a line containing --- .",
+            ),
+            _ => (
+                opening_lines + 1,
+                "Use a simple YAML mapping with one key per line; avoid aliases and flow mappings.",
+            ),
+        };
+        format!("Invalid frontmatter near line {line}. {hint}")
+    }
+
+    /// `owner_sentence_at` for the usual block that opens on the first line.
+    pub fn owner_sentence(&self) -> String {
+        self.owner_sentence_at(1)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Diagnostic {
     pub field: Option<String>,

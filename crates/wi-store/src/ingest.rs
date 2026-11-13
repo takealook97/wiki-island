@@ -440,7 +440,7 @@ impl Vault {
         }
         let mut edited = note.clone();
         for (key, value) in &set {
-            edited = set_key(&edited, key, value).map_err(|e| StoreError::Edit(e.to_string()))?;
+            edited = set_key(&edited, key, value).map_err(|e| StoreError::Edit(e.into()))?;
         }
         let target = Target {
             rel: rel.to_owned(),

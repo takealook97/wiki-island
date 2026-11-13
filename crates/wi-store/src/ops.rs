@@ -10,7 +10,7 @@ use wi_note::{
 };
 
 use crate::contained::read_rel;
-use crate::error::{Result, StoreError};
+use crate::error::{EditRefusal, Result, StoreError};
 use crate::paths::{Target, check_engine_dir, is_markdown, resolve_writable_as};
 use crate::publish::{Change, Expect, request_digest};
 use crate::vault::{Ingress, Vault, WriteResult};
@@ -162,8 +162,7 @@ pub(crate) fn move_bytes(bytes: &[u8], from: &str) -> Result<Vec<u8>> {
         return Ok(bytes.to_vec());
     }
     let permalink = Value::String(generate_permalink(from));
-    let edited =
-        set_key(&note, "permalink", &permalink).map_err(|e| StoreError::Edit(e.to_string()))?;
+    let edited = set_key(&note, "permalink", &permalink).map_err(|e| StoreError::Edit(e.into()))?;
     Ok(edited.to_bytes().to_vec())
 }
 
@@ -477,8 +476,12 @@ impl Vault {
             return Ok(new);
         };
         let edit = |note: &Note, key: &str, value: &Value| {
-            set_key(note, key, value)
-                .map_err(|e| StoreError::Edit(format!("cannot record {key} for this change: {e}")))
+            set_key(note, key, value).map_err(|e| {
+                StoreError::Edit(EditRefusal::from_edit_or(
+                    e,
+                    EditRefusal::Other(format!("{key} cannot be recorded for this change.")),
+                ))
+            })
         };
         let mut next = new;
         let current_kind = field(&next, "origin")
@@ -540,17 +543,14 @@ impl Vault {
         let Some(kind) = ingress.origin_kind() else {
             return Ok(note.to_bytes().to_vec());
         };
-        if note.frontmatter().is_some_and(|f| f.is_editable().is_err()) {
+        if let Some(reason) = note.frontmatter().and_then(|f| f.is_editable().err()) {
             if is_lifecycle(note) {
-                return Err(StoreError::Edit(
-                    "the frontmatter cannot be edited, so origin cannot be recorded".into(),
-                ));
+                return Err(StoreError::Edit(EditRefusal::Frontmatter(reason)));
             }
             return Ok(note.to_bytes().to_vec());
         }
         let origin = origin_value(ingress, kind, "write");
-        let edited =
-            set_key(note, "origin", &origin).map_err(|e| StoreError::Edit(e.to_string()))?;
+        let edited = set_key(note, "origin", &origin).map_err(|e| StoreError::Edit(e.into()))?;
         Ok(edited.to_bytes().to_vec())
     }
 
@@ -798,7 +798,7 @@ impl Vault {
             None => {
                 let restored = if ingress != Ingress::Engine && field(&restored, "origin").is_some()
                 {
-                    remove_key(&restored, "origin").map_err(|e| StoreError::Edit(e.to_string()))?
+                    remove_key(&restored, "origin").map_err(|e| StoreError::Edit(e.into()))?
                 } else {
                     restored
                 };
@@ -837,8 +837,12 @@ fn carry_engine_fields(old: &Note, new: &Note, ingress: Ingress) -> Result<Note>
     let mut next = new.clone();
     for key in ENGINE_OWNED_FIELDS.iter().chain(&[AGENT_LABEL]) {
         if let (Some(value), None) = (field(old, key), field(new, key)) {
-            next = set_key(&next, key, &value)
-                .map_err(|e| StoreError::Edit(format!("cannot keep engine-owned {key}: {e}")))?;
+            next = set_key(&next, key, &value).map_err(|e| {
+                StoreError::Edit(EditRefusal::from_edit_or(
+                    e,
+                    EditRefusal::EngineOwned((*key).to_string()),
+                ))
+            })?;
         }
     }
     Ok(next)
@@ -847,10 +851,10 @@ fn carry_engine_fields(old: &Note, new: &Note, ingress: Ingress) -> Result<Note>
 fn apply_edit(note: &Note, request: &EditRequest) -> Result<Note> {
     let mut current = note.clone();
     for (key, value) in &request.set {
-        current = set_key(&current, key, value).map_err(|e| StoreError::Edit(e.to_string()))?;
+        current = set_key(&current, key, value).map_err(|e| StoreError::Edit(e.into()))?;
     }
     for key in &request.remove {
-        current = remove_key(&current, key).map_err(|e| StoreError::Edit(e.to_string()))?;
+        current = remove_key(&current, key).map_err(|e| StoreError::Edit(e.into()))?;
     }
     if let Some(edit) = &request.body {
         current = apply_body_edit(&current, edit)?;
@@ -893,9 +897,9 @@ pub(crate) fn apply_body_edit(note: &Note, edit: &BodyEdit) -> Result<Note> {
             }
             let found = body.matches(find.as_str()).count();
             if found != *expected_replacements {
-                return Err(StoreError::Edit(format!(
-                    "found {found} occurrence(s) of the find text, expected {expected_replacements}"
-                )));
+                return Err(StoreError::Edit(EditRefusal::Other(format!(
+                    "The text to replace was found {found} time(s), but the request expected {expected_replacements}. Read the note again and adjust the request."
+                ))));
             }
             body.replace(find.as_str(), replace)
         }

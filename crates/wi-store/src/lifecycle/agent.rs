@@ -22,7 +22,7 @@ use wi_lifecycle::{NoteSnapshot, complete_agent_defaults, sha256, summary_from_b
 use wi_note::{Note, set_key};
 
 use crate::contained::read_rel;
-use crate::error::{Result, StoreError};
+use crate::error::{EditRefusal, Result, StoreError};
 use crate::vault::Vault;
 
 /// Folder of noted agent rules.
@@ -64,8 +64,11 @@ struct Resolved {
     span: Option<(usize, usize)>,
 }
 
-fn edit_error(key: &str, e: impl std::fmt::Display) -> StoreError {
-    StoreError::Edit(format!("cannot complete {key} for this claim: {e}"))
+fn edit_error(key: &str, e: wi_note::EditError) -> StoreError {
+    StoreError::Edit(EditRefusal::from_edit_or(
+        e,
+        EditRefusal::Other(format!("{key} cannot be completed for this claim.")),
+    ))
 }
 
 /// `rule` or `preference` when the note is a memory claim of that kind.

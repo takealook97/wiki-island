@@ -44,7 +44,7 @@ mod watch;
 mod work;
 
 pub use doctor::{Check, DoctorReport};
-pub use error::{Result, StoreError};
+pub use error::{EditRefusal, Result, StoreError};
 pub use exchange::EXCHANGE_SUPPORTED;
 pub use ingest::{IngestFailure, IngestOutcome, IngestReport, ReconcileReport};
 pub use lease::{LEASE_REFRESH, LEASE_TTL};

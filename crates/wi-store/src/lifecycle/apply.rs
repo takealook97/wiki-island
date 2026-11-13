@@ -7,7 +7,7 @@ use wi_lifecycle::{NoteEdit, WorkItem};
 use wi_note::Note;
 
 use crate::contained::read_rel;
-use crate::error::{Result, StoreError};
+use crate::error::{EditRefusal, Result, StoreError};
 use crate::lifecycle::Charge;
 use crate::paths::{Target, check_protected_managed, normalize};
 use crate::publish::{Change, Expect, request_digest};
@@ -80,9 +80,12 @@ impl Vault {
             });
         }
         let note = Note::parse(&bytes)?;
-        let edited = edit
-            .apply(&note)
-            .map_err(|e| StoreError::Edit(format!("lifecycle edit of {}: {e}", edit.path)))?;
+        let edited = edit.apply(&note).map_err(|e| {
+            StoreError::Edit(EditRefusal::Other(format!(
+                "The change to {} could not be applied: {e}.",
+                edit.path
+            )))
+        })?;
         if edited.to_bytes() == bytes.as_slice() && charge.is_none() {
             return Ok(None);
         }

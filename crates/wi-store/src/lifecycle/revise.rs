@@ -206,7 +206,7 @@ impl Vault {
             return Ok(note);
         }
         set_key(&note, "permalink", &Value::String(generate_permalink(path)))
-            .map_err(|e| StoreError::Edit(e.to_string()))
+            .map_err(|e| StoreError::Edit(e.into()))
     }
 
     /// Revert: a lifecycle note (now or in the restored bytes) is restored

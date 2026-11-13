@@ -130,7 +130,7 @@ fn store_sentence(error: &StoreError, root: &Root) -> String {
                     .into()
             })
         }
-        StoreError::Edit(message) => match root.plain(message) {
+        StoreError::Edit(refusal) => match root.plain(&refusal.to_string()) {
             Some(reason) => format!(
                 "The edit could not be applied ({reason}). Read the note again and adjust the request."
             ),
@@ -516,8 +516,11 @@ mod tests {
                 code: "x",
                 message: "lifecycle note is terminal; fork it".into(),
             },
-            StoreError::Edit(format!("{} cannot be edited", outside.display())),
-            StoreError::Edit("cannot keep engine-owned key".into()),
+            StoreError::Edit(wi_store::EditRefusal::Other(format!(
+                "{} cannot be edited",
+                outside.display()
+            ))),
+            StoreError::Edit(wi_store::EditRefusal::EngineOwned("origin".into())),
             StoreError::Invalid(format!("{} is not a regular file", inside("notes/dir"))),
             StoreError::Invalid(format!("manifest seq 4 at {}", outside.display())),
             StoreError::Parse(wi_note::ParseError::Utf8(utf8)),

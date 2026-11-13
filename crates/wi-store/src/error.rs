@@ -5,6 +5,69 @@ use wi_history::HistoryError;
 /// Result alias for this crate.
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 
+/// Why an edit was refused. Every variant maps to the protocol code `edit-refused`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum EditRefusal {
+    /// Frontmatter cannot be edited safely; carries the parser's reason.
+    #[error("{0}")]
+    Frontmatter(wi_note::ReadOnlyReason),
+    #[error("invalid key: {0}")]
+    InvalidKey(String),
+    #[error("the edit did not round-trip to the requested value")]
+    Encoding,
+    #[error("removal would change another key: {0}")]
+    WouldChangeOtherKey(String),
+    #[error("the note is locked")]
+    Locked,
+    #[error("{0} is engine-owned")]
+    EngineOwned(String),
+    /// Any other precondition; the text is engine-written and owner-safe.
+    #[error("{0}")]
+    Other(String),
+}
+
+impl EditRefusal {
+    /// Keeps a frontmatter reason from `error`; any other cause becomes `fallback`.
+    pub fn from_edit_or(error: wi_note::EditError, fallback: Self) -> Self {
+        match Self::from(error) {
+            reason @ Self::Frontmatter(_) => reason,
+            _ => fallback,
+        }
+    }
+
+    /// The sentence that tells the owner why, from the type and never from engine internals.
+    pub fn owner_sentence(&self) -> String {
+        match self {
+            Self::Frontmatter(reason) => reason.owner_sentence(),
+            Self::InvalidKey(key) => format!(
+                "The key \"{key}\" is not a valid frontmatter key. Use a plain key name made of letters, digits, hyphens or underscores."
+            ),
+            Self::Encoding => "The value could not be written as frontmatter and read back unchanged. Use a simpler value.".into(),
+            Self::WouldChangeOtherKey(key) => format!(
+                "Removing that key would also change \"{key}\". Edit the frontmatter in an editor instead."
+            ),
+            Self::Locked => "The note is locked (locked: true), so the engine does not edit it. Remove the locked key in an editor to unlock it.".into(),
+            Self::EngineOwned(key) => format!(
+                "The field \"{key}\" is kept by the engine and cannot be changed by this edit. Leave it out of the request."
+            ),
+            Self::Other(text) => text.clone(),
+        }
+    }
+}
+
+impl From<wi_note::EditError> for EditRefusal {
+    fn from(error: wi_note::EditError) -> Self {
+        match error {
+            wi_note::EditError::ReadOnly(reason) => Self::Frontmatter(reason),
+            wi_note::EditError::InvalidKey(key) => Self::InvalidKey(key),
+            wi_note::EditError::Encoding => Self::Encoding,
+            wi_note::EditError::WouldChangeOtherKey(key) => Self::WouldChangeOtherKey(key),
+            wi_note::EditError::Parse(error) => Self::Other(error.to_string()),
+        }
+    }
+}
+
 /// Errors from vault services. Every refusal changes nothing.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -66,7 +129,7 @@ pub enum StoreError {
     #[error("lifecycle refused ({code}): {message}")]
     LifecycleRefused { code: &'static str, message: String },
     #[error("edit refused: {0}")]
-    Edit(String),
+    Edit(EditRefusal),
     #[error("invalid request: {0}")]
     Invalid(String),
     #[error("note is not valid UTF-8: {0}")]

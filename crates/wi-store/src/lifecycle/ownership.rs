@@ -8,7 +8,7 @@ use serde_json::json;
 use wi_note::{Note, remove_key, set_key};
 
 use crate::contained::read_rel;
-use crate::error::{Result, StoreError};
+use crate::error::{EditRefusal, Result, StoreError};
 use crate::ops::is_locked;
 use crate::paths::{Target, normalize};
 use crate::publish::{Change, Expect, request_digest};
@@ -26,7 +26,8 @@ impl Vault {
         let Some(bytes) = read_rel(self.root(), &rel)? else {
             return Err(StoreError::NotFound { path: rel });
         };
-        let note = Note::parse(&bytes).map_err(|e| StoreError::Edit(e.to_string()))?;
+        let note =
+            Note::parse(&bytes).map_err(|e| StoreError::Edit(EditRefusal::Other(e.to_string())))?;
         let text = |key: &str| {
             note.frontmatter()
                 .and_then(|f| f.get(key))
@@ -43,7 +44,7 @@ impl Vault {
             return Ok(None);
         }
         if is_locked(&note) {
-            return Err(StoreError::Edit(format!("{rel} is locked")));
+            return Err(StoreError::Edit(EditRefusal::Locked));
         }
         let mut edited = note.clone();
         if agent_origin {
@@ -52,12 +53,10 @@ impl Vault {
                 "locator": "cli:adopt",
                 "captured_at": self.now_text(),
             });
-            edited =
-                set_key(&edited, "origin", &origin).map_err(|e| StoreError::Edit(e.to_string()))?;
+            edited = set_key(&edited, "origin", &origin).map_err(|e| StoreError::Edit(e.into()))?;
         }
         if noted {
-            edited =
-                remove_key(&edited, "noted_by").map_err(|e| StoreError::Edit(e.to_string()))?;
+            edited = remove_key(&edited, "noted_by").map_err(|e| StoreError::Edit(e.into()))?;
         }
         let result = self.publish(Change {
             target: Target {
