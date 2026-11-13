@@ -121,7 +121,7 @@ pub(crate) fn run_standalone(
         Command::Init { path } => {
             let target = path.or(root.clone()).unwrap_or_else(|| PathBuf::from("."));
             let (_, report) = Vault::init(&target)?;
-            let next = setup_cmd::setup_command_for(&report.root, &root);
+            let next = setup_cmd::setup_command_for(&report.root);
             Ok(Output {
                 human: format!(
                     "vault ready at {} (vault_id {}, {} commit(s))\nnext: {next}  (connects your AI apps and keeps this vault committed and indexed in the background)",

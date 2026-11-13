@@ -66,9 +66,13 @@ pub(crate) fn root(root: &Option<PathBuf>, home: &Path) -> PathBuf {
 /// The command every message names as the next step to connect AI apps and start background care.
 pub(crate) const SETUP_COMMAND: &str = "wi setup";
 
-/// `SETUP_COMMAND`, plus `--vault` when plain `wi setup` would pick a different notes folder.
-pub(crate) fn setup_command_for(vault: &Path, selected: &Option<PathBuf>) -> String {
-    let default = home().map(|home| root(selected, &home)).ok();
+/// `SETUP_COMMAND`, plus `--vault` when a fresh plain `wi setup` would pick a different notes
+/// folder. That run sees `WI_VAULT` from the environment, never this invocation's `--vault` flag.
+pub(crate) fn setup_command_for(vault: &Path) -> String {
+    let fresh = std::env::var_os("WI_VAULT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let default = home().map(|home| root(&fresh, &home)).ok();
     let same = default.is_some_and(|default| {
         std::fs::canonicalize(&default)
             .is_ok_and(|a| std::fs::canonicalize(vault).is_ok_and(|b| a == b))
@@ -76,7 +80,49 @@ pub(crate) fn setup_command_for(vault: &Path, selected: &Option<PathBuf>) -> Str
     if same {
         SETUP_COMMAND.to_owned()
     } else {
-        format!("{SETUP_COMMAND} --vault {}", vault.display())
+        format!("{SETUP_COMMAND} --vault {}", quote_path(vault))
+    }
+}
+
+/// The path as one shell argument for the platform's usual shell.
+fn quote_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    #[cfg(windows)]
+    {
+        const SPECIAL: &str = "&()[]{}^=;!'+,~`";
+        if text.is_empty() || text.contains(|c: char| c == ' ' || SPECIAL.contains(c)) {
+            return format!("\"{text}\"");
+        }
+        text
+    }
+    #[cfg(not(windows))]
+    {
+        let plain = |c: char| c.is_ascii_alphanumeric() || "/._+:@%=,-".contains(c);
+        if !text.is_empty() && text.chars().all(plain) {
+            return text;
+        }
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod quote_tests {
+    use super::quote_path;
+    use std::path::Path;
+
+    #[test]
+    fn quote_path_plain_path_stays_bare() {
+        assert_eq!(quote_path(Path::new("/tmp/a-b/c_d.e")), "/tmp/a-b/c_d.e");
+    }
+
+    #[test]
+    fn quote_path_space_is_single_quoted() {
+        assert_eq!(quote_path(Path::new("/tmp/My Notes")), "'/tmp/My Notes'");
+    }
+
+    #[test]
+    fn quote_path_embedded_single_quote_is_escaped() {
+        assert_eq!(quote_path(Path::new("/tmp/it's")), "'/tmp/it'\\''s'");
     }
 }
 

@@ -689,3 +689,45 @@ fn init_and_doctor_name_same_next_step() {
     assert_eq!(init_step, doctor_step, "{init_text}\n{doctor_text}");
     assert_eq!(init_step, "wi setup");
 }
+
+#[cfg(unix)]
+fn init_without_wi_vault(f: &Fixture, args: &[&str]) -> String {
+    let out = support::output(
+        Command::new(f.path("bin/wi"))
+            .args(args)
+            .env("HOME", f.path("home"))
+            .env("WI_CACHE_DIR", f.path("cache"))
+            .env_remove("WI_VAULT")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("WI_FAULT"),
+    );
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn init_next_step_keeps_explicit_vault_flag() {
+    let f = Fixture::new();
+    let vault = f.path("flag-vault");
+    let text = init_without_wi_vault(&f, &["--vault", vault.to_str().unwrap(), "init"]);
+    let next = text
+        .lines()
+        .find(|line| line.starts_with("next: "))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(next.contains("--vault"), "{next}");
+    assert!(next.contains(vault.to_str().unwrap()), "{next}");
+}
+
+#[cfg(unix)]
+#[test]
+fn init_next_step_quotes_path_with_space() {
+    let f = Fixture::new();
+    let vault = f.path("My Notes");
+    let text = init_without_wi_vault(&f, &["init", vault.to_str().unwrap()]);
+    let expected = format!(
+        "wi setup --vault '{}'",
+        fs::canonicalize(&vault).unwrap().display()
+    );
+    assert!(text.contains(&expected), "{text}");
+}
