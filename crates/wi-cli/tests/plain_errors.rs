@@ -264,6 +264,27 @@ fn edit_refused_broken_frontmatter_names_line() {
     assert_eq!(json_error(&out)["code"], "edit-refused");
 }
 
+fn refused_line(env: &Env, name: &str, text: &str) -> usize {
+    write_note(env, name, text);
+    let out = env.wi(&["edit", name, "--set", "a=1"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let text = stderr(&out);
+    text.split("near line ")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or_else(|| panic!("{text}"))
+}
+
+#[test]
+fn edit_refused_frontmatter_line_after_blank_lines() {
+    let env = Env::new();
+    let block = "---\ntitle: [a\n---\nbody\n";
+    let plain = refused_line(&env, "plain.md", block);
+    let shifted = refused_line(&env, "shifted.md", &format!("\n\n\n\n\n{block}"));
+    assert_eq!(shifted, plain + 5);
+}
+
 #[test]
 fn edit_refused_invalid_key() {
     let env = Env::new();

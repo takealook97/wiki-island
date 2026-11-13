@@ -543,9 +543,15 @@ impl Vault {
         let Some(kind) = ingress.origin_kind() else {
             return Ok(note.to_bytes().to_vec());
         };
-        if let Some(reason) = note.frontmatter().and_then(|f| f.is_editable().err()) {
+        if let Some((reason, opening_lines)) = note
+            .frontmatter()
+            .and_then(|f| f.is_editable().err().map(|r| (r, f.opening_lines())))
+        {
             if is_lifecycle(note) {
-                return Err(StoreError::Edit(EditRefusal::Frontmatter(reason)));
+                return Err(StoreError::Edit(EditRefusal::Frontmatter {
+                    reason,
+                    opening_lines,
+                }));
             }
             return Ok(note.to_bytes().to_vec());
         }

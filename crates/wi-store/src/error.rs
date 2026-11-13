@@ -9,9 +9,13 @@ pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EditRefusal {
-    /// Frontmatter cannot be edited safely; carries the parser's reason.
-    #[error("{0}")]
-    Frontmatter(wi_note::ReadOnlyReason),
+    /// Frontmatter cannot be edited safely; carries the parser's reason and the number of lines
+    /// before the YAML content.
+    #[error("{reason}")]
+    Frontmatter {
+        reason: wi_note::ReadOnlyReason,
+        opening_lines: usize,
+    },
     #[error("invalid key: {0}")]
     InvalidKey(String),
     #[error("the edit did not round-trip to the requested value")]
@@ -31,7 +35,7 @@ impl EditRefusal {
     /// Keeps a frontmatter reason from `error`; any other cause becomes `fallback`.
     pub fn from_edit_or(error: wi_note::EditError, fallback: Self) -> Self {
         match Self::from(error) {
-            reason @ Self::Frontmatter(_) => reason,
+            reason @ Self::Frontmatter { .. } => reason,
             _ => fallback,
         }
     }
@@ -39,7 +43,10 @@ impl EditRefusal {
     /// The sentence that tells the owner why, from the type and never from engine internals.
     pub fn owner_sentence(&self) -> String {
         match self {
-            Self::Frontmatter(reason) => reason.owner_sentence(),
+            Self::Frontmatter {
+                reason,
+                opening_lines,
+            } => reason.owner_sentence_at(*opening_lines),
             Self::InvalidKey(key) => format!(
                 "The key {key:?} is not a valid frontmatter key. Use a non-empty key name on a single line."
             ),
@@ -59,7 +66,10 @@ impl EditRefusal {
 impl From<wi_note::EditError> for EditRefusal {
     fn from(error: wi_note::EditError) -> Self {
         match error {
-            wi_note::EditError::ReadOnly(reason) => Self::Frontmatter(reason),
+            wi_note::EditError::ReadOnly(reason, opening_lines) => Self::Frontmatter {
+                reason,
+                opening_lines,
+            },
             wi_note::EditError::InvalidKey(key) => Self::InvalidKey(key),
             wi_note::EditError::Encoding => Self::Encoding,
             wi_note::EditError::WouldChangeOtherKey(key) => Self::WouldChangeOtherKey(key),

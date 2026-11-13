@@ -85,7 +85,7 @@ pub enum ParseError {
 #[derive(Debug, Error)]
 pub enum EditError {
     #[error("frontmatter is read-only: {0}")]
-    ReadOnly(#[from] ReadOnlyReason),
+    ReadOnly(ReadOnlyReason, usize),
     #[error("invalid key: {0}")]
     InvalidKey(String),
     #[error("edit did not round-trip to the requested value")]
@@ -112,6 +112,7 @@ pub struct Frontmatter {
     pub content_range: Range<usize>,
     reasons: Vec<ReadOnlyReason>,
     indent: String,
+    opening_lines: usize,
 }
 
 impl Frontmatter {
@@ -124,6 +125,18 @@ impl Frontmatter {
 
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|e| e.key.as_str())
+    }
+
+    /// Number of lines before the YAML content, counting leading blank lines and the opening
+    /// fence. Pass it to `ReadOnlyReason::owner_sentence_at`.
+    pub fn opening_lines(&self) -> usize {
+        self.opening_lines
+    }
+
+    /// `is_editable` as an edit error that keeps the opening-line count.
+    fn editable(&self) -> Result<(), EditError> {
+        self.is_editable()
+            .map_err(|reason| EditError::ReadOnly(reason, self.opening_lines))
     }
 
     pub fn is_editable(&self) -> Result<(), ReadOnlyReason> {
@@ -174,6 +187,7 @@ impl Note {
         };
         let mut fm = parse_frontmatter(&text[content_start..content_end], content_start);
         fm.byte_range = lines[opening].0..end;
+        fm.opening_lines = text[..content_start].lines().count();
         if close.is_none() {
             fm.reasons.insert(0, ReadOnlyReason::Unterminated);
         }
@@ -315,6 +329,7 @@ fn parse_frontmatter(source: &str, base: usize) -> Frontmatter {
         content_range: base..base + source.len(),
         reasons: Vec::new(),
         indent: String::new(),
+        opening_lines: 1,
     };
     if source.trim().starts_with('{') {
         fm.reasons.push(ReadOnlyReason::FlowMapping);
@@ -593,7 +608,7 @@ pub fn set_key(note: &Note, key: &str, value: &Value) -> Result<Note, EditError>
     };
     let encoded_key = encode_key(key, false);
     let (range, replacement) = if let Some(fm) = &note.frontmatter {
-        fm.is_editable()?;
+        fm.editable()?;
         let range = fm
             .entries
             .iter()
@@ -627,7 +642,7 @@ pub fn remove_key(note: &Note, key: &str) -> Result<Note, EditError> {
     let Some(fm) = &note.frontmatter else {
         return Ok(note.clone());
     };
-    fm.is_editable()?;
+    fm.editable()?;
     match fm.entries.iter().find(|e| e.key == key) {
         Some(entry) => {
             let edited = replace(note, entry.byte_range.clone(), b"")?;

@@ -11,11 +11,9 @@ pub fn validate_frontmatter(bytes: &[u8]) -> wi_store::Result<()> {
     let Err(reason) = front.is_editable() else {
         return Ok(());
     };
-    let text = std::str::from_utf8(bytes).unwrap_or_default();
-    let opening = text[..front.content_range.start].lines().count();
     Err(StoreError::LifecycleRefused {
         code: "frontmatter-invalid",
-        message: reason.owner_sentence_at(opening),
+        message: reason.owner_sentence_at(front.opening_lines()),
     })
 }
 

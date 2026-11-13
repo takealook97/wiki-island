@@ -1671,6 +1671,30 @@ fn an_over_cap_search_is_an_invalid_request_with_a_fixed_message() {
 }
 
 #[test]
+fn edit_refused_frontmatter_line_after_blank_lines() {
+    let (_temp, e) = fixture(Arc::new(wi_mcp::provider::VaultLifecycle));
+    let block = "---\ntitle: [a\n---\nbody\n";
+    engine_write(&e, "plain.md", block);
+    engine_write(&e, "shifted.md", &format!("\n\n\n\n\n{block}"));
+    let line = |name: &str| -> usize {
+        let result = e.call(
+            "wi_edit",
+            json!({"identifier":name,"command":"set_metadata","metadata":{"a":"1"}}),
+        );
+        let error = result.text_value().unwrap()["error"].clone();
+        assert_eq!(error["code"], "edit-refused", "{error}");
+        let message = error["message"].as_str().unwrap().to_owned();
+        message
+            .split("near line ")
+            .nth(1)
+            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or_else(|| panic!("{message}"))
+    };
+    assert_eq!(line("shifted.md"), line("plain.md") + 5);
+}
+
+#[test]
 fn edit_refused_names_reason() {
     let (_temp, e) = fixture(Arc::new(wi_mcp::provider::VaultLifecycle));
     engine_write(&e, "good.md", "---\ntitle: x\n---\nalpha\n");

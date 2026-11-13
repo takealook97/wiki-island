@@ -403,7 +403,7 @@ pub(crate) fn document_message(error: &wi_docs::Error) -> &'static str {
 fn edit_refused(root: &Root, refusal: &wi_store::EditRefusal) -> String {
     use wi_store::EditRefusal;
     match refusal {
-        EditRefusal::Frontmatter(_) => format!(
+        EditRefusal::Frontmatter { .. } => format!(
             "The edit was refused. {} Fix the frontmatter in an editor, then try again.",
             refusal.owner_sentence()
         ),
