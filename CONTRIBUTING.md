@@ -52,13 +52,16 @@ Clippy alone does not evaluate `const` assertions; the test build does. This doe
 
 ### Policy checks
 
-CI runs two checks in the `policy` job of `.github/workflows/ci.yml`. They are not part of the local gate above; run them after changing a dependency or a manifest:
+CI runs three checks in the `policy` job of `.github/workflows/ci.yml`. They are not part of the local gate above; run them after changing a dependency or a manifest:
 
 ```sh
 cargo install --locked cargo-deny      # once; CI uses cargo-deny 0.20.2
 cargo deny check licenses              # every license in Cargo.lock is allowed by deny.toml
 sh scripts/check-offline-tree.sh       # the wi-mcp, wi-store and wi-index trees hold no network client
+sh scripts/check-docs.sh               # documentation links and anchors resolve; tests named in docs/VALIDATION.md exist
 ```
+
+The docs check needs only `sh`, `grep`, `sed`, `awk` and `find`; run it after editing or renaming a document, a heading or a test. It prints one `file:line: message` per failure. How `docs/VALIDATION.md` cites tests is described at the top of the script. `sh scripts/tests/check_docs_test.sh` and `sh scripts/tests/check_offline_tree_test.sh` test the two scripts, and CI runs them too.
 
 `deny.toml` configures only the licenses check. Add a license to its allow list only after judging that it is compatible with AGPL-3.0-only, and say why in a comment. The tree check needs only `cargo`. What each check proves and does not prove: [VALIDATION](docs/VALIDATION.md#dependency-checks).
 
