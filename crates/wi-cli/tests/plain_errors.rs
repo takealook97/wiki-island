@@ -243,3 +243,56 @@ fn a_failed_service_command_is_reported_as_a_service_problem() {
     assert!(message.contains("background"), "{message}");
     assert!(message.contains("Run wi doctor"), "{message}");
 }
+
+fn write_note(env: &Env, name: &str, text: &str) {
+    std::fs::write(env.root.join(name), text).unwrap();
+}
+
+#[test]
+fn edit_refused_broken_frontmatter_names_line() {
+    let env = Env::new();
+    write_note(&env, "bad.md", "---\ntitle: [a\n---\nsecret body\n");
+    let out = env.wi(&["edit", "bad.md", "--set", "a=1"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let text = stderr(&out);
+    assert!(text.contains("The edit was refused."), "{text}");
+    assert!(text.contains("Invalid frontmatter near line"), "{text}");
+    assert!(text.contains("Fix the frontmatter in an editor"), "{text}");
+    assert!(!text.contains("could not be applied"), "{text}");
+    assert!(!text.contains("secret body"), "{text}");
+    let out = env.wi(&["--json", "edit", "bad.md", "--set", "a=1"]);
+    assert_eq!(json_error(&out)["code"], "edit-refused");
+}
+
+#[test]
+fn edit_refused_invalid_key() {
+    let env = Env::new();
+    write_note(&env, "ok.md", "---\ntitle: x\n---\nbody\n");
+    let out = env.wi(&["edit", "ok.md", "--set", "=1"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let text = stderr(&out);
+    assert!(text.contains("The edit was refused."), "{text}");
+    assert!(text.contains("is not a valid frontmatter key"), "{text}");
+    assert!(!text.contains("could not be applied"), "{text}");
+}
+
+#[test]
+fn edit_refused_locked_note() {
+    let env = Env::new();
+    write_note(
+        &env,
+        "lk.md",
+        "---\ntitle: x\nlocked: true\norigin:\n  kind: agent\n---\nbody\n",
+    );
+    let out = env.wi(&["adopt", "lk.md"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let text = stderr(&out);
+    assert!(text.contains("The edit was refused."), "{text}");
+    assert!(text.contains("The note is locked"), "{text}");
+    assert!(text.contains("`locked: true`"), "{text}");
+    assert!(!text.contains("could not be applied"), "{text}");
+    assert_eq!(
+        json_error(&env.wi(&["--json", "adopt", "lk.md"]))["code"],
+        "edit-refused"
+    );
+}

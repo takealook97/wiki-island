@@ -41,15 +41,15 @@ impl EditRefusal {
         match self {
             Self::Frontmatter(reason) => reason.owner_sentence(),
             Self::InvalidKey(key) => format!(
-                "The key \"{key}\" is not a valid frontmatter key. Use a plain key name made of letters, digits, hyphens or underscores."
+                "The key {key:?} is not a valid frontmatter key. Use a non-empty key name on a single line."
             ),
             Self::Encoding => "The value could not be written as frontmatter and read back unchanged. Use a simpler value.".into(),
             Self::WouldChangeOtherKey(key) => format!(
-                "Removing that key would also change \"{key}\". Edit the frontmatter in an editor instead."
+                "Removing that key would also change {key:?}. Edit the frontmatter in an editor instead."
             ),
-            Self::Locked => "The note is locked (locked: true), so the engine does not edit it. Remove the locked key in an editor to unlock it.".into(),
+            Self::Locked => "The note is locked, so the engine does not change it. Remove `locked: true` in an editor to unlock it.".into(),
             Self::EngineOwned(key) => format!(
-                "The field \"{key}\" is kept by the engine and cannot be changed by this edit. Leave it out of the request."
+                "The field {key:?} is kept by the engine and cannot be changed by this edit. Leave it out of the request."
             ),
             Self::Other(text) => text.clone(),
         }

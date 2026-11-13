@@ -130,13 +130,7 @@ fn store_sentence(error: &StoreError, root: &Root) -> String {
                     .into()
             })
         }
-        StoreError::Edit(refusal) => match root.plain(&refusal.to_string()) {
-            Some(reason) => format!(
-                "The edit could not be applied ({reason}). Read the note again and adjust the request."
-            ),
-            None => "The edit could not be applied. Read the note again and adjust the request."
-                .into(),
-        },
+        StoreError::Edit(refusal) => edit_refused(root, refusal),
         StoreError::Invalid(message) => match root.plain(message) {
             Some(reason) => format!(
                 "The request could not be carried out ({reason}). Check the command and try again."
@@ -588,6 +582,15 @@ mod tests {
     }
 
     #[test]
+    fn edit_refused_engine_owned_key() {
+        let root = Root::new(Path::new("/vault"));
+        let text = edit_refused(&root, &wi_store::EditRefusal::EngineOwned("origin".into()));
+        assert!(text.starts_with("The edit was refused."), "{text}");
+        assert!(text.contains("\"origin\""), "{text}");
+        assert!(!text.contains("could not be applied"), "{text}");
+    }
+
+    #[test]
     fn every_store_error_renders_as_a_plain_sentence_without_internals() {
         let temp = tempfile::TempDir::new().unwrap();
         let root_path = temp.path().join("vault");
@@ -670,5 +673,24 @@ mod tests {
             plain_error(&io, &root),
             "wi could not read standard input. Check the file's permissions, then try again."
         );
+    }
+}
+
+/// The sentence for a refused edit: why, from the typed reason, and the next step. It bypasses
+/// `plain()`, which drops any reason that contains `": "`.
+fn edit_refused(root: &Root, refusal: &wi_store::EditRefusal) -> String {
+    use wi_store::EditRefusal;
+    match refusal {
+        EditRefusal::Frontmatter(_) => format!(
+            "The edit was refused. {} Fix the frontmatter in an editor, then try again.",
+            refusal.owner_sentence()
+        ),
+        EditRefusal::Other(text) => match root.sentence(text) {
+            Some(reason) => format!(
+                "The edit was refused. {reason} Read the note again and adjust the request."
+            ),
+            None => "The edit was refused. Read the note again and adjust the request.".into(),
+        },
+        _ => format!("The edit was refused. {}", refusal.owner_sentence()),
     }
 }
