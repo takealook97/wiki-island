@@ -118,7 +118,11 @@ fn github_with(
     {
         bail!("Your account name could not be read; connect with wi sync setup <url>.");
     }
-    let repo = format!("{login}/wiki-island-notes");
+    let name = std::fs::canonicalize(root)
+        .ok()
+        .and_then(|root| super::setup_name::recorded(&root))
+        .and_then(|naming| naming.name);
+    let repo = repository(&login, name.as_deref());
     let Some(exists) = run(&["repo", "view", &repo, "--json", "isPrivate"]) else {
         return Ok(fallback.into());
     };
@@ -141,9 +145,26 @@ fn github_with(
     Ok("Private remote sync is connected; background care will synchronize your notes.".into())
 }
 
+/// The hosting repository of a vault: `<login>/wiki-island-notes`, and
+/// `<login>/wiki-island-notes-<name>` for a vault with a recorded name.
+fn repository(login: &str, name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("{login}/wiki-island-notes-{name}"),
+        None => format!("{login}/wiki-island-notes"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn named_vault_uses_its_own_repository() {
+        assert_eq!(repository("owner", None), "owner/wiki-island-notes");
+        assert_eq!(
+            repository("owner", Some("work")),
+            "owner/wiki-island-notes-work"
+        );
+    }
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     #[cfg(windows)]
