@@ -11,8 +11,8 @@ use wi_history::hash_bytes;
 use wi_note::remove_key;
 use wi_store::{IMPORTS_DIR, Ingress, MoveRequest, Vault, WriteRequest};
 
-const MAX_ENTRIES: usize = 100_000;
-const MAX_DEPTH: usize = 64;
+pub(crate) const MAX_ENTRIES: usize = 100_000;
+pub(crate) const MAX_DEPTH: usize = 64;
 type Files = BTreeMap<String, Vec<u8>>;
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -42,7 +42,7 @@ fn notion_name(path: &str) -> bool {
     path.split('/').any(|part| clean_component(part) != part)
 }
 
-fn checked_path(path: &str) -> Result<&str> {
+pub(crate) fn checked_path(path: &str) -> Result<&str> {
     validate_source_path(path)?;
     if path.contains(['[', ']', '#']) {
         return Err(invalid(
@@ -55,7 +55,7 @@ fn checked_path(path: &str) -> Result<&str> {
     Ok(path)
 }
 
-fn bounded_read(mut reader: impl Read, budget: usize) -> Result<Vec<u8>> {
+pub(crate) fn bounded_read(mut reader: impl Read, budget: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader
         .by_ref()
@@ -127,7 +127,7 @@ fn directory(
     Ok(())
 }
 
-fn zip_preflight(bytes: &[u8]) -> Result<()> {
+pub(crate) fn zip_preflight(bytes: &[u8]) -> Result<()> {
     fn u16_at(bytes: &[u8], offset: usize) -> Result<usize> {
         let raw: [u8; 2] = bytes
             .get(offset..offset + 2)
@@ -194,7 +194,7 @@ fn zip_preflight(bytes: &[u8]) -> Result<()> {
 }
 
 /// External exports are read-only sources; converted paths remain vault-relative.
-fn source_path(root: &Path, source: &str) -> Result<PathBuf> {
+pub(crate) fn source_path(root: &Path, source: &str) -> Result<PathBuf> {
     let path = Path::new(source);
     if path.is_absolute() {
         if path.components().any(|part| match part {
