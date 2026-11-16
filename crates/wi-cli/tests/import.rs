@@ -484,7 +484,7 @@ fn conversation_import_prints_plain_counts() {
         "{text}"
     );
     assert!(
-        text.contains("Skipped 1 empty or unreadable items."),
+        text.contains("Skipped 1 empty or unreadable item."),
         "{text}"
     );
 }

@@ -64,6 +64,11 @@ fn is_whole_export(root: &Path, rel: &str) -> bool {
     wi_docs::conversations::is_export(root, rel) || wi_docs::notion::is_export(root, rel)
 }
 
+/// `1 note` or `2 notes`: the form that agrees with the count.
+fn counted(count: u64, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
 /// One or two plain lines for a conversation import report, `None` for other imports.
 pub(crate) fn conversation_summary(report: &serde_json::Value) -> Option<String> {
     let counts = report.get("conversations")?;
@@ -92,20 +97,24 @@ pub(crate) fn conversation_summary(report: &serde_json::Value) -> Option<String>
             })
             .unwrap_or_default();
         notes.push(format!(
-            "Kept {} notes you edited ({paths}); save your changes elsewhere to import them again.",
-            number("conflicts")
+            "Kept {} you edited ({paths}); save your changes elsewhere to import them again.",
+            counted(number("conflicts"), "note", "notes")
         ));
     }
     if number("skipped") > 0 {
         notes.push(format!(
-            "Skipped {} empty or unreadable items.",
-            number("skipped")
+            "Skipped {}.",
+            counted(
+                number("skipped"),
+                "empty or unreadable item",
+                "empty or unreadable items",
+            )
         ));
     }
     if number("redacted") > 0 {
         notes.push(format!(
-            "Replaced {} secrets with [redacted].",
-            number("redacted")
+            "Replaced {} with [redacted].",
+            counted(number("redacted"), "secret", "secrets")
         ));
     }
     if !notes.is_empty() {
@@ -216,5 +225,51 @@ mod tests {
         let expanded = expand(temp.path(), &["docs".into()]);
         assert!(expanded.failures.is_empty());
         assert_eq!(expanded.paths, ["docs/nested/a.csv"]);
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::conversation_summary;
+    use serde_json::json;
+
+    fn summary(conflicts: u64, skipped: u64, redacted: u64) -> String {
+        conversation_summary(&json!({
+            "sidecar_path": "AI/Claude",
+            "conversations": {
+                "created": 1, "updated": 0, "unchanged": 0,
+                "conflicts": conflicts, "conflict_paths": ["AI/Claude/a.md"],
+                "skipped": skipped, "redacted": redacted
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn one_of_each_uses_the_singular() {
+        let text = summary(1, 1, 1);
+        assert!(text.contains("Kept 1 note you edited"), "{text}");
+        assert!(
+            text.contains("Skipped 1 empty or unreadable item."),
+            "{text}"
+        );
+        assert!(
+            text.contains("Replaced 1 secret with [redacted]."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn several_use_the_plural() {
+        let text = summary(2, 3, 4);
+        assert!(text.contains("Kept 2 notes you edited"), "{text}");
+        assert!(
+            text.contains("Skipped 3 empty or unreadable items."),
+            "{text}"
+        );
+        assert!(
+            text.contains("Replaced 4 secrets with [redacted]."),
+            "{text}"
+        );
     }
 }

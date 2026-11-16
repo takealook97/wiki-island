@@ -191,8 +191,9 @@ fn report(
         .map(|p| format!("kept your edited note: {p}"))
         .collect();
     if counts.skipped > 0 {
+        let noun = if counts.skipped == 1 { "item" } else { "items" };
         diagnostics.push(format!(
-            "skipped {} unreadable or empty items",
+            "skipped {} unreadable or empty {noun}",
             counts.skipped
         ));
     }
