@@ -3,6 +3,7 @@
 pub mod hosts;
 pub mod install;
 pub mod local;
+pub mod naming;
 pub mod procedures;
 pub mod rules;
 pub mod service;
