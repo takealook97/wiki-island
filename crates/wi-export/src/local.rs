@@ -55,13 +55,13 @@ impl Targets {
         Ok(())
     }
     pub fn load<P: crate::install::LocalPlace + ?Sized>(root: &P) -> Result<Option<Self>, Error> {
-        let Some(bytes) = read_record(root)? else {
-            return Ok(None);
-        };
-        let state: Self = serde_json::from_slice(&bytes)
+        read_record(root)?.as_deref().map(Self::parse).transpose()
+    }
+    fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let state: Self = serde_json::from_slice(bytes)
             .map_err(|_| Error::Config("installation destinations could not be read".into()))?;
         state.validate()?;
-        Ok(Some(state))
+        Ok(state)
     }
     /// Save the destinations and keep the recorded naming.
     pub fn save<P: crate::install::LocalPlace + ?Sized>(&self, root: &P) -> Result<(), Error> {
@@ -74,28 +74,56 @@ impl Targets {
         root: &P,
         naming: &Naming,
     ) -> Result<(), Error> {
+        let prepared = self.prepare_named(naming)?;
+        // Validate any prior destination file before atomic replacement.
+        Self::load(root)?;
+        prepared.write(root)
+    }
+    /// Check and serialize the record without touching a file, so a caller
+    /// that loaded the prior record with [`load_record`] can write it later.
+    pub fn prepare_named(&self, naming: &Naming) -> Result<Prepared, Error> {
         self.validate()?;
-        let mut local = crate::install::local_dir(root)?;
-        local.pop();
         let record = Record {
             targets: self,
             naming,
         };
         let bytes = serde_json::to_vec_pretty(&record).map_err(|e| Error::Config(e.to_string()))?;
-        // Validate any prior destination file before atomic replacement.
-        Self::load(root)?;
-        crate::skills::atomic(&local.join("targets.json"), &bytes)
+        Ok(Prepared { bytes })
     }
+}
+
+/// A checked record, ready to replace `targets.json`.
+pub struct Prepared {
+    bytes: Vec<u8>,
+}
+
+impl Prepared {
+    /// Replace the record atomically, creating the local folder when needed.
+    pub fn write<P: crate::install::LocalPlace + ?Sized>(&self, root: &P) -> Result<(), Error> {
+        let mut local = crate::install::local_dir(root)?;
+        local.pop();
+        crate::skills::atomic(&local.join("targets.json"), &self.bytes)
+    }
+}
+
+/// The whole record, read once: destinations and naming. `None` when this
+/// device has no record; a record that cannot be read is an error.
+pub fn load_record<P: crate::install::LocalPlace + ?Sized>(
+    root: &P,
+) -> Result<Option<(Targets, Naming)>, Error> {
+    let Some(bytes) = read_record(root)? else {
+        return Ok(None);
+    };
+    Ok(Some((Targets::parse(&bytes)?, Naming::parse(&bytes)?)))
 }
 
 impl Naming {
     /// The recorded naming, or `None` when this device has no record.
     pub fn load<P: crate::install::LocalPlace + ?Sized>(root: &P) -> Result<Option<Self>, Error> {
-        let Some(bytes) = read_record(root)? else {
-            return Ok(None);
-        };
-        serde_json::from_slice(&bytes)
-            .map(Some)
+        read_record(root)?.as_deref().map(Self::parse).transpose()
+    }
+    fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        serde_json::from_slice(bytes)
             .map_err(|_| Error::Config("installation destinations could not be read".into()))
     }
 }

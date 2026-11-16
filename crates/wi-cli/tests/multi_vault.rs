@@ -712,3 +712,62 @@ fn failed_setup_rename_changes_nothing() {
     assert!(error.contains("Setup could not"), "{error}");
     assert_eq!(snapshot(&files), before);
 }
+
+/// Replace the first vault's device record with bytes no version can read.
+fn damage_record(f: &Fixture, vault: &str) {
+    fs::write(
+        f.path(vault).join(".wiki-island/local/targets.json"),
+        "{broken",
+    )
+    .unwrap();
+}
+
+#[test]
+fn setup_with_a_damaged_record_changes_nothing() {
+    let f = Fixture::new();
+    f.setup("first", None);
+    f.setup("second", Some("second"));
+    damage_record(&f, "first");
+    let files = touched_files(&f, &["first", "second"]);
+    let before = snapshot(&files);
+    let out = f.run(&[
+        "setup",
+        "--vault",
+        f.path("first").to_str().unwrap(),
+        "--name",
+        "new",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let error = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        error.contains("Setup could not finish; check that wiki-island is installed in its permanent location and your AI app settings are readable and writable, then run wi setup again."),
+        "{error}"
+    );
+    assert_eq!(snapshot(&files), before);
+}
+
+#[test]
+fn mcp_install_with_a_damaged_record_changes_nothing() {
+    let f = Fixture::new();
+    f.setup("first", None);
+    f.setup("second", Some("second"));
+    damage_record(&f, "first");
+    let files = touched_files(&f, &["first", "second"]);
+    let before = snapshot(&files);
+    let out = f.run(&[
+        "mcp",
+        "install",
+        "--host",
+        "claude",
+        "--yes",
+        "--vault",
+        f.path("first").to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let error = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        error.contains("Installation destinations could not be read."),
+        "{error}"
+    );
+    assert_eq!(snapshot(&files), before);
+}

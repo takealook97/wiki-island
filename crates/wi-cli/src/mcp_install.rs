@@ -12,7 +12,7 @@ use wi_export::local::Targets;
 use wi_export::{install, skills};
 use wi_store::Vault;
 
-use super::{naming_plan, setup_cmd};
+use super::{naming_plan, setup_cmd, setup_name};
 
 /// The plan for the selected app and, when applied, its backup.
 pub(crate) struct Installed {
@@ -31,21 +31,20 @@ pub(crate) fn install(
 ) -> Result<Installed> {
     let home = std::path::absolute(home)?;
     let home = home.as_path();
-    let previous = Targets::load(vault)?;
-    let recorded: Vec<Destination> = previous
-        .iter()
-        .flat_map(|targets| &targets.hosts)
-        .map(|(host, path)| Destination {
-            host: *host,
-            path: path.clone(),
-        })
-        .collect();
+    // The record is read once, before anything changes; one that cannot be read stops here.
+    let previous = setup_name::load(vault)?;
+    let recorded = setup_name::destinations(previous.as_ref());
+    let (previous, naming) = match previous {
+        Some((targets, naming)) => (Some(targets), Some(naming)),
+        None => (None, None),
+    };
     let selected = Destination::locate(host, home, codex_home)?;
     let id = vault_id(vault);
     let planned = naming_plan::plan(&naming_plan::Request {
         root: vault,
         vault_id: &id,
         requested: None,
+        naming: naming.as_ref(),
         recorded: &recorded,
         selected: std::slice::from_ref(&selected),
         binary,

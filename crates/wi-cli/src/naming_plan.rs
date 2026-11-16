@@ -7,7 +7,7 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use wi_export::install::{self, Destination};
-use wi_export::local::Targets;
+use wi_export::local::{Naming, Targets};
 use wi_export::naming::Resolution;
 
 use super::setup_name;
@@ -20,6 +20,8 @@ pub(crate) struct Request<'a> {
     pub(crate) vault_id: &'a str,
     /// The `--name` given on the command line.
     pub(crate) requested: Option<&'a str>,
+    /// The naming this device records for the vault, loaded before phase one.
+    pub(crate) naming: Option<&'a Naming>,
     /// The destinations this device records for the vault.
     pub(crate) recorded: &'a [Destination],
     /// The destinations this command connects; each one is always written.
@@ -55,7 +57,13 @@ pub(crate) fn plan(request: &Request<'_>) -> Result<NamingPlan> {
             all.push(destination.clone());
         }
     }
-    let resolution = setup_name::resolve(request.root, request.requested, &all, request.vault_id);
+    let resolution = setup_name::resolve(
+        request.root,
+        request.requested,
+        request.naming,
+        &all,
+        request.vault_id,
+    );
     let entry = resolution.naming.entry.as_str();
     let retire = resolution.retire.as_deref();
     let mut writes = Vec::new();
@@ -108,10 +116,20 @@ impl NamingPlan {
     /// Phase two: write every planned config, then save the record with
     /// `targets`' home, skill folders and cache root.
     ///
-    /// Writes run in order. If one fails (a write error, or a config changed
+    /// The record is checked before the first write; the prior record was
+    /// read when the command started. Writes run in order. If one fails (a write error, or a config changed
     /// since phase one), the configs written before it keep the new entry and
     /// the record is not saved; running the command again finishes the job.
     pub(crate) fn apply(self, targets: Targets) -> Result<Vec<Applied>> {
+        let record = Targets {
+            hosts: self
+                .record
+                .iter()
+                .map(|destination| (destination.host, destination.path.clone()))
+                .collect(),
+            ..targets
+        }
+        .prepare_named(&self.resolution.naming)?;
         let mut applied = Vec::with_capacity(self.writes.len());
         for (destination, plan) in self.writes {
             let backup = plan.apply()?;
@@ -121,15 +139,7 @@ impl NamingPlan {
                 backup,
             });
         }
-        Targets {
-            hosts: self
-                .record
-                .into_iter()
-                .map(|destination| (destination.host, destination.path))
-                .collect(),
-            ..targets
-        }
-        .save_named(self.root.as_path(), &self.resolution.naming)?;
+        record.write(self.root.as_path())?;
         Ok(applied)
     }
 }

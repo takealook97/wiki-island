@@ -201,20 +201,16 @@ fn setup_with_options(
     }
     // Without a usable service manager the service is skipped, not an error.
     let background_ready = super::service_cmd::ready(runner);
-    let previous = wi_export::local::Targets::load(&root).ok().flatten();
-    let recorded: Vec<install::Destination> = previous
-        .iter()
-        .flat_map(|targets| &targets.hosts)
-        .map(|(host, path)| install::Destination {
-            host: *host,
-            path: path.clone(),
-        })
-        .collect();
+    // The record is read once, before anything changes; one that cannot be read stops setup.
+    let previous = setup_name::load(&root)?;
+    let recorded = setup_name::destinations(previous.as_ref());
+    let recorded_naming = previous.as_ref().map(|(_, naming)| naming);
     let request = |selected: &[install::Destination], vault_id: &str| {
         naming_plan::plan(&naming_plan::Request {
             root: &root,
             vault_id,
             requested: name,
+            naming: recorded_naming,
             recorded: &recorded,
             selected,
             binary,

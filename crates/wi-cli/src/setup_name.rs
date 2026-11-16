@@ -2,7 +2,7 @@
 use anyhow::Result;
 use std::path::Path;
 use wi_export::install::Destination;
-use wi_export::local::Naming;
+use wi_export::local::{Naming, Targets};
 use wi_export::{install, naming};
 
 /// The sentence shown when `--name` is not a valid vault name.
@@ -28,14 +28,33 @@ pub(crate) fn recorded_name(root: &Path) -> Option<String> {
     recorded(&root)?.name
 }
 
-/// Decide the entry name for this vault across `hosts`.
+/// The device record of the vault at `root`, read once before any app config
+/// changes. `None` when this device has no record; a record that cannot be
+/// read stops the command.
+pub(crate) fn load(root: &Path) -> Result<Option<(Targets, Naming)>> {
+    Ok(wi_export::local::load_record(root)?)
+}
+
+/// The recorded destinations in `record`.
+pub(crate) fn destinations(record: Option<&(Targets, Naming)>) -> Vec<Destination> {
+    record
+        .iter()
+        .flat_map(|(targets, _)| &targets.hosts)
+        .map(|(host, path)| Destination {
+            host: *host,
+            path: path.clone(),
+        })
+        .collect()
+}
+
+/// Decide the entry name for this vault across `destinations`.
 pub(crate) fn resolve(
     root: &Path,
     requested: Option<&str>,
+    recorded: Option<&Naming>,
     destinations: &[Destination],
     vault_id: &str,
 ) -> naming::Resolution {
-    let recorded = recorded(root);
     let existing: Vec<_> = destinations
         .iter()
         .flat_map(|d| install::entries(d.host, &d.path))
@@ -43,7 +62,7 @@ pub(crate) fn resolve(
     let other_vault = |path: &Path| naming::serves_other_vault(root, path);
     naming::resolve(&naming::Request {
         requested,
-        recorded: recorded.as_ref(),
+        recorded,
         root,
         vault_id,
         existing: &existing,
