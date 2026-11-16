@@ -26,22 +26,31 @@ impl Fixture {
             fs::create_dir_all(f.path(dir)).unwrap();
         }
         fs::copy(env!("CARGO_BIN_EXE_wi"), f.path("bin/wi")).unwrap();
-        // Service fakes: launchd on macOS, a systemd user manager on Linux.
+        // Service fakes: launchd on macOS, a systemd user manager on Linux. Like the real
+        // managers, each keeps its state per service in `$HOME/manager`, so one vault's
+        // service never looks loaded, enabled or running to another vault.
         f.script(
             "bin/launchctl",
-            "#!/bin/sh\ncase $1 in\nprint) test -f \"$HOME/loaded\";;\nbootstrap) touch \"$HOME/loaded\";;\nbootout) rm -f \"$HOME/loaded\";;\nesac\n",
+            concat!(
+                "#!/bin/sh\nstate=\"$HOME/manager\"\nmkdir -p \"$state\"\ncase $1 in\n",
+                "print) test -f \"$state/${2##*/}.loaded\";;\n",
+                "bootstrap) touch \"$state/$(basename \"$3\" .plist).loaded\";;\n",
+                "bootout) rm -f \"$state/${2##*/}.loaded\";;\n",
+                "esac\n",
+            ),
         );
         f.script(
             "bin/systemctl",
             concat!(
-                "#!/bin/sh\nshift\ncase $1 in\n",
+                "#!/bin/sh\nshift\nstate=\"$HOME/manager\"\nmkdir -p \"$state\"\n",
+                "eval \"unit=\\${$#}\"\ncase $1 in\n",
                 "show-environment) exit 0;;\n",
-                "is-enabled) if test -f \"$HOME/enabled\"; then echo enabled; else echo disabled; exit 1; fi; exit 0;;\n",
-                "is-active) if test -f \"$HOME/active\"; then echo active; else echo inactive; exit 3; fi; exit 0;;\n",
-                "enable) touch \"$HOME/enabled\";;\n",
-                "disable) rm -f \"$HOME/enabled\";;\n",
-                "start|restart) touch \"$HOME/active\";;\n",
-                "stop) rm -f \"$HOME/active\";;\n",
+                "is-enabled) if test -f \"$state/$unit.enabled\"; then echo enabled; else echo disabled; exit 1; fi; exit 0;;\n",
+                "is-active) if test -f \"$state/$unit.active\"; then echo active; else echo inactive; exit 3; fi; exit 0;;\n",
+                "enable) touch \"$state/$unit.enabled\";;\n",
+                "disable) rm -f \"$state/$unit.enabled\"; test \"$2\" != --now || rm -f \"$state/$unit.active\";;\n",
+                "start|restart) touch \"$state/$unit.active\";;\n",
+                "stop) rm -f \"$state/$unit.active\";;\n",
                 "esac\nexit 0\n",
             ),
         );
@@ -101,6 +110,16 @@ impl Fixture {
         entries.sort();
         entries
     }
+    /// True when the fake service manager holds the vault `id`'s own service loaded or running.
+    fn service_running(&self, id: &str) -> bool {
+        let state = |name: String| self.path("home/manager").join(name).is_file();
+        if cfg!(target_os = "macos") {
+            state(format!("com.wiki-island.watch.{id}.loaded"))
+        } else {
+            let unit = format!("wiki-island-{id}.service");
+            state(format!("{unit}.enabled")) && state(format!("{unit}.active"))
+        }
+    }
     fn canonical(&self, vault: &str) -> PathBuf {
         fs::canonicalize(self.path(vault)).unwrap()
     }
@@ -156,6 +175,11 @@ fn setup_second_vault_adds_second_entry() {
     let second = f.setup("work", Some("work"));
     assert_eq!(second["entry"], "wiki-island-work");
     assert_eq!(second["name"], "work");
+    // Each vault runs its own service; the second does not replace the first.
+    for (vault, out) in [("personal", &first), ("work", &second)] {
+        assert_eq!(out["background"], true, "{vault}");
+        assert!(f.service_running(&vault_id(&f.path(vault))), "{vault}");
+    }
     for (host, before) in HOSTS.iter().zip(before) {
         assert_eq!(
             f.entries(*host),
@@ -245,7 +269,12 @@ fn uninstall_leaves_other_vault_entry() {
         } else {
             ("work", "personal", "wiki-island")
         };
+        let (gone_id, kept_id) = (vault_id(&f.path(gone)), vault_id(&f.path(kept)));
+        assert!(f.service_running(&gone_id) && f.service_running(&kept_id));
         f.uninstall(gone);
+        // Only the removed vault's service stops.
+        assert!(!f.service_running(&gone_id));
+        assert!(f.service_running(&kept_id));
         for host in HOSTS {
             assert_eq!(
                 f.entries(host),
