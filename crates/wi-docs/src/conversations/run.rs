@@ -271,4 +271,117 @@ mod tests {
         };
         assert!(try_import(&vault, "c.zip", &roomy).unwrap().is_some());
     }
+
+    fn archive(entries: &[(&str, &[u8], zip::CompressionMethod)]) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes, method) in entries {
+            let options = zip::write::SimpleFileOptions::default().compression_method(*method);
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn put(vault: &Vault, name: &str, bytes: &[u8]) {
+        std::fs::write(vault.root().join(name), bytes).unwrap();
+    }
+
+    fn set_u32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn find(bytes: &[u8], signature: &[u8]) -> usize {
+        bytes
+            .windows(signature.len())
+            .position(|w| w == signature)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_large_entry_that_is_not_json_does_not_count_toward_the_limit() {
+        let (_tmp, vault) = vault();
+        let image = vec![7u8; 20_000];
+        let stored = zip::CompressionMethod::Stored;
+        put(
+            &vault,
+            "c.zip",
+            &archive(&[
+                ("conversations.json", CONVERSATIONS, stored),
+                ("photo.png", &image, stored),
+            ]),
+        );
+        let limits = Limits {
+            max_json_bytes: 4096,
+        };
+        assert!(
+            std::fs::metadata(vault.root().join("c.zip")).unwrap().len() > limits.max_json_bytes
+        );
+        assert!(try_import(&vault, "c.zip", &limits).unwrap().is_some());
+        assert!(vault.root().join("AI/Claude").exists());
+    }
+
+    #[test]
+    fn json_entries_over_the_limit_are_refused_with_the_unpack_step() {
+        let (_tmp, vault) = vault();
+        let stored = zip::CompressionMethod::Stored;
+        put(
+            &vault,
+            "c.zip",
+            &archive(&[
+                ("conversations-000.json", CONVERSATIONS, stored),
+                ("conversations-001.json", CONVERSATIONS, stored),
+            ]),
+        );
+        let limits = Limits {
+            max_json_bytes: 150,
+        };
+        let error = try_import(&vault, "c.zip", &limits).unwrap_err();
+        let sentence = super::super::owner_sentence(&error).unwrap();
+        assert!(sentence.contains("smaller date range"), "{sentence}");
+        assert!(sentence.contains("unpack the archive"), "{sentence}");
+        assert!(!vault.root().join("AI").exists());
+    }
+
+    #[test]
+    fn an_entry_that_inflates_past_the_limit_is_refused_whatever_it_declares() {
+        let (_tmp, vault) = vault();
+        let bomb = vec![b' '; 1 << 20];
+        let mut bytes = archive(&[(
+            "conversations.json",
+            &bomb,
+            zip::CompressionMethod::Deflated,
+        )]);
+        // Declare 10 bytes in the local and the central header.
+        let local = find(&bytes, b"PK\x03\x04");
+        set_u32(&mut bytes, local + 22, 10);
+        let central = find(&bytes, b"PK\x01\x02");
+        set_u32(&mut bytes, central + 24, 10);
+        put(&vault, "c.zip", &bytes);
+        let limits = Limits {
+            max_json_bytes: 4096,
+        };
+        let error = try_import(&vault, "c.zip", &limits).unwrap_err();
+        let sentence = super::super::owner_sentence(&error).expect("a plain sentence");
+        assert!(sentence.contains("smaller date range"), "{sentence}");
+        assert!(!vault.root().join("AI").exists());
+    }
+
+    #[test]
+    fn a_zip64_archive_is_refused_with_the_unpack_step() {
+        let (_tmp, vault) = vault();
+        let mut bytes = archive(&[(
+            "conversations.json",
+            CONVERSATIONS,
+            zip::CompressionMethod::Stored,
+        )]);
+        let end = find(&bytes, b"PK\x05\x06");
+        set_u32(&mut bytes, end + 16, u32::MAX);
+        put(&vault, "big.zip", &bytes);
+        let error = try_import(&vault, "big.zip", &Limits::default()).unwrap_err();
+        let sentence = super::super::owner_sentence(&error).expect("a plain sentence");
+        assert_eq!(
+            sentence,
+            "This archive is too big to be opened directly. Unpack it, then import the unpacked folder."
+        );
+    }
 }

@@ -127,70 +127,127 @@ fn directory(
     Ok(())
 }
 
-pub(crate) fn zip_preflight(bytes: &[u8]) -> Result<()> {
-    fn u16_at(bytes: &[u8], offset: usize) -> Result<usize> {
-        let raw: [u8; 2] = bytes
-            .get(offset..offset + 2)
-            .ok_or_else(|| invalid("truncated ZIP header"))?
-            .try_into()
-            .map_err(|_| invalid("ZIP header"))?;
-        Ok(u16::from_le_bytes(raw) as usize)
-    }
-    fn u32_at(bytes: &[u8], offset: usize) -> Result<usize> {
-        let raw: [u8; 4] = bytes
-            .get(offset..offset + 4)
-            .ok_or_else(|| invalid("truncated ZIP header"))?
-            .try_into()
-            .map_err(|_| invalid("ZIP header"))?;
-        Ok(u32::from_le_bytes(raw) as usize)
-    }
-    let start = bytes.len().saturating_sub(65_557);
-    let end = (start..bytes.len().saturating_sub(21))
+const ZIP64_MESSAGE: &str = "ZIP64 exports are unsupported";
+const ZIP_TAIL_BYTES: usize = 65_557;
+const ZIP_DIRECTORY_CAP: usize = 64 * 1024 * 1024;
+
+fn zip_u16(bytes: &[u8], offset: usize) -> Result<usize> {
+    let raw: [u8; 2] = bytes
+        .get(offset..offset + 2)
+        .ok_or_else(|| invalid("truncated ZIP header"))?
+        .try_into()
+        .map_err(|_| invalid("ZIP header"))?;
+    Ok(u16::from_le_bytes(raw) as usize)
+}
+
+fn zip_u32(bytes: &[u8], offset: usize) -> Result<usize> {
+    let raw: [u8; 4] = bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| invalid("truncated ZIP header"))?
+        .try_into()
+        .map_err(|_| invalid("ZIP header"))?;
+    Ok(u32::from_le_bytes(raw) as usize)
+}
+
+/// The central directory location taken from the end record.
+struct ZipEnd {
+    count: usize,
+    size: usize,
+    position: usize,
+    end: usize,
+}
+
+/// `tail` holds the last bytes of the archive, starting at `tail_start`.
+fn zip_end(tail: &[u8], tail_start: usize) -> Result<ZipEnd> {
+    let found = (0..tail.len().saturating_sub(21))
         .rev()
         .find(|i| {
-            bytes.get(*i..*i + 4) == Some(b"PK\x05\x06")
-                && u16_at(bytes, *i + 20).is_ok_and(|n| *i + 22 + n == bytes.len())
+            tail.get(*i..*i + 4) == Some(b"PK\x05\x06")
+                && zip_u16(tail, *i + 20).is_ok_and(|n| *i + 22 + n == tail.len())
         })
         .ok_or_else(|| invalid("ZIP end record is missing"))?;
-    let count = u16_at(bytes, end + 10)?;
-    let size = u32_at(bytes, end + 12)?;
-    let mut position = u32_at(bytes, end + 16)?;
+    let count = zip_u16(tail, found + 10)?;
+    let size = zip_u32(tail, found + 12)?;
+    let position = zip_u32(tail, found + 16)?;
     if count == 0xffff || size == u32::MAX as usize || position == u32::MAX as usize {
-        return Err(invalid("ZIP64 exports are unsupported"));
+        return Err(invalid(ZIP64_MESSAGE));
     }
-    if u16_at(bytes, end + 4)? != 0
-        || u16_at(bytes, end + 6)? != 0
-        || u16_at(bytes, end + 8)? != count
+    let end = tail_start + found;
+    if zip_u16(tail, found + 4)? != 0
+        || zip_u16(tail, found + 6)? != 0
+        || zip_u16(tail, found + 8)? != count
         || count > MAX_ENTRIES
         || position.checked_add(size) != Some(end)
     {
         return Err(invalid("unsupported or inconsistent ZIP directory"));
     }
+    Ok(ZipEnd {
+        count,
+        size,
+        position,
+        end,
+    })
+}
+
+/// `directory` is exactly the central directory.
+fn zip_directory(directory: &[u8], count: usize) -> Result<()> {
+    let mut position = 0;
     let mut names = BTreeSet::new();
     for _ in 0..count {
-        if bytes.get(position..position + 4) != Some(b"PK\x01\x02") {
+        if directory.get(position..position + 4) != Some(b"PK\x01\x02") {
             return Err(invalid("invalid ZIP central header"));
         }
-        let name_len = u16_at(bytes, position + 28)?;
-        let extra_len = u16_at(bytes, position + 30)?;
-        let comment_len = u16_at(bytes, position + 32)?;
+        let name_len = zip_u16(directory, position + 28)?;
+        let extra_len = zip_u16(directory, position + 30)?;
+        let comment_len = zip_u16(directory, position + 32)?;
         let name_start = position + 46;
         let name_end = name_start + name_len;
-        let name = bytes
+        let name = directory
             .get(name_start..name_end)
             .ok_or_else(|| invalid("truncated ZIP name"))?;
         if !names.insert(name) {
             return Err(invalid("duplicate ZIP member"));
         }
         position = name_end + extra_len + comment_len;
-        if position > end {
+        if position > directory.len() {
             return Err(invalid("invalid ZIP central directory size"));
         }
     }
-    if position != end {
+    if position != directory.len() {
         return Err(invalid("inconsistent ZIP member count"));
     }
     Ok(())
+}
+
+pub(crate) fn zip_preflight(bytes: &[u8]) -> Result<()> {
+    let start = bytes.len().saturating_sub(ZIP_TAIL_BYTES);
+    let end = zip_end(&bytes[start..], start)?;
+    zip_directory(&bytes[end.position..end.end], end.count)
+}
+
+/// The same checks as [`zip_preflight`], reading only the end of the file and
+/// the central directory instead of the whole archive.
+pub(crate) fn zip_preflight_file(file: &mut std::fs::File) -> Result<()> {
+    use std::io::{Seek, SeekFrom};
+    let length = file.metadata()?.len();
+    let tail_length = length.min(ZIP_TAIL_BYTES as u64);
+    let tail_start = length - tail_length;
+    file.seek(SeekFrom::Start(tail_start))?;
+    let mut tail = vec![0; tail_length as usize];
+    file.read_exact(&mut tail)?;
+    let end = zip_end(&tail, tail_start as usize)?;
+    if end.size > ZIP_DIRECTORY_CAP {
+        return Err(invalid("ZIP directory is too large"));
+    }
+    file.seek(SeekFrom::Start(end.position as u64))?;
+    let mut directory = vec![0; end.size];
+    file.read_exact(&mut directory)?;
+    zip_directory(&directory, end.count)
+}
+
+/// Whether `error` came from a ZIP64 archive, which is not opened.
+pub(crate) fn is_zip64(error: &Error) -> bool {
+    matches!(error, Error::Invalid(message) if message == ZIP64_MESSAGE)
 }
 
 /// External exports are read-only sources; converted paths remain vault-relative.

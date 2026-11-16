@@ -2,7 +2,7 @@
 //! single JSON file). Only the conversation JSON files and `projects.json`
 //! are read; images and HTML never are, and do not count toward the limit.
 use std::collections::BTreeMap;
-use std::io::Cursor;
+use std::io::BufReader;
 use std::path::Path;
 
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
@@ -11,7 +11,7 @@ use wi_store::Vault;
 
 use super::refuse;
 use crate::notion::{
-    MAX_DEPTH, MAX_ENTRIES, bounded_read, checked_path, source_path, zip_preflight,
+    MAX_DEPTH, MAX_ENTRIES, bounded_read, checked_path, is_zip64, source_path, zip_preflight_file,
 };
 use crate::{Error, MAX_SOURCE_BYTES, Result, source_input};
 
@@ -75,16 +75,31 @@ fn wanted(name: &str) -> bool {
     conversation_file(name) || name == PROJECTS
 }
 
-fn too_large(limit: u64) -> Error {
+/// Where an oversized export came from decides which next step is true.
+#[derive(Clone, Copy, PartialEq)]
+enum Origin {
+    Zip,
+    Other,
+}
+
+fn too_large(limit: u64, origin: Origin) -> Error {
     let mib = limit / (1024 * 1024);
+    let split = match origin {
+        Origin::Zip => {
+            "If the export has split conversations-000.json files, unpack the archive and import them one by one."
+        }
+        Origin::Other => {
+            "If the export has split conversations-000.json files, import them one by one."
+        }
+    };
     refuse(format!(
-        "The conversation files in this export are larger than {mib} MiB. Export a smaller date range, or unpack the archive and import the split conversations-000.json files one by one."
+        "The conversation files in this export are larger than {mib} MiB. Export a smaller date range. {split}"
     ))
 }
 
-fn zip_too_large() -> Error {
+fn zip64() -> Error {
     refuse(
-        "This archive is too large to open directly. Unpack it, then import the unpacked folder.",
+        "This archive is too big to be opened directly. Unpack it, then import the unpacked folder.",
     )
 }
 
@@ -156,9 +171,14 @@ fn load_json(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Sour
         return Ok(None);
     }
     if std::fs::metadata(&full)?.len() > limits.max_json_bytes {
-        return Err(too_large(limits.max_json_bytes));
+        return Err(too_large(limits.max_json_bytes, Origin::Other));
     }
-    let bytes = read_limited(std::fs::File::open(&full)?, limits.max_json_bytes)?;
+    let bytes = read_limited(
+        std::fs::File::open(&full)?,
+        limits.max_json_bytes,
+        limits,
+        Origin::Other,
+    )?;
     let name = full
         .file_name()
         .and_then(|n| n.to_str())
@@ -171,8 +191,14 @@ fn load_json(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Sour
     }))
 }
 
-fn read_limited(reader: impl std::io::Read, remaining: u64) -> Result<Vec<u8>> {
-    bounded_read(reader, remaining as usize).map_err(|_| too_large(remaining))
+/// Reads at most `remaining + 1` bytes, whatever the entry declares.
+fn read_limited(
+    reader: impl std::io::Read,
+    remaining: u64,
+    limits: &Limits,
+    origin: Origin,
+) -> Result<Vec<u8>> {
+    bounded_read(reader, remaining as usize).map_err(|_| too_large(limits.max_json_bytes, origin))
 }
 
 fn load_dir(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Source>> {
@@ -207,9 +233,14 @@ fn load_dir(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Sourc
             ));
         }
         if entry.metadata()?.len() > remaining {
-            return Err(too_large(limits.max_json_bytes));
+            return Err(too_large(limits.max_json_bytes, Origin::Other));
         }
-        let bytes = read_limited(std::fs::File::open(entry.path())?, remaining)?;
+        let bytes = read_limited(
+            std::fs::File::open(entry.path())?,
+            remaining,
+            limits,
+            Origin::Other,
+        )?;
         remaining -= bytes.len() as u64;
         out.add(name, bytes);
     }
@@ -253,16 +284,12 @@ fn dir_with_conversations(full: &Path) -> Result<Option<String>> {
 
 fn load_zip(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Source>> {
     let full = source_path(vault.root(), source)?;
-    if std::fs::metadata(&full)?.len() > MAX_SOURCE_BYTES {
-        // The archive is read into memory like other archives; very large ones
-        // are opened as folders instead.
-        return Err(zip_too_large());
-    }
-    let snapshot = bounded_read(std::fs::File::open(&full)?, MAX_SOURCE_BYTES as usize)
-        .map_err(|_| zip_too_large())?;
-    zip_preflight(&snapshot)?;
+    // The archive stays on disk: only its directory and the entries that are
+    // needed are read, so images and other large entries cost nothing.
+    let mut file = std::fs::File::open(&full)?;
+    zip_preflight_file(&mut file).map_err(|e| if is_zip64(&e) { zip64() } else { e })?;
     let mut archive =
-        zip::ZipArchive::new(Cursor::new(snapshot)).map_err(|e| Error::Invalid(e.to_string()))?;
+        zip::ZipArchive::new(BufReader::new(file)).map_err(|e| Error::Invalid(e.to_string()))?;
     let mut names = Vec::new();
     let mut index_of = BTreeMap::new();
     for index in 0..archive.len() {
@@ -301,9 +328,9 @@ fn load_zip(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Sourc
             .by_index(index_of[name])
             .map_err(|e| Error::Invalid(e.to_string()))?;
         if entry.size() > remaining {
-            return Err(too_large(limits.max_json_bytes));
+            return Err(too_large(limits.max_json_bytes, Origin::Zip));
         }
-        let bytes = read_limited(&mut entry, remaining)?;
+        let bytes = read_limited(&mut entry, remaining, limits, Origin::Zip)?;
         remaining -= bytes.len() as u64;
         out.add(file.to_owned(), bytes);
     }
