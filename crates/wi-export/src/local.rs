@@ -150,6 +150,21 @@ mod tests {
     }
 
     #[test]
+    fn one_app_can_record_several_config_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut state = targets(temp.path());
+        state.hosts = vec![
+            (HostId::Codex, temp.path().join(".codex/config.toml")),
+            (HostId::Codex, temp.path().join("codex-new/config.toml")),
+        ];
+        state.save(&root).unwrap();
+        let loaded = Targets::load(&root).unwrap().unwrap();
+        assert_eq!(loaded.hosts, state.hosts);
+    }
+
+    #[test]
     fn naming_round_trips_and_plain_save_keeps_it() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");

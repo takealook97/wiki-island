@@ -254,6 +254,7 @@ fn install_sentence(error: &wi_export::install::Error, root: &Root) -> String {
         Error::Stale => {
             "An AI app settings file changed while wi was working. Run the command again.".into()
         }
+        Error::EntryInUse => error.to_string(),
         Error::History(_) => {
             "Your notes history could not be read or updated. Run wi doctor to check your notes folder."
                 .into()

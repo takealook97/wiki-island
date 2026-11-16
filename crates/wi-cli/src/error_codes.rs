@@ -46,7 +46,7 @@ pub(crate) fn code(error: &anyhow::Error) -> &'static str {
         use wi_export::install::Error;
         match e {
             Error::Io(_) => "install-io",
-            Error::Config(_) => "install-config",
+            Error::Config(_) | Error::EntryInUse => "install-config",
             Error::Stale => "install-stale",
             Error::History(_) => "install-history",
             Error::Unsupported(_) => "install-unsupported",

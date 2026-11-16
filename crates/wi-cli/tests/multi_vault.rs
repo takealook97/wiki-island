@@ -55,11 +55,15 @@ impl Fixture {
         self.temp.path().join(path)
     }
     fn run(&self, args: &[&str]) -> Output {
+        self.run_codex(args, &self.path("home/.codex"))
+    }
+    /// Runs `wi` with the Codex config folder at `codex_home`.
+    fn run_codex(&self, args: &[&str], codex_home: &Path) -> Output {
         support::output(
             Command::new(self.path("bin/wi"))
                 .args(args)
                 .env("HOME", self.path("home"))
-                .env("CODEX_HOME", self.path("home/.codex"))
+                .env("CODEX_HOME", codex_home)
                 .env("WI_DATA_DIR", self.path("data"))
                 .env("WI_CACHE_DIR", self.path("cache"))
                 .env("XDG_CONFIG_HOME", self.path("home/.config"))
@@ -561,4 +565,150 @@ fn mcp_install_records_its_entry_name() {
     for host in HOSTS {
         assert_eq!(f.entries(host), vec![], "{host:?}");
     }
+}
+
+/// The text of every file in `paths`; `None` for a missing file.
+fn snapshot(paths: &[PathBuf]) -> Vec<(PathBuf, Option<String>)> {
+    paths
+        .iter()
+        .map(|path| {
+            let bytes = fs::read(path).ok();
+            (path.clone(), bytes.map(|b| String::from_utf8(b).unwrap()))
+        })
+        .collect()
+}
+
+/// Every app config of the fixture and the device record of each vault.
+fn touched_files(f: &Fixture, vaults: &[&str]) -> Vec<PathBuf> {
+    HOSTS
+        .iter()
+        .map(|host| f.config(*host))
+        .chain(
+            vaults
+                .iter()
+                .map(|vault| f.path(vault).join(".wiki-island/local/targets.json")),
+        )
+        .collect()
+}
+
+#[test]
+fn mcp_install_after_config_folder_change_keeps_other_vault() {
+    let f = Fixture::new();
+    let (old_codex, new_codex) = (f.path("home/.codex"), f.path("codex-new"));
+    fs::create_dir_all(&new_codex).unwrap();
+    let install = |vault: &str, codex_home: &Path| {
+        let root = f.path(vault);
+        let args = [
+            "mcp",
+            "install",
+            "--host",
+            "codex",
+            "--yes",
+            "--vault",
+            root.to_str().unwrap(),
+        ];
+        let out = f.run_codex(&args, codex_home);
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    };
+    f.ok(&["init", f.path("first").to_str().unwrap()]);
+    install("first", &old_codex);
+    f.ok(&["init", f.path("second").to_str().unwrap()]);
+    install("second", &new_codex);
+    let (first, second) = (f.canonical("first"), f.canonical("second"));
+    let new_config = new_codex.join("config.toml");
+    let old_config = old_codex.join("config.toml");
+    let entries = |path: &Path| {
+        let mut entries = wi_export::install::entries(HostId::Codex, path);
+        entries.sort();
+        entries
+    };
+    assert_eq!(
+        entries(&new_config),
+        vec![entry("wiki-island", second.clone())]
+    );
+    let second_text = entry_text(
+        HostId::Codex,
+        &fs::read(&new_config).unwrap(),
+        "wiki-island",
+    );
+    install("first", &new_codex);
+    let after = fs::read(&new_config).unwrap();
+    assert_eq!(
+        entry_text(HostId::Codex, &after, "wiki-island"),
+        second_text
+    );
+    let mine: Vec<_> = entries(&new_config)
+        .into_iter()
+        .filter(|(_, vault)| vault.as_deref() == Some(first.as_path()))
+        .collect();
+    assert_eq!(mine.len(), 1, "{:?}", entries(&new_config));
+    assert_ne!(mine[0].0, "wiki-island");
+    let out = f.run_codex(
+        &["uninstall", "--vault", f.path("first").to_str().unwrap()],
+        &new_codex,
+    );
+    assert!(out.status.success(), "{out:?}");
+    for path in [&old_config, &new_config, &f.config(HostId::Claude)] {
+        assert!(
+            entries(path)
+                .iter()
+                .all(|(_, vault)| vault.as_deref() != Some(first.as_path())),
+            "{path:?}: {:?}",
+            entries(path)
+        );
+    }
+    assert_eq!(entries(&new_config), vec![entry("wiki-island", second)]);
+}
+
+#[test]
+fn failed_rename_changes_nothing() {
+    let f = Fixture::new();
+    f.setup("first", None);
+    f.setup("second", Some("second"));
+    let (first, second) = (f.canonical("first"), f.canonical("second"));
+    // Cursor's default entry now serves the second vault, so the first vault must rename.
+    let cursor = f.config(HostId::Cursor);
+    let text = fs::read_to_string(&cursor).unwrap();
+    fs::write(
+        &cursor,
+        text.replace(first.to_str().unwrap(), second.to_str().unwrap()),
+    )
+    .unwrap();
+    fs::write(f.config(HostId::Codex), "mcp_servers = [").unwrap();
+    let files = touched_files(&f, &["first", "second"]);
+    let before = snapshot(&files);
+    let out = f.run(&[
+        "mcp",
+        "install",
+        "--host",
+        "claude",
+        "--yes",
+        "--vault",
+        f.path("first").to_str().unwrap(),
+    ]);
+    assert!(!out.status.success(), "{out:?}");
+    let error = String::from_utf8(out.stderr).unwrap();
+    assert!(error.contains("settings"), "{error}");
+    assert_eq!(snapshot(&files), before);
+}
+
+#[test]
+fn failed_setup_rename_changes_nothing() {
+    let f = Fixture::new();
+    f.setup("first", None);
+    f.setup("second", Some("second"));
+    fs::write(f.config(HostId::Codex), "mcp_servers = [").unwrap();
+    let files = touched_files(&f, &["first", "second"]);
+    let before = snapshot(&files);
+    let out = f.run(&[
+        "setup",
+        "--vault",
+        f.path("first").to_str().unwrap(),
+        "--name",
+        "other",
+    ]);
+    assert!(!out.status.success(), "{out:?}");
+    let error = String::from_utf8(out.stderr).unwrap();
+    assert!(error.contains("Setup could not"), "{error}");
+    assert_eq!(snapshot(&files), before);
 }

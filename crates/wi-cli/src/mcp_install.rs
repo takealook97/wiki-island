@@ -1,16 +1,18 @@
 //! `wi mcp install`: this vault's entry in one app, under the vault's one entry name.
 //!
-//! The naming and the app are recorded on this device, so `wi setup`, `wi doctor` and
-//! `wi uninstall` find every entry this vault owns. When the entry name must change, every
-//! recorded app gets the new name and loses this vault's old entry, as `wi setup` does.
+//! The naming and the app's config file are recorded on this device, so `wi setup`,
+//! `wi doctor` and `wi uninstall` find every entry this vault owns. Naming is applied by
+//! [`naming_plan`], the routine `wi setup` uses: when the entry name must change, every
+//! recorded config that holds this vault's old entry gets the new one in the same write.
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use wi_export::hosts::HostId;
+use wi_export::install::Destination;
 use wi_export::local::Targets;
 use wi_export::{install, skills};
 use wi_store::Vault;
 
-use super::{setup_cmd, setup_name};
+use super::{naming_plan, setup_cmd};
 
 /// The plan for the selected app and, when applied, its backup.
 pub(crate) struct Installed {
@@ -30,56 +32,51 @@ pub(crate) fn install(
     let home = std::path::absolute(home)?;
     let home = home.as_path();
     let previous = Targets::load(vault)?;
-    let mut hosts = previous
-        .as_ref()
-        .map(|targets| targets.hosts.clone())
-        .unwrap_or_default();
-    let selected = install::config_location(host, home, codex_home)?;
-    if !hosts.iter().any(|(recorded, _)| *recorded == host) {
-        hosts.push((host, selected));
-    }
-    let resolution = setup_name::resolve(vault, None, &hosts, &vault_id(vault));
-    let entry = resolution.naming.entry.as_str();
+    let recorded: Vec<Destination> = previous
+        .iter()
+        .flat_map(|targets| &targets.hosts)
+        .map(|(host, path)| Destination {
+            host: *host,
+            path: path.clone(),
+        })
+        .collect();
+    let selected = Destination::locate(host, home, codex_home)?;
+    let id = vault_id(vault);
+    let planned = naming_plan::plan(&naming_plan::Request {
+        root: vault,
+        vault_id: &id,
+        requested: None,
+        recorded: &recorded,
+        selected: std::slice::from_ref(&selected),
+        binary,
+    })?;
     if !apply {
-        let plan = install::plan_host(host, home, codex_home, binary, vault, entry)?;
+        let plan = planned
+            .into_plan_for(&selected)
+            .context("The app settings could not be planned.")?;
         return Ok(Installed { plan, backup: None });
     }
-    // A changed name applies to every recorded app that still has a config; the
-    // selected app is always written.
-    let migrate: Vec<HostId> = match &resolution.retire {
-        Some(old) => {
-            setup_name::retire(vault, &hosts, old)?;
-            hosts
-                .iter()
-                .filter(|(other, path)| *other == host || path.is_file())
-                .map(|(other, _)| *other)
-                .collect()
-        }
-        None => vec![host],
-    };
-    let plans = setup_name::plans(&migrate, home, codex_home, binary, vault, entry)?;
-    let mut selected = None;
-    for (other, plan) in migrate.iter().zip(plans) {
-        let backup = plan.apply()?;
-        if *other == host {
-            selected = Some(Installed { plan, backup });
-        }
-    }
-    let installed = selected.context("The app settings could not be planned.")?;
-    let (vault, _) = Vault::init(vault)?;
+    let (opened, _) = Vault::init(vault)?;
     let target = skills::SkillTarget::for_host(host);
-    let path = installed.plan.path.clone();
-    record(previous, (host, path), target, home)?.save_named(vault.root(), &resolution.naming)?;
+    let applied = planned.apply(record(previous, target, home)?)?;
+    let installed = applied
+        .into_iter()
+        .find(|applied| applied.destination == selected)
+        .map(|applied| Installed {
+            plan: applied.plan,
+            backup: applied.backup,
+        })
+        .context("The app settings could not be planned.")?;
     let targets: Vec<_> = target.into_iter().collect();
-    skills::enable(&vault, &targets)?;
-    skills::sync(&vault, home, &targets, true)?;
+    skills::enable(&opened, &targets)?;
+    skills::sync(&opened, home, &targets, true)?;
     Ok(installed)
 }
 
-/// The record with this app and its skill folder added.
+/// The record this command starts from, with the app's skill folder added.
+/// The routine fills in the destinations.
 fn record(
     previous: Option<Targets>,
-    (host, path): (HostId, PathBuf),
     target: Option<skills::SkillTarget>,
     home: &Path,
 ) -> Result<Targets> {
@@ -92,9 +89,6 @@ fn record(
             cache_root: setup_cmd::recorded_cache_root(home)?,
         },
     };
-    if !targets.hosts.iter().any(|(recorded, _)| *recorded == host) {
-        targets.hosts.push((host, path));
-    }
     if let Some(dir) = target.map(|target| target.root(&targets.home))
         && !targets.skill_dirs.contains(&dir)
     {

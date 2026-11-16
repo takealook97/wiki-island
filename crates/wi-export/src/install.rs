@@ -20,6 +20,11 @@ pub enum Error {
     Unsupported(String),
     #[error("service error: {0}")]
     Service(String),
+    /// The entry name already connects another notes folder in this app config.
+    #[error(
+        "Another notes folder already uses this connection name in your AI app settings; run wi setup in this notes folder to choose a free name."
+    )]
+    EntryInUse,
 }
 #[derive(Debug, Serialize)]
 pub struct Plan {
@@ -82,6 +87,24 @@ pub fn config_location(
     })
 }
 
+/// One app config file: the app and its absolute path, computed once per
+/// command by [`Destination::locate`] and passed to every planner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Destination {
+    pub host: HostId,
+    pub path: PathBuf,
+}
+
+impl Destination {
+    /// The config file `host` uses under `home` and `codex_home`, as [`config_location`] resolves it.
+    pub fn locate(host: HostId, home: &Path, codex_home: Option<&Path>) -> Result<Self, Error> {
+        Ok(Self {
+            host,
+            path: config_location(host, home, codex_home)?,
+        })
+    }
+}
+
 pub fn plan_host(
     host: HostId,
     home: &Path,
@@ -90,19 +113,53 @@ pub fn plan_host(
     vault: &Path,
     entry: &str,
 ) -> Result<Plan, Error> {
-    let path = config_location(host, home, codex_home)?;
+    plan_at(
+        &Destination::locate(host, home, codex_home)?,
+        binary,
+        vault,
+        entry,
+        None,
+    )
+}
+
+/// Plan this vault's `entry` in `destination`. With `retire`, this vault's
+/// entry under that old name is removed in the same write, so a rename never
+/// leaves the file half changed. Installing over an entry that serves another
+/// live vault is refused with [`Error::EntryInUse`].
+pub fn plan_at(
+    destination: &Destination,
+    binary: &Path,
+    vault: &Path,
+    entry: &str,
+    retire: Option<&str>,
+) -> Result<Plan, Error> {
+    let Destination { host, path } = destination;
+    let (host, path) = (*host, path.clone());
     let before = read_file(&path)?;
     let permissions = before
         .as_ref()
         .map(|_| std::fs::metadata(&path).map(|m| m.permissions()))
         .transpose()?;
     let mut warnings = Vec::new();
-    let text = before
+    let current = before
         .as_deref()
         .map(std::str::from_utf8)
         .transpose()
         .map_err(|e| Error::Config(e.to_string()))?
         .unwrap_or("");
+    let retired = match retire.filter(|old| *old != entry && !current.is_empty()) {
+        Some(old) => without_entry(host, current, vault, old)?,
+        None => None,
+    };
+    let text = retired.as_deref().unwrap_or(current);
+    if entries_in(host, text).iter().any(|(name, served)| {
+        name == entry
+            && served
+                .as_deref()
+                .is_some_and(|p| crate::naming::serves_other_vault(vault, p))
+    }) {
+        return Err(Error::EntryInUse);
+    }
     let args = vec![
         "mcp".to_owned(),
         "--vault".to_owned(),
@@ -235,16 +292,20 @@ pub fn plan_host(
                 )
             }) {
                 Some(restored) => Some(restored),
-                None => plan_remove(host, home, codex_home, vault, entry)?
-                    .map(|plan| plan.after)
-                    .or_else(|| before.clone()),
+                None if text.is_empty() => before.clone(),
+                None => Some(
+                    without_entry(host, text, vault, entry)?
+                        .unwrap_or_else(|| text.to_owned())
+                        .into_bytes(),
+                ),
             }
         }
+        None if retired.is_some() => Some(text.as_bytes().to_vec()),
         None => before.clone(),
     };
     let changed = before.as_deref() != Some(after.as_slice());
     // A line diff with common lines suppressed. No shell invocation or execution.
-    let old: Vec<_> = text.lines().collect();
+    let old: Vec<_> = current.lines().collect();
     let new_text = String::from_utf8_lossy(&after);
     let new: Vec<_> = new_text.lines().collect();
     // An idempotent plan has no diff at all, not an empty header.
@@ -541,6 +602,11 @@ pub fn entries(host: HostId, path: &Path) -> Vec<(String, Option<PathBuf>)> {
     let Ok(text) = std::str::from_utf8(&bytes) else {
         return Vec::new();
     };
+    entries_in(host, text)
+}
+
+/// The wiki-island entries in the config text of `host`, as [`entries`] reads them.
+fn entries_in(host: HostId, text: &str) -> Vec<(String, Option<PathBuf>)> {
     let ours = |name: &str| crate::naming::is_entry_name(name);
     match host.spec().format {
         Format::Toml => {
@@ -588,38 +654,10 @@ pub fn plan_remove_at(
     };
     let permissions = Some(std::fs::metadata(&path)?.permissions());
     let text = std::str::from_utf8(&before).map_err(|e| Error::Config(e.to_string()))?;
-    let args = json!(["mcp", "--vault", vault.to_string_lossy()]);
-    let after = match host.spec().format {
-        Format::Toml => {
-            let mut doc = text
-                .parse::<toml_edit::DocumentMut>()
-                .map_err(|e| Error::Config(e.to_string()))?;
-            let entry = doc.get("mcp_servers").and_then(|v| v.get(entry_name));
-            if entry.and_then(toml_entry_args) != Some(args) {
-                return Ok(None);
-            }
-            if let Some(table) = doc
-                .get_mut("mcp_servers")
-                .and_then(|v| v.as_table_like_mut())
-            {
-                table.remove(entry_name);
-            }
-            doc.to_string().into_bytes()
-        }
-        Format::Json(key) => {
-            let doc: Value = parse_json_config(text)?;
-            if json_entry_args(host, &doc[key][entry_name]) != Some(args) {
-                return Ok(None);
-            }
-            remove_entry(text, &[key, entry_name])
-                .ok_or_else(|| {
-                    Error::Config(
-                        "cannot safely remove the registration from this JSON file".into(),
-                    )
-                })?
-                .into_bytes()
-        }
+    let Some(after) = without_entry(host, text, vault, entry_name)? else {
+        return Ok(None);
     };
+    let after = after.into_bytes();
     let saved = load_config(vault, &path)?;
     let (after, remove_file) = match saved {
         Some(saved) if saved.installed == before => {
@@ -641,6 +679,48 @@ pub fn plan_remove_at(
         remove_file,
         original: None,
     }))
+}
+
+/// `text` without entry `entry_name`, or `None` when that entry does not serve
+/// `vault` (the args check). A config that cannot be parsed is an error.
+fn without_entry(
+    host: HostId,
+    text: &str,
+    vault: &Path,
+    entry_name: &str,
+) -> Result<Option<String>, Error> {
+    let args = json!(["mcp", "--vault", vault.to_string_lossy()]);
+    match host.spec().format {
+        Format::Toml => {
+            let mut doc = text
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|e| Error::Config(e.to_string()))?;
+            let entry = doc.get("mcp_servers").and_then(|v| v.get(entry_name));
+            if entry.and_then(toml_entry_args) != Some(args) {
+                return Ok(None);
+            }
+            if let Some(table) = doc
+                .get_mut("mcp_servers")
+                .and_then(|v| v.as_table_like_mut())
+            {
+                table.remove(entry_name);
+            }
+            Ok(Some(doc.to_string()))
+        }
+        Format::Json(key) => {
+            let doc: Value = parse_json_config(text)?;
+            if json_entry_args(host, &doc[key][entry_name]) != Some(args) {
+                return Ok(None);
+            }
+            remove_entry(text, &[key, entry_name])
+                .ok_or_else(|| {
+                    Error::Config(
+                        "cannot safely remove the registration from this JSON file".into(),
+                    )
+                })
+                .map(Some)
+        }
+    }
 }
 
 /// Delete exactly one JSON member, retaining all unrelated values and formatting.

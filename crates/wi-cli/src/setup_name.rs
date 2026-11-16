@@ -1,7 +1,7 @@
 //! The vault name and app entry name used by `wi setup`, `wi uninstall` and `wi mcp install`.
 use anyhow::Result;
-use std::path::{Path, PathBuf};
-use wi_export::hosts::HostId;
+use std::path::Path;
+use wi_export::install::Destination;
 use wi_export::local::Naming;
 use wi_export::{install, naming};
 
@@ -14,18 +14,6 @@ pub(crate) fn check(name: Option<&str>) -> Result<()> {
         Some(name) if !naming::valid_name(name) => anyhow::bail!(INVALID_NAME),
         _ => Ok(()),
     }
-}
-
-/// The config destination of every host, as `plan_host` resolves it.
-pub(crate) fn locations(
-    hosts: &[HostId],
-    home: &Path,
-    codex_home: Option<&Path>,
-) -> Result<Vec<(HostId, PathBuf)>> {
-    hosts
-        .iter()
-        .map(|host| Ok((*host, install::config_location(*host, home, codex_home)?)))
-        .collect()
 }
 
 /// The naming recorded on this device, if any. An unreadable record is
@@ -44,15 +32,15 @@ pub(crate) fn recorded_name(root: &Path) -> Option<String> {
 pub(crate) fn resolve(
     root: &Path,
     requested: Option<&str>,
-    hosts: &[(HostId, PathBuf)],
+    destinations: &[Destination],
     vault_id: &str,
 ) -> naming::Resolution {
     let recorded = recorded(root);
-    let existing: Vec<_> = hosts
+    let existing: Vec<_> = destinations
         .iter()
-        .flat_map(|(host, path)| install::entries(*host, path))
+        .flat_map(|d| install::entries(d.host, &d.path))
         .collect();
-    let other_vault = |path: &Path| other_vault(root, path);
+    let other_vault = |path: &Path| naming::serves_other_vault(root, path);
     naming::resolve(&naming::Request {
         requested,
         recorded: recorded.as_ref(),
@@ -61,43 +49,6 @@ pub(crate) fn resolve(
         existing: &existing,
         other_vault: &other_vault,
     })
-}
-
-/// Whether `path` holds a live vault other than the one at `root`. An entry
-/// whose folder no longer holds a vault is free and is taken over.
-fn other_vault(root: &Path, path: &Path) -> bool {
-    let same = path == root || std::fs::canonicalize(path).is_ok_and(|p| p == root);
-    !same && path.join(".wiki-island/config.toml").is_file()
-}
-
-/// Remove this vault's old entry from every recorded host. The args check in
-/// `plan_remove_at` leaves an entry that serves another vault alone.
-pub(crate) fn retire(root: &Path, hosts: &[(HostId, PathBuf)], entry: &str) -> Result<()> {
-    for (host, path) in hosts {
-        if let Some(plan) = install::plan_remove_at(*host, path, root, entry)? {
-            plan.apply()?;
-        }
-    }
-    Ok(())
-}
-
-/// Plan and check this vault's entry in every host without writing anything.
-pub(crate) fn plans(
-    hosts: &[HostId],
-    home: &Path,
-    codex_home: Option<&Path>,
-    binary: &Path,
-    root: &Path,
-    entry: &str,
-) -> Result<Vec<install::Plan>> {
-    hosts
-        .iter()
-        .map(|host| {
-            let plan = install::plan_host(*host, home, codex_home, binary, root, entry)?;
-            plan.preflight()?;
-            Ok(plan)
-        })
-        .collect()
 }
 
 /// The summary sentence naming the entry when it is not the default one.
@@ -129,17 +80,5 @@ mod tests {
             connected(2, "wiki-island-work"),
             "Connected 2 AI app(s) as wiki-island-work."
         );
-    }
-
-    #[test]
-    fn a_folder_without_a_vault_is_not_another_vault() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("mine");
-        let other = temp.path().join("other");
-        std::fs::create_dir_all(other.join(".wiki-island")).unwrap();
-        assert!(!other_vault(&root, &other));
-        std::fs::write(other.join(".wiki-island/config.toml"), "").unwrap();
-        assert!(other_vault(&root, &other));
-        assert!(!other_vault(&other, &other));
     }
 }

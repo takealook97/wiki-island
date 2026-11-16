@@ -1,5 +1,4 @@
 use serde_json::{Value, json};
-#[cfg(unix)]
 use std::path::Path;
 use tempfile::TempDir;
 use wi_export::{Host, install};
@@ -395,5 +394,62 @@ fn named_entries_sit_beside_each_other_and_remove_only_their_own() {
             "{host:?}"
         );
         assert_ne!(both, after_first);
+    }
+}
+
+#[test]
+fn install_refuses_an_entry_owned_by_another_live_vault() {
+    use wi_export::hosts::HostId;
+    for host in [HostId::Claude, HostId::Codex] {
+        let home = TempDir::new().unwrap();
+        let codex = home.path().join(".codex");
+        let other = home.path().join("other");
+        std::fs::create_dir_all(other.join(".wiki-island")).unwrap();
+        std::fs::write(other.join(".wiki-island/config.toml"), "").unwrap();
+        let path = host.config_path(home.path(), Some(&codex));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let served = other.to_string_lossy().replace('\\', "\\\\");
+        let before = if host == HostId::Codex {
+            format!(
+                "[mcp_servers.wiki-island]\ncommand = \"wi\"\nargs = [\"mcp\", \"--vault\", \"{served}\"]\n"
+            )
+        } else {
+            format!(
+                r#"{{"mcpServers":{{"wiki-island":{{"command":"wi","args":["mcp","--vault","{served}"]}}}}}}"#
+            )
+        };
+        std::fs::write(&path, &before).unwrap();
+        let mine = home.path().join("mine");
+        let plan = |entry: &str| {
+            install::plan_host(
+                host,
+                home.path(),
+                Some(&codex),
+                Path::new("/bin/wi"),
+                &mine,
+                entry,
+            )
+        };
+        let error = plan("wiki-island").unwrap_err();
+        assert!(
+            matches!(error, install::Error::EntryInUse),
+            "{host:?}: {error}"
+        );
+        assert!(error.to_string().contains("wi setup"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        // Another entry name is free, and the other vault's own entry is not refused.
+        assert!(plan("wiki-island-mine").is_ok(), "{host:?}");
+        let own = install::plan_host(
+            host,
+            home.path(),
+            Some(&codex),
+            Path::new("/bin/wi"),
+            &other,
+            "wiki-island",
+        );
+        assert!(own.is_ok(), "{host:?}");
+        // An entry whose folder no longer holds a vault is taken over.
+        std::fs::remove_file(other.join(".wiki-island/config.toml")).unwrap();
+        assert!(plan("wiki-island").is_ok(), "{host:?}");
     }
 }

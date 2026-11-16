@@ -48,6 +48,14 @@ pub fn auto_name(folder: &str, vault_id: &str) -> String {
     }
 }
 
+/// Whether `path` holds a live vault other than the one at `root`. An entry
+/// whose folder no longer holds a vault is free and is taken over.
+pub fn serves_other_vault(root: &Path, path: &Path) -> bool {
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let same = path == root || canonical(path) == canonical(root);
+    !same && path.join(".wiki-island/config.toml").is_file()
+}
+
 /// What the resolver needs to know about one setup run.
 pub struct Request<'a> {
     /// The `--name` given on the command line.
@@ -261,6 +269,18 @@ mod tests {
         ];
         let out = resolve_with(Some("work"), None, &existing);
         assert_eq!(out.naming, naming(Some("work"), "wiki-island-work-3"));
+    }
+
+    #[test]
+    fn a_folder_without_a_vault_is_not_another_vault() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("mine");
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(other.join(".wiki-island")).unwrap();
+        assert!(!serves_other_vault(&root, &other));
+        std::fs::write(other.join(".wiki-island/config.toml"), "").unwrap();
+        assert!(serves_other_vault(&root, &other));
+        assert!(!serves_other_vault(&other, &other));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use wi_export::{hosts, install, service, skills};
 use wi_store::Vault;
 
-use super::setup_name;
+use super::{naming_plan, setup_name};
 
 /// What the owner chose on the command line.
 #[derive(Default)]
@@ -14,13 +14,6 @@ pub(crate) struct Choices<'a> {
     pub(crate) primary: bool,
     pub(crate) name: Option<&'a str>,
 }
-
-/// Checked host plans, their config destinations and the entry name they use.
-type Preflight = (
-    Vec<install::Plan>,
-    Vec<(hosts::HostId, PathBuf)>,
-    wi_export::naming::Resolution,
-);
 
 /// Preserve the invocation path of a package-manager symlink in a stable bin folder.
 pub(crate) fn executable() -> Result<PathBuf> {
@@ -209,8 +202,26 @@ fn setup_with_options(
     // Without a usable service manager the service is skipped, not an error.
     let background_ready = super::service_cmd::ready(runner);
     let previous = wi_export::local::Targets::load(&root).ok().flatten();
+    let recorded: Vec<install::Destination> = previous
+        .iter()
+        .flat_map(|targets| &targets.hosts)
+        .map(|(host, path)| install::Destination {
+            host: *host,
+            path: path.clone(),
+        })
+        .collect();
+    let request = |selected: &[install::Destination], vault_id: &str| {
+        naming_plan::plan(&naming_plan::Request {
+            root: &root,
+            vault_id,
+            requested: name,
+            recorded: &recorded,
+            selected,
+            binary,
+        })
+    };
     // Validate every host and service destination before creating the vault or editing a host.
-    let preflight = || -> Result<Preflight> {
+    let preflight = || -> Result<Vec<install::Destination>> {
         if !binary.is_file() {
             anyhow::bail!("The installed program could not be found.");
         }
@@ -225,13 +236,14 @@ fn setup_with_options(
         if background_ready {
             service::plan(home, binary, &root, id)?;
         }
-        let locations = setup_name::locations(&detected, home, codex_home)?;
-        let resolution = setup_name::resolve(&root, name, &locations, id);
-        let entry = &resolution.naming.entry;
-        let plans = setup_name::plans(&detected, home, codex_home, binary, &root, entry)?;
-        Ok((plans, locations, resolution))
+        let selected = detected
+            .iter()
+            .map(|host| install::Destination::locate(*host, home, codex_home))
+            .collect::<Result<Vec<_>, _>>()?;
+        request(&selected, id)?;
+        Ok(selected)
     };
-    let (plans, locations, provisional) = preflight().map_err(|_| anyhow::anyhow!(
+    let selected = preflight().map_err(|_| anyhow::anyhow!(
         "Setup could not start; install the program in its permanent location and check that your AI app settings are readable and writable."
     ))?;
     // Inside a file-synced folder the vault starts in folder mode (history
@@ -241,7 +253,9 @@ fn setup_with_options(
         vault.set_primary_device()?;
     }
     // The vault id is known now; it names a vault whose folder gives no automatic name.
-    let resolution = setup_name::resolve(&root, name, &locations, vault.vault_id());
+    // Phase one runs again with it; no app config has changed yet.
+    let planned = request(&selected, vault.vault_id())?;
+    let naming = planned.resolution.naming.clone();
     let storage = match vault.storage_mode() {
         wi_store::StorageMode::Git => "",
         wi_store::StorageMode::Folder if vault.is_primary_device() => {
@@ -251,21 +265,19 @@ fn setup_with_options(
             "History is kept on this device, outside the synced folder; another device runs note maintenance (wi setup --primary takes over).\n"
         }
     };
-    let targets = detected
+    let skill_targets = detected
         .iter()
         .filter_map(|host| skills::SkillTarget::for_host(*host))
         .collect::<std::collections::BTreeSet<_>>();
-    wi_export::local::Targets {
+    let record = wi_export::local::Targets {
         home: home.to_owned(),
-        hosts: detected
+        hosts: Vec::new(),
+        skill_dirs: skill_targets
             .iter()
-            .zip(&plans)
-            .map(|(host, plan)| (*host, plan.path.clone()))
+            .map(|target| target.root(home))
             .collect(),
-        skill_dirs: targets.iter().map(|target| target.root(home)).collect(),
         cache_root: recorded_cache_root(home)?,
-    }
-    .save_named(&root, &resolution.naming)?;
+    };
     let background_plan = if background_ready {
         Some(service::plan(home, binary, &root, vault.vault_id())?)
     } else {
@@ -292,21 +304,8 @@ fn setup_with_options(
     } else {
         "Your notes are ready; background care is available on macOS."
     };
-    let plans = if resolution == provisional && resolution.retire.is_none() {
-        plans
-    } else {
-        // Retire the old entry first, so the new entry is planned on the config without it.
-        if let (Some(previous), Some(old)) = (&previous, &resolution.retire) {
-            setup_name::retire(&root, &previous.hosts, old)?;
-        }
-        let entry = &resolution.naming.entry;
-        setup_name::plans(&detected, home, codex_home, binary, &root, entry)?
-    };
-    let mut targets = Vec::new();
-    for (host, plan) in detected.iter().zip(plans) {
-        plan.apply()?;
-        targets.extend(skills::SkillTarget::for_host(*host));
-    }
+    planned.apply(record)?;
+    let targets: Vec<_> = skill_targets.into_iter().collect();
     skills::enable(&vault, &targets)?;
     run_first_maintenance(&vault)?;
     let synced = skills::sync(&vault, home, &skills::configured(&vault), true)?;
@@ -327,9 +326,9 @@ fn setup_with_options(
         human: format!(
             "Your notes are ready at {}.\n{storage}{} {skill_message}\n{background}",
             root.display(),
-            setup_name::connected(detected.len(), &resolution.naming.entry)
+            setup_name::connected(detected.len(), &naming.entry)
         ),
-        json: json!({"vault":root,"storage":vault.storage_mode(),"primary":vault.is_primary_device(),"hosts":detected,"skills":synced,"background":background_on,"name":resolution.naming.name,"entry":resolution.naming.entry}),
+        json: json!({"vault":root,"storage":vault.storage_mode(),"primary":vault.is_primary_device(),"hosts":detected,"skills":synced,"background":background_on,"name":naming.name,"entry":naming.entry}),
     })
 }
 pub(crate) fn uninstall(
