@@ -1131,6 +1131,7 @@ pub(crate) fn import(vault: &Vault, source: &str) -> Result<ImportReport> {
         },
         diagnostics: diagnostics.into_iter().collect(),
         unchanged,
+        conversations: None,
     })
 }
 

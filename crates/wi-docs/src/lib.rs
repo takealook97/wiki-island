@@ -1,5 +1,6 @@
 //! Model-free local document import. Source files remain canonical and unchanged.
 #![forbid(unsafe_code)]
+pub mod conversations;
 mod extract;
 pub mod notion;
 pub mod pins;
@@ -71,6 +72,10 @@ pub struct ImportReport {
     pub status: Status,
     pub diagnostics: Vec<String>,
     pub unchanged: bool,
+    /// Set by conversation imports only: counts of notes created, updated,
+    /// kept, skipped and redacted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversations: Option<conversations::ConversationCounts>,
 }
 
 /// Additional provenance lives in the run note's fenced JSON body, keeping the
@@ -324,6 +329,11 @@ fn source_input(path: &str) -> std::borrow::Cow<'_, str> {
 fn import_inner(vault: &Vault, rel_path: &str, options: ImportOptions) -> Result<ImportReport> {
     let input = source_input(rel_path);
     let rel_path = input.as_ref();
+    if let Some(report) =
+        conversations::try_import(vault, rel_path, &conversations::Limits::default())?
+    {
+        return Ok(report);
+    }
     if Path::new(rel_path)
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
@@ -434,6 +444,7 @@ fn import_inner(vault: &Vault, rel_path: &str, options: ImportOptions) -> Result
                         .into(),
                 ],
                 unchanged: true,
+                conversations: None,
             });
         }
         let payload = read_run(&run_read.bytes)?;
@@ -506,6 +517,7 @@ fn import_inner(vault: &Vault, rel_path: &str, options: ImportOptions) -> Result
             )?,
             diagnostics: payload.diagnostics,
             unchanged,
+            conversations: None,
         });
     }
     let extracted = match extract::extract(
@@ -531,6 +543,7 @@ fn import_inner(vault: &Vault, rel_path: &str, options: ImportOptions) -> Result
                     status: Status::Failed,
                     diagnostics: vec![message],
                     unchanged: false,
+                    conversations: None,
                 });
             }
             return failed_run(
@@ -671,6 +684,7 @@ fn import_inner(vault: &Vault, rel_path: &str, options: ImportOptions) -> Result
         status,
         diagnostics,
         unchanged: false,
+        conversations: None,
     })
 }
 
@@ -715,6 +729,7 @@ fn failed_run(
         status: Status::Failed,
         diagnostics: vec![message.into()],
         unchanged: false,
+        conversations: None,
     })
 }
 
