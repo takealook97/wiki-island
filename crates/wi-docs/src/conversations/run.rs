@@ -70,9 +70,22 @@ fn redact(text: &mut String, replaced: &mut usize) {
     }
 }
 
-/// Replace secret-like strings in titles, messages and attachment names.
+/// An id that holds a secret is replaced by a stable digest of itself, so two
+/// different secret ids stay different and a re-import finds the same note.
+fn redact_id(id: &mut String, replaced: &mut usize) {
+    let (_, count) = wi_lifecycle::redact_secrets(id);
+    if count > 0 {
+        let digest = hash_bytes(id.as_bytes());
+        let hex = digest.trim_start_matches("sha256:");
+        *id = format!("redacted-{}", hex.get(..16).unwrap_or(hex));
+        *replaced += count;
+    }
+}
+
+/// Replace secret-like strings in ids, titles, messages and attachment names.
 fn redact_conversation(conv: &mut super::Conversation) -> usize {
     let mut replaced = 0;
+    redact_id(&mut conv.id, &mut replaced);
     redact(&mut conv.title, &mut replaced);
     for message in &mut conv.messages {
         redact(&mut message.text, &mut replaced);
@@ -121,7 +134,12 @@ fn import_projects(bytes: &[u8], applier: &mut Applier<'_>) -> Result<()> {
             return Ok(true);
         };
         for mut doc in docs {
-            redact(&mut doc.content, &mut applier.counts.redacted);
+            let replaced = &mut applier.counts.redacted;
+            redact(&mut doc.content, replaced);
+            redact(&mut doc.project, replaced);
+            redact(&mut doc.filename, replaced);
+            redact_id(&mut doc.project_id, replaced);
+            redact_id(&mut doc.id, replaced);
             if doc.content.trim().is_empty() {
                 applier.counts.skipped += 1;
                 continue;

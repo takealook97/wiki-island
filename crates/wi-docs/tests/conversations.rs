@@ -601,3 +601,59 @@ fn a_symlinked_conversation_file_in_a_folder_is_refused() {
     assert!(import(&vault, "folder", ImportOptions::default()).is_err());
     assert!(!vault.root().join("AI").exists());
 }
+
+fn every_file(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        out.push(path.clone());
+        if path.is_dir() {
+            every_file(&path, out);
+        }
+    }
+}
+
+#[test]
+fn conversation_import_redacts_names() {
+    let (_tmp, vault) = setup();
+    let secret = format!("sk-{}", "A".repeat(24));
+    let aws = format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP");
+    let token = format!("{}{}", "ghp_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8");
+    let conversations = json!([{
+        "uuid": aws, "name": secret, "created_at": "2025-05-01T00:00:00Z",
+        "chat_messages": [{"sender": "human", "text": "hello",
+                           "attachments": [{"file_name": format!("{secret}.pdf")}]}]}]);
+    let projects = json!([{"uuid": token, "name": secret, "docs": [
+        {"uuid": "d1", "filename": secret, "content": "plain body"}]}]);
+    put(
+        &vault,
+        "n.zip",
+        zip(&[
+            ("conversations.json", &bytes(&conversations)),
+            ("projects.json", &bytes(&projects)),
+        ]),
+    );
+    let report = run(&vault, "n.zip");
+    // Title, conversation id, attachment name, project name, project id and
+    // document file name.
+    assert_eq!(report.conversations.as_ref().unwrap().redacted, 6);
+    let mut files = Vec::new();
+    every_file(vault.root(), &mut files);
+    for path in &files {
+        let shown = path.to_string_lossy();
+        for forbidden in [&secret, &aws, &token] {
+            assert!(!shown.contains(forbidden.as_str()), "{shown}");
+        }
+        if path.is_file() {
+            let raw = String::from_utf8_lossy(&fs::read(path).unwrap()).into_owned();
+            for forbidden in [&secret, &aws, &token] {
+                assert!(!raw.contains(forbidden.as_str()), "{shown}");
+            }
+        }
+    }
+    let note = read(&vault, "AI/Claude/2025-05-01 redacted.md");
+    assert_eq!(field(&note, "title"), "[redacted]");
+    let doc = read(&vault, "AI/Claude/Projects/redacted/redacted.md");
+    assert_eq!(field(&doc, "claude_project"), "[redacted]");
+    // The same export again changes nothing.
+    assert!(run(&vault, "n.zip").unchanged);
+}
