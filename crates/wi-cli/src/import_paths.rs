@@ -45,8 +45,8 @@ pub(crate) fn expand(root: &Path, paths: &[String]) -> Expansion {
                 }
             }
         }
-        if directory && wi_docs::notion::is_export(root, path) {
-            // A Notion export folder is converted as a whole by wi-docs.
+        if directory && is_whole_export(root, path) {
+            // A Notion or conversation export folder is converted as a whole by wi-docs.
             result.paths.push(path.clone());
         } else if directory {
             walk(root, Path::new(path), &mut result);
@@ -58,6 +58,61 @@ pub(crate) fn expand(root: &Path, paths: &[String]) -> Expansion {
     let mut seen = std::collections::HashSet::new();
     result.paths.retain(|path| seen.insert(path.clone()));
     result
+}
+
+fn is_whole_export(root: &Path, rel: &str) -> bool {
+    wi_docs::conversations::is_export(root, rel) || wi_docs::notion::is_export(root, rel)
+}
+
+/// One or two plain lines for a conversation import report, `None` for other imports.
+pub(crate) fn conversation_summary(report: &serde_json::Value) -> Option<String> {
+    let counts = report.get("conversations")?;
+    let number = |key: &str| counts[key].as_u64().unwrap_or(0);
+    let folder = report["sidecar_path"].as_str().unwrap_or("");
+    let place = if folder.is_empty() {
+        "No conversations found"
+    } else {
+        folder
+    };
+    let mut text = format!(
+        "{place}: {} new, {} updated, {} unchanged.",
+        number("created"),
+        number("updated"),
+        number("unchanged")
+    );
+    let mut notes = Vec::new();
+    if number("conflicts") > 0 {
+        let paths = counts["conflict_paths"]
+            .as_array()
+            .map(|p| {
+                p.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        notes.push(format!(
+            "Kept {} notes you edited ({paths}); save your changes elsewhere to import them again.",
+            number("conflicts")
+        ));
+    }
+    if number("skipped") > 0 {
+        notes.push(format!(
+            "Skipped {} empty or unreadable items.",
+            number("skipped")
+        ));
+    }
+    if number("redacted") > 0 {
+        notes.push(format!(
+            "Replaced {} secrets with [redacted].",
+            number("redacted")
+        ));
+    }
+    if !notes.is_empty() {
+        text.push('\n');
+        text.push_str(&notes.join(" "));
+    }
+    Some(text)
 }
 
 fn walk(root: &Path, rel: &Path, result: &mut Expansion) {
@@ -106,7 +161,7 @@ fn walk(root: &Path, rel: &Path, result: &mut Expansion) {
         };
         if kind.is_dir() {
             let rel = display_rel(&path);
-            if wi_docs::notion::is_export(root, &rel) {
+            if is_whole_export(root, &rel) {
                 result.paths.push(rel);
             } else {
                 // `walk` prunes a directory its ignore rules exclude.

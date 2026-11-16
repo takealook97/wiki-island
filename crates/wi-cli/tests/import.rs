@@ -380,3 +380,128 @@ fn notion_export_folder_and_zip_import_through_the_cli() {
         String::from_utf8_lossy(&out.stdout)
     );
 }
+
+fn claude_export() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!([
+        {"uuid": "c-1", "name": "Zebra planning", "created_at": "2025-03-04T05:06:07Z",
+         "chat_messages": [
+            {"sender": "human", "text": "Where do zebracrossings belong?"},
+            {"sender": "assistant", "text": "Near schools."}]},
+        {"uuid": "c-2", "name": "Nothing here", "chat_messages": []}
+    ]))
+    .unwrap()
+}
+
+fn search_paths(tmp: &TempDir, query: &str) -> Vec<String> {
+    let out = command(tmp).args(["search", query]).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    json(&out)["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|h| h["rel_path"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn conversation_exports_import_from_zip_folder_and_json() {
+    let tmp = setup();
+    let vault = tmp.path().join("vault");
+    fs::write(
+        vault.join("claude.zip"),
+        stored_zip(&[("conversations.json", &claude_export())]),
+    )
+    .unwrap();
+    fs::create_dir_all(vault.join("unpacked")).unwrap();
+    fs::write(vault.join("unpacked/conversations.json"), claude_export()).unwrap();
+    fs::write(vault.join("one.json"), claude_export()).unwrap();
+
+    let out = command(&tmp)
+        .args(["import", "claude.zip"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let report = json(&out);
+    let counts = &report["imports"][0]["conversations"];
+    assert_eq!(
+        report["imports"][0]["sidecar_path"], "AI/Claude",
+        "{report}"
+    );
+    assert_eq!(
+        (
+            counts["created"].as_u64(),
+            counts["unchanged"].as_u64(),
+            counts["skipped"].as_u64()
+        ),
+        (Some(1), Some(0), Some(1)),
+        "{report}"
+    );
+    let found = search_paths(&tmp, "zebracrossings");
+    assert!(
+        found.contains(&"AI/Claude/2025-03-04 Zebra planning.md".to_string()),
+        "{found:?}"
+    );
+
+    // The same conversations from a folder and a single file are already there.
+    for source in ["unpacked", "one.json"] {
+        let out = command(&tmp).args(["import", source]).output().unwrap();
+        assert!(out.status.success(), "{source}: {out:?}");
+        let counts = &json(&out)["imports"][0]["conversations"];
+        assert_eq!(
+            (counts["created"].as_u64(), counts["unchanged"].as_u64()),
+            (Some(0), Some(1)),
+            "{source}"
+        );
+    }
+
+    // Other JSON files are still refused.
+    fs::write(vault.join("other.json"), b"{\"a\": 1}").unwrap();
+    let out = command(&tmp)
+        .args(["import", "other.json"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn conversation_import_prints_plain_counts() {
+    let tmp = setup();
+    let vault = tmp.path().join("vault");
+    fs::write(vault.join("one.json"), claude_export()).unwrap();
+    // Same environment as `command`, without `--json`.
+    let json_cmd = command(&tmp);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wi"));
+    cmd.envs(json_cmd.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))
+        .env_remove("XDG_CONFIG_HOME")
+        .arg("--vault")
+        .arg(&vault)
+        .args(["import", "one.json"]);
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("AI/Claude: 1 new, 0 updated, 0 unchanged."),
+        "{text}"
+    );
+    assert!(
+        text.contains("Skipped 1 empty or unreadable items."),
+        "{text}"
+    );
+}
+
+#[test]
+fn conversation_archive_with_an_escaping_path_is_refused_with_a_sentence() {
+    let tmp = setup();
+    let vault = tmp.path().join("vault");
+    let zipped = stored_zip(&[
+        ("conversations.json", &claude_export()),
+        ("../outside.md", b"x"),
+    ]);
+    fs::write(vault.join("bad.zip"), zipped).unwrap();
+    let out = command(&tmp).args(["import", "bad.zip"]).output().unwrap();
+    assert!(!out.status.success());
+    let report = json(&out);
+    let error = report["imports"][0]["error"].as_str().unwrap();
+    assert!(error.contains("leaves the archive"), "{report}");
+    assert!(!vault.join("AI").exists());
+}

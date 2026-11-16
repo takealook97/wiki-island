@@ -94,7 +94,7 @@ pub(crate) fn run_in_vault(vault: &Session, command: Command) -> Result<Output> 
                         }
                         value
                     },
-                    Err(e) => json!({"path":path,"status":"failed","code":error_codes::document(&e),"error":document_message(&e)}),
+                    Err(e) => json!({"path":path,"status":"failed","code":error_codes::document(&e),"error":wi_docs::conversations::owner_sentence(&e).unwrap_or_else(|| document_message(&e))}),
                 })
                 .collect();
             reports.extend(expanded.failures);
@@ -103,6 +103,9 @@ pub(crate) fn run_in_vault(vault: &Session, command: Command) -> Result<Output> 
             let human = reports
                 .iter()
                 .map(|r| {
+                    if let Some(summary) = import_paths::conversation_summary(r) {
+                        return summary;
+                    }
                     format!(
                         "{}: {}{}{}",
                         r.get("sidecar_path")
