@@ -363,7 +363,7 @@ fn session_start(f: &Fixture, vault: &str) -> Vec<(Value, usize)> {
     replies
 }
 
-const NAMED_SENTENCE: &str = "Use it only when the conversation is about that subject; another wiki-island vault may be connected for everything else.";
+const NAMED_SENTENCE: &str = "Use it only for that subject.";
 
 #[test]
 fn named_vault_instructions_name_the_vault() {

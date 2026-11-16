@@ -53,7 +53,7 @@ fn instructions(name: Option<&str>) -> String {
     match name {
         None => INSTRUCTIONS.to_owned(),
         Some(name) => format!(
-            "{INSTRUCTIONS} This vault is named \"{name}\". Use it only when the conversation is about that subject; another wiki-island vault may be connected for everything else."
+            "{INSTRUCTIONS} This vault is named \"{name}\". Use it only for that subject."
         ),
     }
 }
@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(instructions(None), INSTRUCTIONS);
         let named = instructions(Some("work"));
         assert!(named.starts_with(INSTRUCTIONS));
-        assert!(named.ends_with("This vault is named \"work\". Use it only when the conversation is about that subject; another wiki-island vault may be connected for everything else."));
+        assert!(named.ends_with("This vault is named \"work\". Use it only for that subject."));
     }
 
     #[test]
