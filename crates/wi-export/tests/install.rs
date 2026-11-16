@@ -27,6 +27,7 @@ fn install_preview_backup_and_unrelated_config_survive_for_every_host() {
             Some(&custom),
             &std::env::temp_dir().join("wi-test-bin"),
             &home.path().join("vault"),
+            "wiki-island",
         )
         .unwrap();
         assert!(plan.changed);
@@ -80,6 +81,7 @@ fn install_preview_backup_and_unrelated_config_survive_for_every_host() {
             Some(&custom),
             &std::env::temp_dir().join("wi-test-bin"),
             &home.path().join("vault"),
+            "wiki-island",
         )
         .unwrap();
         assert!(!next.changed);
@@ -102,6 +104,7 @@ fn install_absent_configs_stale_preview_and_invalid_shape() {
             None,
             &std::env::temp_dir().join("wi-test-bin"),
             &home.path().join("vault"),
+            "wiki-island",
         )
         .unwrap();
         assert!(!plan.path.exists());
@@ -113,6 +116,7 @@ fn install_absent_configs_stale_preview_and_invalid_shape() {
             None,
             &std::env::temp_dir().join("wi-test-new-bin"),
             &home.path().join("vault"),
+            "wiki-island",
         )
         .unwrap();
         std::fs::write(&stale.path, "modified").unwrap();
@@ -132,7 +136,8 @@ fn install_absent_configs_stale_preview_and_invalid_shape() {
                 home.path(),
                 None,
                 &std::env::temp_dir().join("wi-test-bin"),
-                &home.path().join("vault")
+                &home.path().join("vault"),
+                "wiki-island"
             )
             .is_err()
         );
@@ -144,7 +149,8 @@ fn install_absent_configs_stale_preview_and_invalid_shape() {
                     home.path(),
                     None,
                     &std::env::temp_dir().join("wi-test-bin"),
-                    &home.path().join("vault")
+                    &home.path().join("vault"),
+                    "wiki-island"
                 )
                 .is_err()
             );
@@ -165,6 +171,7 @@ fn install_follows_a_symlink_config_and_writes_private_files() {
         None,
         &std::env::temp_dir().join("wi-test-bin"),
         &home.path().join("vault"),
+        "wiki-island",
     )
     .unwrap();
     linked.apply().unwrap();
@@ -185,6 +192,7 @@ fn install_follows_a_symlink_config_and_writes_private_files() {
         None,
         &std::env::temp_dir().join("wi-test-bin"),
         &home.path().join("vault"),
+        "wiki-island",
     )
     .unwrap();
     plan.apply().unwrap();
@@ -209,6 +217,7 @@ fn json_install_preserves_unrelated_bytes_key_order_and_escaped_strings() {
         None,
         &std::env::temp_dir().join("wi-test-bin"),
         &home.path().join("vault"),
+        "wiki-island",
     )
     .unwrap();
     plan.apply().unwrap();
@@ -237,6 +246,7 @@ fn replacement_preserves_existing_config_mode() {
                 None,
                 Path::new("/bin/old"),
                 &home.path().join("vault"),
+                "wiki-island",
             )
             .unwrap();
             initial.apply().unwrap();
@@ -247,6 +257,7 @@ fn replacement_preserves_existing_config_mode() {
                 None,
                 Path::new("/bin/new"),
                 &home.path().join("vault"),
+                "wiki-island",
             )
             .unwrap();
             update.apply().unwrap();
@@ -277,6 +288,7 @@ fn json_insertion_preserves_existing_members_and_warns_on_duplicate_keys() {
             None,
             &std::env::temp_dir().join("wi-test-bin"),
             &home.path().join("vault"),
+            "wiki-island",
         )
         .unwrap();
         plan.apply().unwrap();
@@ -299,6 +311,7 @@ fn json_insertion_preserves_existing_members_and_warns_on_duplicate_keys() {
         None,
         &std::env::temp_dir().join("wi-test-bin"),
         &home.path().join("vault"),
+        "wiki-island",
     )
     .unwrap();
     assert_eq!(plan.warnings.len(), 1);
@@ -318,6 +331,7 @@ fn install_follows_a_windows_config_symlink_without_replacing_it() {
         None,
         &home.path().join("wi.exe"),
         &home.path().join("vault"),
+        "wiki-island",
     )
     .unwrap();
     plan.apply().unwrap();
@@ -332,4 +346,54 @@ fn install_follows_a_windows_config_symlink_without_replacing_it() {
             .unwrap()
             .contains("wiki-island")
     );
+}
+
+#[test]
+fn named_entries_sit_beside_each_other_and_remove_only_their_own() {
+    use wi_export::hosts::HostId;
+    for host in [HostId::Claude, HostId::Codex, HostId::Zed, HostId::Opencode] {
+        let home = TempDir::new().unwrap();
+        let codex = home.path().join(".codex");
+        let path = host.config_path(home.path(), Some(&codex));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let binary = std::env::temp_dir().join("wi-test-bin");
+        let (first, second) = (home.path().join("a"), home.path().join("b"));
+        let install = |vault: &std::path::Path, entry: &str| {
+            let plan =
+                install::plan_host(host, home.path(), Some(&codex), &binary, vault, entry).unwrap();
+            plan.preflight().unwrap();
+            plan.apply().unwrap();
+        };
+        install(&first, "wiki-island");
+        let after_first = std::fs::read_to_string(&path).unwrap();
+        install(&second, "wiki-island-work");
+        let both = std::fs::read_to_string(&path).unwrap();
+        let mut entries = install::entries(host, &path);
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![
+                ("wiki-island".to_owned(), Some(first.clone())),
+                ("wiki-island-work".to_owned(), Some(second.clone())),
+            ],
+            "{host:?}"
+        );
+        // The second vault's entry name does not remove the first vault's entry.
+        assert!(
+            install::plan_remove_at(host, &path, &first, "wiki-island-work")
+                .unwrap()
+                .is_none()
+        );
+        install::plan_remove_at(host, &path, &second, "wiki-island-work")
+            .unwrap()
+            .unwrap()
+            .apply()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            after_first,
+            "{host:?}"
+        );
+        assert_ne!(both, after_first);
+    }
 }

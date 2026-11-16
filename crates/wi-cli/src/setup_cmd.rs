@@ -208,7 +208,14 @@ fn setup_with_options(
         let plans = detected
             .iter()
             .map(|host| {
-                let plan = install::plan_host(*host, home, codex_home, binary, &root)?;
+                let plan = install::plan_host(
+                    *host,
+                    home,
+                    codex_home,
+                    binary,
+                    &root,
+                    wi_export::naming::DEFAULT_ENTRY,
+                )?;
                 plan.preflight()?;
                 Ok(plan)
             })
@@ -343,7 +350,9 @@ pub(crate) fn uninstall(
     let _ = runner;
     let mut removed = 0;
     for (host, path) in &state.hosts {
-        if let Some(plan) = install::plan_remove_at(*host, path, &root)? {
+        if let Some(plan) =
+            install::plan_remove_at(*host, path, &root, wi_export::naming::DEFAULT_ENTRY)?
+        {
             plan.apply()?;
             removed += 1;
         }

@@ -34,6 +34,7 @@ fn every_installed_host_is_detected_registered_idempotently_and_removed() {
             None,
             &std::env::temp_dir().join("wi-test-bin"),
             vault,
+            "wiki-island",
         )
         .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), initial);
@@ -71,7 +72,8 @@ fn every_installed_host_is_detected_registered_idempotently_and_removed() {
                 home,
                 None,
                 &std::env::temp_dir().join("wi-test-bin"),
-                vault
+                vault,
+                "wiki-island"
             )
             .unwrap()
             .changed
@@ -81,18 +83,19 @@ fn every_installed_host_is_detected_registered_idempotently_and_removed() {
                 host.id,
                 home,
                 None,
-                &std::env::temp_dir().join("another-vault")
+                &std::env::temp_dir().join("another-vault"),
+                "wiki-island"
             )
             .unwrap()
             .is_none()
         );
-        install::plan_remove(host.id, home, None, vault)
+        install::plan_remove(host.id, home, None, vault, "wiki-island")
             .unwrap()
             .unwrap()
             .apply()
             .unwrap();
         assert!(
-            install::plan_remove(host.id, home, None, vault)
+            install::plan_remove(host.id, home, None, vault, "wiki-island")
                 .unwrap()
                 .is_none()
         );
@@ -126,7 +129,7 @@ fn uninstall_retains_unrelated_json_bytes_for_first_middle_last_and_only_members
             format!("{{\"mcpServers\":{{ {members} }},\"outside\": [1, 2]}}\n"),
         )
         .unwrap();
-        install::plan_remove(HostId::Claude, temp.path(), None, &vault)
+        install::plan_remove(HostId::Claude, temp.path(), None, &vault, "wiki-island")
             .unwrap()
             .unwrap()
             .apply()
@@ -170,6 +173,7 @@ fn jsonc_comments_trailing_commas_and_existing_opencode_jsonc_survive() {
                 None,
                 &std::env::temp_dir().join("wi-test-bin"),
                 &temp.path().join("vault"),
+                "wiki-island",
             )
             .unwrap();
             assert_eq!(plan.path, path);
@@ -185,16 +189,23 @@ fn jsonc_comments_trailing_commas_and_existing_opencode_jsonc_survive() {
                     temp.path(),
                     None,
                     &std::env::temp_dir().join("wi-test-bin"),
-                    &temp.path().join("vault")
+                    &temp.path().join("vault"),
+                    "wiki-island"
                 )
                 .unwrap()
                 .changed
             );
-            install::plan_remove(host, temp.path(), None, &temp.path().join("vault"))
-                .unwrap()
-                .unwrap()
-                .apply()
-                .unwrap();
+            install::plan_remove(
+                host,
+                temp.path(),
+                None,
+                &temp.path().join("vault"),
+                "wiki-island",
+            )
+            .unwrap()
+            .unwrap()
+            .apply()
+            .unwrap();
             let removed = std::fs::read_to_string(&path).unwrap();
             assert!(removed.contains("// retain header"));
             assert!(removed.contains("\"font\": [1, 2,], /* retain setting */"));
@@ -221,6 +232,7 @@ fn gemini_cli_settings_are_registered_in_addition_to_the_ide() {
             None,
             &std::env::temp_dir().join("wi-test-bin"),
             &temp.path().join("vault"),
+            "wiki-island",
         )
         .unwrap()
         .apply()
@@ -252,6 +264,7 @@ fn uninstall_after_binary_upgrade_preserves_intervening_user_settings() {
             None,
             &std::env::temp_dir().join("wi-test-old-bin"),
             &vault,
+            "wiki-island",
         )
         .unwrap()
         .apply()
@@ -266,11 +279,12 @@ fn uninstall_after_binary_upgrade_preserves_intervening_user_settings() {
             None,
             &std::env::temp_dir().join("wi-test-new-bin"),
             &vault,
+            "wiki-island",
         )
         .unwrap()
         .apply()
         .unwrap();
-        install::plan_remove(host, temp.path(), None, &vault)
+        install::plan_remove(host, temp.path(), None, &vault, "wiki-island")
             .unwrap()
             .unwrap()
             .apply()
@@ -301,6 +315,7 @@ fn codex_tables_allow_later_servers_and_convert_inline_settings() {
             None,
             &std::env::temp_dir().join("wi-test-bin"),
             &temp.path().join("vault"),
+            "wiki-island",
         )
         .unwrap();
         plan.apply().unwrap();

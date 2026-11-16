@@ -58,8 +58,28 @@ pub fn plan(
     codex_home: Option<&Path>,
     binary: &Path,
     vault: &Path,
+    entry: &str,
 ) -> Result<Plan, Error> {
-    plan_host(host.into(), home, codex_home, binary, vault)
+    plan_host(host.into(), home, codex_home, binary, vault, entry)
+}
+
+/// The absolute config destination of `host`, with a symlink resolved once so
+/// atomic replacement updates its target, not the link.
+pub fn config_location(
+    host: HostId,
+    home: &Path,
+    codex_home: Option<&Path>,
+) -> Result<PathBuf, Error> {
+    let path = host.config_path(home, codex_home);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    Ok(match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(&path)?,
+        _ => path,
+    })
 }
 
 pub fn plan_host(
@@ -68,18 +88,9 @@ pub fn plan_host(
     codex_home: Option<&Path>,
     binary: &Path,
     vault: &Path,
+    entry: &str,
 ) -> Result<Plan, Error> {
-    let path = host.config_path(home, codex_home);
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    // Resolve the link once so atomic replacement updates its target, not the link.
-    let path = match std::fs::symlink_metadata(&path) {
-        Ok(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(&path)?,
-        _ => path,
-    };
+    let path = config_location(host, home, codex_home)?;
     let before = read_file(&path)?;
     let permissions = before
         .as_ref()
@@ -107,14 +118,14 @@ pub fn plan_host(
         }
         if doc
             .get("mcp_servers")
-            .and_then(|i| i.get("wiki-island"))
+            .and_then(|i| i.get(entry))
             .is_some_and(|i| !i.is_table_like())
         {
-            return Err(Error::Config("wiki-island must be a table".into()));
+            return Err(Error::Config(format!("{entry} must be a table")));
         }
         if let Some(table) = doc
             .get_mut("mcp_servers")
-            .and_then(|i| i.get_mut("wiki-island"))
+            .and_then(|i| i.get_mut(entry))
             .and_then(|i| i.as_table_like_mut())
         {
             for key in [
@@ -127,7 +138,7 @@ pub fn plan_host(
             }
         }
         // Standard tables remain extensible when another server is appended later.
-        for keys in [&["mcp_servers"][..], &["mcp_servers", "wiki-island"][..]] {
+        for keys in [&["mcp_servers"][..], &["mcp_servers", entry][..]] {
             let item = if keys.len() == 1 {
                 &mut doc[keys[0]]
             } else {
@@ -142,8 +153,8 @@ pub fn plan_host(
         if let Some(table) = doc["mcp_servers"].as_table_mut() {
             table.set_implicit(true);
         }
-        doc["mcp_servers"]["wiki-island"]["command"] = toml_edit::value(command);
-        doc["mcp_servers"]["wiki-island"]["args"] = toml_edit::value(
+        doc["mcp_servers"][entry]["command"] = toml_edit::value(command);
+        doc["mcp_servers"][entry]["args"] = toml_edit::value(
             args.iter()
                 .map(|v| toml_edit::Value::from(v.as_str()))
                 .collect::<toml_edit::Array>(),
@@ -166,42 +177,42 @@ pub fn plan_host(
             .or_insert(json!({}))
             .as_object_mut()
             .ok_or_else(|| Error::Config(format!("{root_key} must be an object")))?;
-        let entry = servers
-            .entry("wiki-island")
+        let member = servers
+            .entry(entry)
             .or_insert(json!({}))
             .as_object_mut()
-            .ok_or_else(|| Error::Config("wiki-island must be an object".into()))?;
+            .ok_or_else(|| Error::Config(format!("{entry} must be an object")))?;
         for key in ["url", "httpUrl", "headers"] {
-            entry.remove(key);
+            member.remove(key);
         }
         if matches!(host, HostId::Claude | HostId::Vscode) {
-            entry.insert("type".into(), json!("stdio"));
+            member.insert("type".into(), json!("stdio"));
         }
         if host == HostId::Agy {
-            entry.insert("disabled".into(), json!(false));
+            member.insert("disabled".into(), json!(false));
         }
-        entry.insert("command".into(), json!(&command));
-        entry.insert("args".into(), json!(&args));
+        member.insert("command".into(), json!(&command));
+        member.insert("args".into(), json!(&args));
         if host == HostId::Zed {
-            entry.insert("command".into(), json!({"path": command, "args": args}));
-            entry.remove("args");
+            member.insert("command".into(), json!({"path": command, "args": args}));
+            member.remove("args");
         }
         if host == HostId::Opencode {
-            entry.insert("type".into(), json!("local"));
-            entry.insert("enabled".into(), json!(true));
-            entry.insert(
+            member.insert("type".into(), json!("local"));
+            member.insert("enabled".into(), json!(true));
+            member.insert(
                 "command".into(),
                 json!(std::iter::once(command).chain(args).collect::<Vec<_>>()),
             );
-            entry.remove("args");
+            member.remove("args");
         }
-        let replacement = doc[root_key]["wiki-island"].clone();
+        let replacement = doc[root_key][entry].clone();
         if text.is_empty() {
             let mut encoded =
                 serde_json::to_vec_pretty(&doc).map_err(|e| Error::Config(e.to_string()))?;
             encoded.push(b'\n');
             encoded
-        } else if let Some(edited) = replace_entry(text, &[root_key, "wiki-island"], &replacement) {
+        } else if let Some(edited) = replace_entry(text, &[root_key, entry], &replacement) {
             edited.into_bytes()
         } else {
             let warning =
@@ -224,7 +235,7 @@ pub fn plan_host(
                 )
             }) {
                 Some(restored) => Some(restored),
-                None => plan_remove(host, home, codex_home, vault)?
+                None => plan_remove(host, home, codex_home, vault, entry)?
                     .map(|plan| plan.after)
                     .or_else(|| before.clone()),
             }
@@ -483,17 +494,91 @@ pub fn plan_remove(
     home: &Path,
     codex_home: Option<&Path>,
     vault: &Path,
+    entry: &str,
 ) -> Result<Option<Plan>, Error> {
     let path = host.config_path(home, codex_home);
     let path = match std::fs::symlink_metadata(&path) {
         Ok(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(&path)?,
         _ => std::path::absolute(path)?,
     };
-    plan_remove_at(host, &path, vault)
+    plan_remove_at(host, &path, vault, entry)
+}
+
+/// The arguments of a JSON host entry, read from the shape `plan_host` writes.
+fn json_entry_args(host: HostId, entry: &Value) -> Option<Value> {
+    match host {
+        HostId::Zed => entry.pointer("/command/args").cloned(),
+        HostId::Opencode => entry["command"]
+            .as_array()
+            .map(|v| json!(v.iter().skip(1).collect::<Vec<_>>())),
+        _ => entry.get("args").cloned(),
+    }
+}
+
+/// The arguments of a Codex TOML entry as a JSON array of strings.
+fn toml_entry_args(entry: &toml_edit::Item) -> Option<Value> {
+    entry
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|values| json!(values.iter().map(|v| v.as_str()).collect::<Vec<_>>()))
+}
+
+/// The vault an entry serves: the value after `--vault` in `["mcp", "--vault", <root>]`.
+fn served_vault(args: Option<Value>) -> Option<PathBuf> {
+    match args?.as_array()?.as_slice() {
+        [mcp, flag, root] if mcp == "mcp" && flag == "--vault" => root.as_str().map(PathBuf::from),
+        _ => None,
+    }
+}
+
+/// The wiki-island entries in one host config: each entry name with the vault
+/// it serves, or `None` when its shape is not one `plan_host` writes. A missing
+/// or unreadable config has no entries; setup preflight reports a broken one.
+pub fn entries(host: HostId, path: &Path) -> Vec<(String, Option<PathBuf>)> {
+    let Ok(Some(bytes)) = read_file(path) else {
+        return Vec::new();
+    };
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return Vec::new();
+    };
+    let ours = |name: &str| crate::naming::is_entry_name(name);
+    match host.spec().format {
+        Format::Toml => {
+            let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {
+                return Vec::new();
+            };
+            let Some(servers) = doc.get("mcp_servers").and_then(|v| v.as_table_like()) else {
+                return Vec::new();
+            };
+            servers
+                .iter()
+                .filter(|(name, _)| ours(name))
+                .map(|(name, item)| (name.to_owned(), served_vault(toml_entry_args(item))))
+                .collect()
+        }
+        Format::Json(key) => {
+            let Ok(doc) = parse_json_config(text) else {
+                return Vec::new();
+            };
+            let Some(servers) = doc.get(key).and_then(Value::as_object) else {
+                return Vec::new();
+            };
+            servers
+                .iter()
+                .filter(|(name, _)| ours(name))
+                .map(|(name, entry)| (name.clone(), served_vault(json_entry_args(host, entry))))
+                .collect()
+        }
+    }
 }
 
 /// Remove a registration only from the absolute destination recorded at setup.
-pub fn plan_remove_at(host: HostId, path: &Path, vault: &Path) -> Result<Option<Plan>, Error> {
+pub fn plan_remove_at(
+    host: HostId,
+    path: &Path,
+    vault: &Path,
+    entry_name: &str,
+) -> Result<Option<Plan>, Error> {
     if !path.is_absolute() {
         return Err(Error::Config("recorded host path must be absolute".into()));
     }
@@ -509,37 +594,24 @@ pub fn plan_remove_at(host: HostId, path: &Path, vault: &Path) -> Result<Option<
             let mut doc = text
                 .parse::<toml_edit::DocumentMut>()
                 .map_err(|e| Error::Config(e.to_string()))?;
-            let entry = doc.get("mcp_servers").and_then(|v| v.get("wiki-island"));
-            let owned = entry
-                .and_then(|v| v.get("args"))
-                .and_then(|v| v.as_array())
-                .map(|values| json!(values.iter().map(|v| v.as_str()).collect::<Vec<_>>()))
-                == Some(args);
-            if !owned {
+            let entry = doc.get("mcp_servers").and_then(|v| v.get(entry_name));
+            if entry.and_then(toml_entry_args) != Some(args) {
                 return Ok(None);
             }
             if let Some(table) = doc
                 .get_mut("mcp_servers")
                 .and_then(|v| v.as_table_like_mut())
             {
-                table.remove("wiki-island");
+                table.remove(entry_name);
             }
             doc.to_string().into_bytes()
         }
         Format::Json(key) => {
             let doc: Value = parse_json_config(text)?;
-            let entry = &doc[key]["wiki-island"];
-            let entry_args = match host {
-                HostId::Zed => entry.pointer("/command/args").cloned(),
-                HostId::Opencode => entry["command"]
-                    .as_array()
-                    .map(|v| json!(v.iter().skip(1).collect::<Vec<_>>())),
-                _ => entry.get("args").cloned(),
-            };
-            if entry_args != Some(args) {
+            if json_entry_args(host, &doc[key][entry_name]) != Some(args) {
                 return Ok(None);
             }
-            remove_entry(text, &[key, "wiki-island"])
+            remove_entry(text, &[key, entry_name])
                 .ok_or_else(|| {
                     Error::Config(
                         "cannot safely remove the registration from this JSON file".into(),

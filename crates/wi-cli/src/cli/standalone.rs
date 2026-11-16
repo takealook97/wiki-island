@@ -70,6 +70,7 @@ pub(crate) fn run_standalone(
                 codex_home.as_deref(),
                 &setup_cmd::executable()?,
                 &vault,
+                wi_export::naming::DEFAULT_ENTRY,
             )?;
             // Keep the MCP stream silent; install is a separate CLI subcommand.
             if yes && !json {
