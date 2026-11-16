@@ -426,3 +426,56 @@ fn named_vault_session_start_stays_within_budget() {
         "session start uses {start} bytes: {sizes:?}"
     );
 }
+
+#[test]
+fn doctor_shows_the_vault_name_and_entry() {
+    let f = Fixture::new();
+    f.setup("personal", None);
+    f.setup("work", Some("work"));
+    let doctor = |vault: &str| {
+        let root = f.path(vault);
+        let out = f.ok(&["doctor", "--vault", root.to_str().unwrap()]);
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let personal = doctor("personal");
+    assert!(
+        personal.contains("[ok] apps: This is the default vault; AI apps reach it as wiki-island."),
+        "{personal}"
+    );
+    let work = doctor("work");
+    assert!(
+        work.contains(
+            "[ok] apps: This vault is named \"work\"; AI apps reach it as wiki-island-work."
+        ),
+        "{work}"
+    );
+    // An app whose config lost this vault's entry is listed with the next step.
+    let claude = f.config(HostId::Claude);
+    let mut config: Value = serde_json::from_slice(&fs::read(&claude).unwrap()).unwrap();
+    config["mcpServers"]
+        .as_object_mut()
+        .unwrap()
+        .remove("wiki-island-work");
+    fs::write(&claude, serde_json::to_vec(&config).unwrap()).unwrap();
+    let work = doctor("work");
+    assert!(
+        work.contains("[warn] apps: This vault is named \"work\"; AI apps reach it as wiki-island-work. These apps no longer have it: Claude Code."),
+        "{work}"
+    );
+    assert!(work.contains("Next: run wi setup --vault"), "{work}");
+    let out = f.ok(&[
+        "doctor",
+        "--json",
+        "--vault",
+        f.path("work").to_str().unwrap(),
+    ]);
+    let json: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let check = json["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "apps")
+        .unwrap()
+        .clone();
+    assert_eq!(check["status"], "warn");
+}
