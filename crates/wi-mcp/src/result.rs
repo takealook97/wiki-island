@@ -207,6 +207,7 @@ pub fn bounded(mut value: Value, error: bool) -> CallToolResult {
                 Some("context-root-missing") => "context-root-missing",
                 Some("context-root-ambiguous") => "context-root-ambiguous",
                 Some("graph-truncated") => "graph-truncated",
+                Some("no-hits") => "no-hits",
                 _ => "engine-diagnostic",
             };
             *codes.entry(code.into()).or_default() += 1;

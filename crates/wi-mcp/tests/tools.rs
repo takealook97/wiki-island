@@ -1724,3 +1724,17 @@ fn edit_refused_names_reason() {
     assert!(message.contains("found 0 time(s)"), "{message}");
     assert!(message.contains("expected 1"), "{message}");
 }
+
+#[test]
+fn search_no_hits_reports_retry_code() {
+    let (_t, e) = fixture(Arc::new(Unavailable));
+    engine_write(&e, "notes/zebra.md", "# Zebra\n\nzebrafish handover\n");
+    let codes = |v: &Value| -> Vec<Value> { v["diagnostics"].as_array().unwrap().to_vec() };
+    let miss = good(&e, "wi_search", json!({"query":"quokkaword"}));
+    assert!(
+        codes(&miss).contains(&json!({"code":"no-hits","count":1})),
+        "{miss}"
+    );
+    let hit = good(&e, "wi_search", json!({"query":"zebrafish"}));
+    assert!(!codes(&hit).iter().any(|d| d["code"] == "no-hits"), "{hit}");
+}
