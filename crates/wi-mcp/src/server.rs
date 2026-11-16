@@ -52,9 +52,9 @@ const INSTRUCTIONS: &str = "Save what you learn as a plain note; it is searchabl
 fn instructions(name: Option<&str>) -> String {
     match name {
         None => INSTRUCTIONS.to_owned(),
-        Some(name) => format!(
-            "{INSTRUCTIONS} This vault is named \"{name}\". Use it only for that subject."
-        ),
+        Some(name) => {
+            format!("{INSTRUCTIONS} This vault is named \"{name}\". Use it only for that subject.")
+        }
     }
 }
 /// Owns only threads started by this server. Shutdown flushes acknowledged
@@ -259,7 +259,7 @@ impl Server {
 }
 fn brief_listing() -> Value {
     json!({"uri":BRIEF_URI,"name":"brief","mimeType":"application/json",
-        "description":"Pinned notes, current rules and preferences as summaries; at most 2 KiB. Read once at session start."})
+        "description":"Pinned notes, current rules and preferences as summaries."})
 }
 fn brief_resource(vault: &Vault) -> wi_store::Result<Value> {
     let text = crate::brief(vault)?.to_string();

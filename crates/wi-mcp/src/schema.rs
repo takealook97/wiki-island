@@ -142,7 +142,7 @@ pub fn tools() -> Vec<Tool> {
         ),
         tool(
             "wi_search",
-            "Search local text, titles, permalinks or metadata; at most eight hits. If nothing relevant comes back, retry with other words or in the other language (Korean or English).",
+            "Search local text, titles, permalinks or metadata; at most eight hits. If nothing relevant comes back, retry with other words or the other language (Korean or English).",
             &[],
             &[
                 ("query", json!({"type":"string"})),

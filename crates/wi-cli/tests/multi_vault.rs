@@ -384,47 +384,34 @@ fn named_vault_instructions_name_the_vault() {
     assert_eq!(named[0].0["serverInfo"]["name"], "wiki-island");
 }
 
-#[test]
-fn named_vault_session_start_stays_within_budget() {
-    // The vault of the session-start budget test in `tests/mcp.rs`, with a 32-character name.
-    let f = Fixture::new();
-    let root = f.path("vault");
-    f.ok(&["init", root.to_str().unwrap()]);
+/// Session-start bytes of a vault as `wi setup` leaves it, with the two notes of the
+/// budget test in `tests/mcp.rs`.
+fn session_start_after_setup(f: &Fixture, vault: &str, name: Option<&str>) -> usize {
+    f.setup(vault, name);
+    let root = f.path(vault);
     for (path, text) in [
         ("coffee.md", "# Coffee\nCoffee is served warm.\n"),
         ("tea.md", "# Tea\nTea is served warm.\n"),
     ] {
         fs::write(root.join(path), text).unwrap();
     }
-    let root = fs::canonicalize(&root).unwrap();
-    let naming = wi_export::local::Naming {
-        name: Some("a".repeat(32)),
-        entry: format!("wiki-island-{}", "a".repeat(32)),
-    };
-    wi_export::local::Targets {
-        home: f.path("home"),
-        hosts: vec![],
-        skill_dirs: vec![],
-        cache_root: f.path("cache"),
-    }
-    .save_named(&root, &naming)
-    .unwrap();
-    let replies = session_start(&f, "vault");
-    assert!(
-        replies[0].0["instructions"]
-            .as_str()
-            .unwrap()
-            .ends_with(NAMED_SENTENCE)
-    );
-    let sizes: Vec<_> = replies.iter().map(|(_, size)| *size).collect();
-    let start: usize = sizes.iter().sum();
-    eprintln!(
-        "Named session wire bytes initialize/tools/resources/brief: {sizes:?}; total {start}"
-    );
-    assert!(
-        start < 8 * 1024,
-        "session start uses {start} bytes: {sizes:?}"
-    );
+    let sizes: Vec<_> = session_start(f, vault)
+        .iter()
+        .map(|(_, size)| *size)
+        .collect();
+    eprintln!("After-setup session start {vault}: {sizes:?}");
+    sizes.iter().sum()
+}
+
+#[test]
+fn session_start_after_setup_stays_within_budget() {
+    let f = Fixture::new();
+    let unnamed = session_start_after_setup(&f, "plain", None);
+    assert!(unnamed <= 8192, "session start uses {unnamed} bytes");
+    let name = "a".repeat(32);
+    let named = session_start_after_setup(&f, "work", Some(&name));
+    // ` This vault is named "<name>". Use it only for that subject.`: 54 bytes plus the name.
+    assert_eq!(named, unnamed + 54 + name.len());
 }
 
 #[test]
