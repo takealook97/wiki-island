@@ -15,6 +15,7 @@ mod publish_cmd;
 mod service_cmd;
 mod session;
 mod setup_cmd;
+mod setup_name;
 #[path = "cli/standalone.rs"]
 mod standalone;
 mod sync_cmd;

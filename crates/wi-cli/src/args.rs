@@ -114,6 +114,10 @@ pub(crate) enum Command {
         /// Connect a private remote repository using the authenticated GitHub CLI.
         #[arg(long)]
         github: bool,
+        /// Name this vault so it gets its own entry in every AI app beside
+        /// other vaults: 1 to 32 letters, digits, hyphens or underscores.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Synchronize notes with your configured git remote.
     Sync {

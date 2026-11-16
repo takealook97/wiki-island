@@ -10,7 +10,7 @@ use wi_store::{Vault, WatchEvent};
 use super::Output;
 use super::args::{Command, McpCommand, NoteCommand};
 use super::session::{ingest_warnings, open, print_ingest_warnings, vault_root};
-use super::{publish_cmd, service_cmd, setup_cmd, sync_cmd};
+use super::{publish_cmd, service_cmd, setup_cmd, setup_name, sync_cmd};
 
 /// Refresh the host skill copies of this vault's procedures. Problems are warnings: notes and
 /// maintenance are unaffected, and the next pass tries again.
@@ -34,7 +34,12 @@ pub(crate) fn run_standalone(
             let home = setup_cmd::home()?;
             let root = setup_cmd::root(&root, &home);
             let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
-            if let Command::Setup { primary, github } = command {
+            if let Command::Setup {
+                primary,
+                github,
+                name,
+            } = command
+            {
                 let mut output = setup_cmd::setup(
                     &root,
                     &home,
@@ -42,6 +47,7 @@ pub(crate) fn run_standalone(
                     codex_home.as_deref(),
                     wi_export::service::default_runner(),
                     primary,
+                    name.as_deref(),
                 )?;
                 if github {
                     let message = sync_cmd::github(&root)?;
@@ -64,13 +70,14 @@ pub(crate) fn run_standalone(
             let home = setup_cmd::integration_home()?;
             let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
             let vault = std::fs::canonicalize(vault_root(&root))?;
+            let naming = setup_name::for_host(&vault, host.into(), &home, codex_home.as_deref())?;
             let plan = wi_export::install::plan_host(
                 host.into(),
                 &home,
                 codex_home.as_deref(),
                 &setup_cmd::executable()?,
                 &vault,
-                wi_export::naming::DEFAULT_ENTRY,
+                &naming.entry,
             )?;
             // Keep the MCP stream silent; install is a separate CLI subcommand.
             if yes && !json {
@@ -79,6 +86,7 @@ pub(crate) fn run_standalone(
             let backup = if yes {
                 let backup = plan.apply()?;
                 let (vault, _) = Vault::init(&vault)?;
+                setup_name::remember(vault.root(), &naming)?;
                 let targets: Vec<_> = wi_export::skills::SkillTarget::for_host(host.into())
                     .into_iter()
                     .collect();

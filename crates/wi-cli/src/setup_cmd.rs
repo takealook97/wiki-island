@@ -6,6 +6,22 @@ use std::path::{Path, PathBuf};
 use wi_export::{hosts, install, service, skills};
 use wi_store::Vault;
 
+use super::setup_name;
+
+/// What the owner chose on the command line.
+#[derive(Default)]
+pub(crate) struct Choices<'a> {
+    pub(crate) primary: bool,
+    pub(crate) name: Option<&'a str>,
+}
+
+/// Checked host plans, their config destinations and the entry name they use.
+type Preflight = (
+    Vec<install::Plan>,
+    Vec<(hosts::HostId, PathBuf)>,
+    wi_export::naming::Resolution,
+);
+
 /// Preserve the invocation path of a package-manager symlink in a stable bin folder.
 pub(crate) fn executable() -> Result<PathBuf> {
     if let Some(arg) = std::env::args_os().next() {
@@ -141,7 +157,9 @@ pub(crate) fn setup(
     codex_home: Option<&Path>,
     runner: &service::Runner,
     primary: bool,
+    name: Option<&str>,
 ) -> Result<Output> {
+    setup_name::check(name)?;
     setup_with_options(
         root,
         home,
@@ -149,7 +167,7 @@ pub(crate) fn setup(
         codex_home,
         runner,
         wi_store::OpenOptions::default(),
-        primary,
+        Choices { primary, name },
     ).map_err(|_| anyhow::anyhow!("Setup could not finish; check that wiki-island is installed in its permanent location and your AI app settings are readable and writable, then run wi setup again."))
 }
 fn setup_with_options(
@@ -159,8 +177,9 @@ fn setup_with_options(
     codex_home: Option<&Path>,
     runner: &service::Runner,
     options: wi_store::OpenOptions,
-    primary: bool,
+    choices: Choices<'_>,
 ) -> Result<Output> {
+    let Choices { primary, name } = choices;
     let home = std::path::absolute(home)?;
     let home = home.as_path();
     let absolute = std::path::absolute(root)?;
@@ -189,40 +208,30 @@ fn setup_with_options(
     }
     // Without a usable service manager the service is skipped, not an error.
     let background_ready = super::service_cmd::ready(runner);
+    let previous = wi_export::local::Targets::load(&root).ok().flatten();
     // Validate every host and service destination before creating the vault or editing a host.
-    let preflight = || -> Result<Vec<install::Plan>> {
+    let preflight = || -> Result<Preflight> {
         if !binary.is_file() {
             anyhow::bail!("The installed program could not be found.");
         }
+        let existing_id = std::fs::read_to_string(root.join(".wiki-island/config.toml"))
+            .ok()
+            .map(|text| wi_note::VaultConfig::parse(&text))
+            .transpose()?;
+        let id = existing_id
+            .as_ref()
+            .and_then(|config| config.vault_id())
+            .unwrap_or("preflight");
         if background_ready {
-            let existing_id = std::fs::read_to_string(root.join(".wiki-island/config.toml"))
-                .ok()
-                .map(|text| wi_note::VaultConfig::parse(&text))
-                .transpose()?;
-            let id = existing_id
-                .as_ref()
-                .and_then(|config| config.vault_id())
-                .unwrap_or("preflight");
             service::plan(home, binary, &root, id)?;
         }
-        let plans = detected
-            .iter()
-            .map(|host| {
-                let plan = install::plan_host(
-                    *host,
-                    home,
-                    codex_home,
-                    binary,
-                    &root,
-                    wi_export::naming::DEFAULT_ENTRY,
-                )?;
-                plan.preflight()?;
-                Ok(plan)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(plans)
+        let locations = setup_name::locations(&detected, home, codex_home)?;
+        let resolution = setup_name::resolve(&root, name, &locations, id);
+        let entry = &resolution.naming.entry;
+        let plans = setup_name::plans(&detected, home, codex_home, binary, &root, entry)?;
+        Ok((plans, locations, resolution))
     };
-    let plans = preflight().map_err(|_| anyhow::anyhow!(
+    let (plans, locations, provisional) = preflight().map_err(|_| anyhow::anyhow!(
         "Setup could not start; install the program in its permanent location and check that your AI app settings are readable and writable."
     ))?;
     // Inside a file-synced folder the vault starts in folder mode (history
@@ -231,6 +240,8 @@ fn setup_with_options(
     if primary {
         vault.set_primary_device()?;
     }
+    // The vault id is known now; it names a vault whose folder gives no automatic name.
+    let resolution = setup_name::resolve(&root, name, &locations, vault.vault_id());
     let storage = match vault.storage_mode() {
         wi_store::StorageMode::Git => "",
         wi_store::StorageMode::Folder if vault.is_primary_device() => {
@@ -257,7 +268,7 @@ fn setup_with_options(
             std::fs::canonicalize(&cache).or_else(|_| std::path::absolute(cache))?
         },
     }
-    .save(&root)?;
+    .save_named(&root, &resolution.naming)?;
     let background_plan = if background_ready {
         Some(service::plan(home, binary, &root, vault.vault_id())?)
     } else {
@@ -284,6 +295,16 @@ fn setup_with_options(
     } else {
         "Your notes are ready; background care is available on macOS."
     };
+    let plans = if resolution == provisional && resolution.retire.is_none() {
+        plans
+    } else {
+        // Retire the old entry first, so the new entry is planned on the config without it.
+        if let (Some(previous), Some(old)) = (&previous, &resolution.retire) {
+            setup_name::retire(&root, &previous.hosts, old)?;
+        }
+        let entry = &resolution.naming.entry;
+        setup_name::plans(&detected, home, codex_home, binary, &root, entry)?
+    };
     let mut targets = Vec::new();
     for (host, plan) in detected.iter().zip(plans) {
         plan.apply()?;
@@ -307,11 +328,11 @@ fn setup_with_options(
     };
     Ok(Output {
         human: format!(
-            "Your notes are ready at {}.\n{storage}Connected {} AI app(s). {skill_message}\n{background}",
+            "Your notes are ready at {}.\n{storage}{} {skill_message}\n{background}",
             root.display(),
-            detected.len()
+            setup_name::connected(detected.len(), &resolution.naming.entry)
         ),
-        json: json!({"vault":root,"storage":vault.storage_mode(),"primary":vault.is_primary_device(),"hosts":detected,"skills":synced,"background":background_on}),
+        json: json!({"vault":root,"storage":vault.storage_mode(),"primary":vault.is_primary_device(),"hosts":detected,"skills":synced,"background":background_on,"name":resolution.naming.name,"entry":resolution.naming.entry}),
     })
 }
 pub(crate) fn uninstall(
@@ -348,11 +369,10 @@ pub(crate) fn uninstall(
     // Other targets have no service to remove.
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let _ = runner;
+    let entry = setup_name::recorded(&root).unwrap_or_default().entry;
     let mut removed = 0;
     for (host, path) in &state.hosts {
-        if let Some(plan) =
-            install::plan_remove_at(*host, path, &root, wi_export::naming::DEFAULT_ENTRY)?
-        {
+        if let Some(plan) = install::plan_remove_at(*host, path, &root, &entry)? {
             plan.apply()?;
             removed += 1;
         }
@@ -503,7 +523,16 @@ mod tests {
         let options = || wi_store::OpenOptions {
             index_path: Some(temp.path().join("cache.sqlite3")),
         };
-        let out = setup_with_options(&root, &home, &binary, None, &fake, options(), false).unwrap();
+        let out = setup_with_options(
+            &root,
+            &home,
+            &binary,
+            None,
+            &fake,
+            options(),
+            Choices::default(),
+        )
+        .unwrap();
         assert_eq!(out.human.lines().count(), 3);
         // Skills land only under the given home, one owned copy per target.
         let owned = |dir: &str| {
@@ -531,7 +560,16 @@ mod tests {
             .iter()
             .map(|h| std::fs::read(home.join(h.config_path)).unwrap())
             .collect::<Vec<_>>();
-        setup_with_options(&root, &home, &binary, None, &fake, options(), false).unwrap();
+        setup_with_options(
+            &root,
+            &home,
+            &binary,
+            None,
+            &fake,
+            options(),
+            Choices::default(),
+        )
+        .unwrap();
         assert_eq!(Vault::open_with(&root, options()).unwrap().vault_id(), id);
         assert_eq!(
             std::fs::read_to_string(&note).unwrap(),

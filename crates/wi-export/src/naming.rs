@@ -30,7 +30,8 @@ pub fn entry_for(name: &str) -> String {
 
 /// An automatic name from the folder name: ASCII letters, digits, `_` and `-`,
 /// lower-cased; other characters are dropped. When that is empty or equals the
-/// default entry name, the first 8 characters of the vault id.
+/// default entry name, the first 8 characters of the vault id (`vault` when
+/// the id is not known yet).
 pub fn auto_name(folder: &str, vault_id: &str) -> String {
     let keep = |c: &char| c.is_ascii_alphanumeric() || *c == '_' || *c == '-';
     let name: String = folder
@@ -40,7 +41,8 @@ pub fn auto_name(folder: &str, vault_id: &str) -> String {
         .take(MAX_NAME)
         .collect();
     if name.is_empty() || name == DEFAULT_ENTRY {
-        vault_id.chars().filter(keep).take(8).collect()
+        let id: String = vault_id.chars().filter(keep).take(8).collect();
+        if id.is_empty() { "vault".into() } else { id }
     } else {
         name
     }
