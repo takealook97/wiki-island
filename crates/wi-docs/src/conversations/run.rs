@@ -62,6 +62,27 @@ fn parse_element(kind: Kind, value: Value) -> Option<super::Conversation> {
     }
 }
 
+fn redact(text: &mut String, replaced: &mut usize) {
+    let (clean, count) = wi_lifecycle::redact_secrets(text);
+    if count > 0 {
+        *text = clean;
+        *replaced += count;
+    }
+}
+
+/// Replace secret-like strings in titles, messages and attachment names.
+fn redact_conversation(conv: &mut super::Conversation) -> usize {
+    let mut replaced = 0;
+    redact(&mut conv.title, &mut replaced);
+    for message in &mut conv.messages {
+        redact(&mut message.text, &mut replaced);
+        for name in &mut message.attachments {
+            redact(name, &mut replaced);
+        }
+    }
+    replaced
+}
+
 fn conversation_draft(kind: Kind, conv: super::Conversation) -> (String, String, Draft) {
     let stem = render::conversation_stem(&conv);
     let messages = conv.messages.clone();
@@ -76,7 +97,7 @@ fn conversation_draft(kind: Kind, conv: super::Conversation) -> (String, String,
 fn import_conversations(src: &Source, kind: Kind, applier: &mut Applier<'_>) -> Result<()> {
     for (name, bytes) in &src.conversations {
         source::for_each(name, bytes, |value| {
-            let Some(conv) = parse_element(kind, value) else {
+            let Some(mut conv) = parse_element(kind, value) else {
                 applier.counts.skipped += 1;
                 return Ok(true);
             };
@@ -84,6 +105,7 @@ fn import_conversations(src: &Source, kind: Kind, applier: &mut Applier<'_>) -> 
                 applier.counts.skipped += 1;
                 return Ok(true);
             }
+            applier.counts.redacted += redact_conversation(&mut conv);
             let (id, stem, draft) = conversation_draft(kind, conv);
             applier.apply(&id, kind.folder(), &stem, &draft)?;
             Ok(true)
@@ -98,7 +120,8 @@ fn import_projects(bytes: &[u8], applier: &mut Applier<'_>) -> Result<()> {
             applier.counts.skipped += 1;
             return Ok(true);
         };
-        for doc in docs {
+        for mut doc in docs {
+            redact(&mut doc.content, &mut applier.counts.redacted);
             if doc.content.trim().is_empty() {
                 applier.counts.skipped += 1;
                 continue;

@@ -35,7 +35,7 @@ pub use budget::{
     ActiveCounts, BudgetDecision, BudgetExhausted, BudgetLedger, BudgetScope, LossEvent, LossKind,
     LossRequest, budget_check, entity_cap,
 };
-pub use capture::{FilterOutcome, FilterReason, capture_filter};
+pub use capture::{FilterOutcome, FilterReason, REDACTED, capture_filter, redact_secrets};
 pub use complete::{
     DEFAULT_USER_SCOPE, complete_agent_defaults, complete_user_defaults, summary_from_body,
 };

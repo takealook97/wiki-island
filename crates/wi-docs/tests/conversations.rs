@@ -379,3 +379,49 @@ fn an_empty_export_succeeds_with_nothing_created() {
     assert_eq!(counts(&report), (0, 0, 0, 0, 0));
     assert!(report.unchanged);
 }
+
+#[test]
+fn conversation_import_redacts_secrets() {
+    let (_tmp, vault) = setup();
+    let token = format!("{}{}", "ghp_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8");
+    let aws = format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP");
+    let conversations = json!([{
+    "uuid": "s-1", "name": format!("Deploy with {aws}"), "created_at": "2025-05-01T00:00:00Z",
+    "chat_messages": [
+        {"sender": "human", "text": format!("My token is {token}, please check it.")},
+        {"sender": "assistant", "text": "Do not share it.\npassword: hunter2hunter2\nUse <token> instead."}
+    ]}]);
+    let projects = json!([{"uuid": "p", "name": "Ops", "docs": [
+        {"uuid": "d", "filename": "env.txt", "content": format!("AWS {aws}")}]}]);
+    put(
+        &vault,
+        "s.zip",
+        zip(&[
+            ("conversations.json", &bytes(&conversations)),
+            ("projects.json", &bytes(&projects)),
+        ]),
+    );
+    let report = run(&vault, "s.zip");
+    assert_eq!(report.conversations.as_ref().unwrap().redacted, 4);
+    let note = read(&vault, "AI/Claude/2025-05-01 Deploy with redacted.md");
+    assert_eq!(field(&note, "title"), "Deploy with [redacted]");
+    assert_eq!(
+        note.body(),
+        "## User\n\nMy token is [redacted], please check it.\n\n## Assistant\n\nDo not share it.\npassword: [redacted]\nUse <token> instead.\n"
+    );
+    let doc = read(&vault, "AI/Claude/Projects/Ops/env.txt.md");
+    assert_eq!(doc.body(), "AWS [redacted]\n");
+    for path in [
+        "AI/Claude/2025-05-01 Deploy with redacted.md",
+        "AI/Claude/Projects/Ops/env.txt.md",
+    ] {
+        let raw = String::from_utf8(vault.read(path).unwrap().bytes).unwrap();
+        assert!(
+            !raw.contains(&token) && !raw.contains(&aws) && !raw.contains("hunter2"),
+            "{path}"
+        );
+    }
+    // A second import redacts the same text again and writes nothing.
+    let again = run(&vault, "s.zip");
+    assert!(again.unchanged);
+}

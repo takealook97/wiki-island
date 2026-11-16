@@ -11,6 +11,7 @@ wi-note = { path = "../wi-note" }
 wi-store = { path = "../wi-store" }
 wi-index = { path = "../wi-index" }
 wi-history = { path = "../wi-history" }
+wi-lifecycle = { path = "../wi-lifecycle" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

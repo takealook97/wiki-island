@@ -4651,6 +4651,7 @@ dependencies = [
  "uuid",
  "wi-history",
  "wi-index",
+ "wi-lifecycle",
  "wi-note",
  "wi-store",
  "wi-sys",

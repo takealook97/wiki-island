@@ -107,6 +107,54 @@ fn one_offs() -> &'static [(&'static str, Regex)] {
     CELL.get_or_init(|| compiled(ONE_OFF_PATTERNS))
 }
 
+/// A whole private key block (or the rest of the text when it is cut off).
+fn private_key_block() -> &'static Regex {
+    static CELL: OnceLock<Regex> = OnceLock::new();
+    CELL.get_or_init(|| {
+        Regex::new(
+            r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)",
+        )
+        .expect("static private key pattern")
+    })
+}
+
+/// Replacement text for redacted secrets.
+pub const REDACTED: &str = "[redacted]";
+
+/// Replace every secret the capture filter would drop with `[redacted]` and
+/// return the new text with the number of replacements. A pattern with a
+/// capture group replaces the captured value only, and placeholders such as
+/// `<token>` or `[redacted]` stay as they are, so the result is stable.
+pub fn redact_secrets(text: &str) -> (String, usize) {
+    let mut count = 0;
+    let block = private_key_block();
+    let mut out = if block.is_match(text) {
+        count += block.find_iter(text).count();
+        block.replace_all(text, REDACTED).into_owned()
+    } else {
+        text.to_owned()
+    };
+    for (_, re) in secrets() {
+        let mut next = String::with_capacity(out.len());
+        let mut last = 0;
+        for caps in re.captures_iter(&out) {
+            let target = if re.captures_len() < 2 {
+                caps.get(0)
+            } else {
+                caps.get(1).filter(|v| !is_placeholder(v.as_str()))
+            };
+            let Some(found) = target else { continue };
+            next.push_str(&out[last..found.start()]);
+            next.push_str(REDACTED);
+            last = found.end();
+            count += 1;
+        }
+        next.push_str(&out[last..]);
+        out = next;
+    }
+    (out, count)
+}
+
 /// Filter capture or proposal text. `existing_body_hashes` are the body
 /// hashes of existing notes (trimmed body, as in `NoteSnapshot::body_hash`).
 pub fn capture_filter(text: &str, existing_body_hashes: &BTreeSet<String>) -> FilterOutcome {
@@ -200,6 +248,32 @@ mod tests {
         ] {
             assert_eq!(capture_filter(text, &none), FilterOutcome::Accept, "{text}");
         }
+    }
+
+    #[test]
+    fn redaction_replaces_secrets_and_keeps_context_and_placeholders() {
+        let fake_aws = format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP");
+        let text = format!("key {fake_aws} and password: hunter2 and token: <token> done");
+        let (out, n) = redact_secrets(&text);
+        assert_eq!(
+            out,
+            "key [redacted] and password: [redacted] and token: <token> done"
+        );
+        assert_eq!(n, 2);
+        let (again, n) = redact_secrets(&out);
+        assert_eq!((again.as_str(), n), (out.as_str(), 0));
+        let (out, n) = redact_secrets("postgres://admin:pw123@db.internal/app");
+        assert_eq!((out.as_str(), n), ("[redacted]db.internal/app", 1));
+        let (out, n) = redact_secrets(
+            "before\n-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----\nafter",
+        );
+        assert_eq!((out.as_str(), n), ("before\n[redacted]\nafter", 1));
+        let (out, n) = redact_secrets("-----BEGIN PRIVATE KEY-----\ncut off");
+        assert_eq!((out.as_str(), n), ("[redacted]", 1));
+        assert_eq!(
+            redact_secrets("결제 후 7일 안에 환불"),
+            ("결제 후 7일 안에 환불".to_string(), 0)
+        );
     }
 
     #[test]
