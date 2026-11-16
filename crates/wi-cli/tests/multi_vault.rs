@@ -771,3 +771,68 @@ fn mcp_install_with_a_damaged_record_changes_nothing() {
     );
     assert_eq!(snapshot(&files), before);
 }
+
+/// Add an entry named `name`, outside the naming rule, that serves `vault`.
+fn add_foreign_entry(f: &Fixture, host: HostId, name: &str, vault: &Path) {
+    let path = f.config(host);
+    let text = fs::read_to_string(&path).unwrap();
+    let binary = f.path("bin/wi");
+    let edited = if host == HostId::Codex {
+        format!(
+            "{text}\n[mcp_servers.{name}]\ncommand = \"{}\"\nargs = [\"mcp\", \"--vault\", \"{}\"]\n",
+            binary.display(),
+            vault.display()
+        )
+    } else {
+        let mut value: Value = serde_json::from_str(&text).unwrap();
+        value["mcpServers"][name] = serde_json::json!({
+            "command": binary,
+            "args": ["mcp", "--vault", vault],
+        });
+        serde_json::to_string_pretty(&value).unwrap()
+    };
+    fs::write(&path, edited).unwrap();
+}
+
+#[test]
+fn recorded_entry_outside_the_naming_rule_is_resolved_again() {
+    for host in [HostId::Claude, HostId::Codex] {
+        let f = Fixture::new();
+        f.setup("first", None);
+        f.setup("second", Some("second"));
+        let (first, second) = (f.canonical("first"), f.canonical("second"));
+        add_foreign_entry(&f, host, "owner-entry", &second);
+        let record = f.path("first").join(".wiki-island/local/targets.json");
+        let mut value: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        value["entry"] = "owner-entry".into();
+        fs::write(&record, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+        let owner = entry_text(host, &fs::read(f.config(host)).unwrap(), "owner-entry");
+        let host_name = serde_json::to_value(host).unwrap();
+        f.ok(&[
+            "mcp",
+            "install",
+            "--host",
+            host_name.as_str().unwrap(),
+            "--yes",
+            "--vault",
+            f.path("first").to_str().unwrap(),
+        ]);
+        let after = fs::read(f.config(host)).unwrap();
+        assert_eq!(entry_text(host, &after, "owner-entry"), owner, "{host:?}");
+        let mine: Vec<_> = f
+            .entries(host)
+            .into_iter()
+            .filter(|(_, vault)| vault.as_deref() == Some(first.as_path()))
+            .collect();
+        assert_eq!(mine, vec![entry("wiki-island", first.clone())], "{host:?}");
+        f.uninstall("first");
+        let after = fs::read(f.config(host)).unwrap();
+        assert_eq!(entry_text(host, &after, "owner-entry"), owner, "{host:?}");
+        assert!(
+            f.entries(host)
+                .iter()
+                .all(|(_, vault)| vault.as_deref() != Some(first.as_path())),
+            "{host:?}"
+        );
+    }
+}

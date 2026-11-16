@@ -16,10 +16,10 @@ pub(crate) fn check(name: Option<&str>) -> Result<()> {
     }
 }
 
-/// The naming recorded on this device, if any. An unreadable record is
-/// reported by the setup step that rewrites it.
+/// The naming recorded on this device, best effort, for commands that only
+/// read it. Naming outside the form this program writes counts as none.
 pub(crate) fn recorded(root: &Path) -> Option<Naming> {
-    Naming::load(root).ok().flatten()
+    Naming::load(root).ok().flatten().filter(naming::supported)
 }
 
 /// The recorded vault name for `wi mcp`, best effort: none when the record is missing.
@@ -30,13 +30,15 @@ pub(crate) fn recorded_name(root: &Path) -> Option<String> {
 
 /// The device record of the vault at `root`, read once before any app config
 /// changes. `None` when this device has no record; a record that cannot be
-/// read stops the command.
-pub(crate) fn load(root: &Path) -> Result<Option<(Targets, Naming)>> {
-    Ok(wi_export::local::load_record(root)?)
+/// read stops the command. Naming outside the form this program writes (a
+/// hand-edited entry, say) is dropped, so the entry name is resolved again.
+pub(crate) fn load(root: &Path) -> Result<Option<(Targets, Option<Naming>)>> {
+    Ok(wi_export::local::load_record(root)?
+        .map(|(targets, recorded)| (targets, Some(recorded).filter(naming::supported))))
 }
 
 /// The recorded destinations in `record`.
-pub(crate) fn destinations(record: Option<&(Targets, Naming)>) -> Vec<Destination> {
+pub(crate) fn destinations(record: Option<&(Targets, Option<Naming>)>) -> Vec<Destination> {
     record
         .iter()
         .flat_map(|(targets, _)| &targets.hosts)

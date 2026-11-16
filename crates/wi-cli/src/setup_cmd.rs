@@ -204,7 +204,7 @@ fn setup_with_options(
     // The record is read once, before anything changes; one that cannot be read stops setup.
     let previous = setup_name::load(&root)?;
     let recorded = setup_name::destinations(previous.as_ref());
-    let recorded_naming = previous.as_ref().map(|(_, naming)| naming);
+    let recorded_naming = previous.as_ref().and_then(|(_, naming)| naming.as_ref());
     let request = |selected: &[install::Destination], vault_id: &str| {
         naming_plan::plan(&naming_plan::Request {
             root: &root,

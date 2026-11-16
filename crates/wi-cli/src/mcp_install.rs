@@ -35,7 +35,7 @@ pub(crate) fn install(
     let previous = setup_name::load(vault)?;
     let recorded = setup_name::destinations(previous.as_ref());
     let (previous, naming) = match previous {
-        Some((targets, naming)) => (Some(targets), Some(naming)),
+        Some((targets, naming)) => (Some(targets), naming),
         None => (None, None),
     };
     let selected = Destination::locate(host, home, codex_home)?;

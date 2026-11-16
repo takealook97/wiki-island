@@ -23,6 +23,32 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// Whether `entry` is one the resolver can produce: `wiki-island`, or
+/// `wiki-island-<name>` with a valid name, optionally followed by the
+/// numeric suffix `-2`, `-3`, ... the resolver adds.
+pub fn supported_entry(entry: &str) -> bool {
+    if entry == DEFAULT_ENTRY {
+        return true;
+    }
+    let Some(rest) = entry
+        .strip_prefix(DEFAULT_ENTRY)
+        .and_then(|rest| rest.strip_prefix('-'))
+    else {
+        return false;
+    };
+    valid_name(rest)
+        || rest.rsplit_once('-').is_some_and(|(name, suffix)| {
+            valid_name(name) && !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+        })
+}
+
+/// Whether recorded naming is in the form this program writes: a supported
+/// entry and, when present, a valid name. Other naming is ignored and the
+/// entry is resolved again.
+pub fn supported(naming: &Naming) -> bool {
+    supported_entry(&naming.entry) && naming.name.as_deref().is_none_or(valid_name)
+}
+
 /// The entry name for a vault name.
 pub fn entry_for(name: &str) -> String {
     format!("{DEFAULT_ENTRY}-{name}")
@@ -184,6 +210,31 @@ mod tests {
             name: name.map(str::to_owned),
             entry: entry.to_owned(),
         }
+    }
+
+    #[test]
+    fn only_entries_the_resolver_writes_are_supported() {
+        for entry in [
+            "wiki-island",
+            "wiki-island-work",
+            "wiki-island-work-2",
+            "wiki-island-my_notes-12",
+        ] {
+            assert!(supported_entry(entry), "{entry}");
+        }
+        let long = format!("wiki-island-{}", "a".repeat(33));
+        for entry in [
+            "owner-entry",
+            "wiki-island-",
+            "wiki-islandx",
+            "wiki-island-my notes",
+            long.as_str(),
+        ] {
+            assert!(!supported_entry(entry), "{entry}");
+        }
+        assert!(supported(&naming(Some("work"), "wiki-island-work")));
+        assert!(!supported(&naming(Some("my notes"), "wiki-island-work")));
+        assert!(!supported(&naming(None, "owner-entry")));
     }
 
     #[test]

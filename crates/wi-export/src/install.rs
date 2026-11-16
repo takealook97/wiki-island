@@ -152,12 +152,15 @@ pub fn plan_at(
         None => None,
     };
     let text = retired.as_deref().unwrap_or(current);
-    if entries_in(host, text).iter().any(|(name, served)| {
-        name == entry
-            && served
+    // The guard reads the requested entry itself, whatever its name.
+    if entries_where(host, text, |name| name == entry)
+        .iter()
+        .any(|(_, served)| {
+            served
                 .as_deref()
                 .is_some_and(|p| crate::naming::serves_other_vault(vault, p))
-    }) {
+        })
+    {
         return Err(Error::EntryInUse);
     }
     let args = vec![
@@ -607,7 +610,16 @@ pub fn entries(host: HostId, path: &Path) -> Vec<(String, Option<PathBuf>)> {
 
 /// The wiki-island entries in the config text of `host`, as [`entries`] reads them.
 fn entries_in(host: HostId, text: &str) -> Vec<(String, Option<PathBuf>)> {
-    let ours = |name: &str| crate::naming::is_entry_name(name);
+    entries_where(host, text, crate::naming::is_entry_name)
+}
+
+/// The entries in the config text of `host` whose name passes `ours`, each
+/// with the vault it serves.
+fn entries_where(
+    host: HostId,
+    text: &str,
+    ours: impl Fn(&str) -> bool,
+) -> Vec<(String, Option<PathBuf>)> {
     match host.spec().format {
         Format::Toml => {
             let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {

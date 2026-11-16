@@ -453,3 +453,44 @@ fn install_refuses_an_entry_owned_by_another_live_vault() {
         assert!(plan("wiki-island").is_ok(), "{host:?}");
     }
 }
+
+#[test]
+fn install_refuses_any_requested_entry_owned_by_another_live_vault() {
+    use wi_export::hosts::HostId;
+    for host in [HostId::Claude, HostId::Codex] {
+        let home = TempDir::new().unwrap();
+        let codex = home.path().join(".codex");
+        let other = home.path().join("other");
+        std::fs::create_dir_all(other.join(".wiki-island")).unwrap();
+        std::fs::write(other.join(".wiki-island/config.toml"), "").unwrap();
+        let path = host.config_path(home.path(), Some(&codex));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let served = other.to_string_lossy().replace('\\', "\\\\");
+        // An entry name outside the `wiki-island` prefix, as an owner may have written it.
+        let before = if host == HostId::Codex {
+            format!(
+                "[mcp_servers.owner-entry]\ncommand = \"wi\"\nargs = [\"mcp\", \"--vault\", \"{served}\"]\n"
+            )
+        } else {
+            format!(
+                r#"{{"mcpServers":{{"owner-entry":{{"command":"wi","args":["mcp","--vault","{served}"]}}}}}}"#
+            )
+        };
+        std::fs::write(&path, &before).unwrap();
+        let mine = home.path().join("mine");
+        let error = install::plan_host(
+            host,
+            home.path(),
+            Some(&codex),
+            Path::new("/bin/wi"),
+            &mine,
+            "owner-entry",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, install::Error::EntryInUse),
+            "{host:?}: {error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+}
