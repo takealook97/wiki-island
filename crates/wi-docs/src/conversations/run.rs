@@ -169,10 +169,10 @@ pub(crate) fn try_import(
     };
     let mut applier = Applier::new(vault, kind)?;
     import_conversations(&src, kind, &mut applier)?;
-    if kind == Kind::Claude {
-        if let Some(projects) = &src.projects {
-            import_projects(projects, &mut applier)?;
-        }
+    if kind == Kind::Claude
+        && let Some(projects) = &src.projects
+    {
+        import_projects(projects, &mut applier)?;
     }
     let folder = applier.kind().folder().to_owned();
     let (manifest, counts) = applier.finish()?;
