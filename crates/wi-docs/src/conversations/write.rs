@@ -8,8 +8,8 @@ use wi_history::hash_bytes;
 use wi_note::remove_key;
 use wi_store::{IMPORTS_DIR, Ingress, Vault, WriteRequest};
 
-use super::render::{Draft, parts};
-use super::{ConversationCounts, Kind};
+use super::render::{Draft, note_limit_too_small, parts};
+use super::{ConversationCounts, Kind, refuse};
 use crate::notion::checked_path;
 use crate::{Error, Result, field, optional, parse, render};
 
@@ -43,6 +43,13 @@ fn editable_hash(bytes: &[u8]) -> Result<String> {
     Ok(hash_bytes(note.to_bytes()))
 }
 
+/// The import record of earlier runs cannot be read.
+fn damaged_record(path: &str) -> Error {
+    refuse(format!(
+        "The record of earlier conversation imports ({path}) is damaged, so nothing was imported. Move that file out of the vault and import again; your notes are kept."
+    ))
+}
+
 fn id_suffix(id: &str) -> String {
     id.chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -64,19 +71,18 @@ impl<'a> Applier<'a> {
         let old_manifest = optional(vault, &manifest_path)?;
         let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
         if let Some(old) = &old_manifest {
-            let note = parse(&old.bytes)?;
+            let note = parse(&old.bytes).map_err(|_| damaged_record(&manifest_path))?;
             let value = field(&note, "properties")
                 .and_then(|p| p.get("conversations").cloned())
-                .ok_or_else(|| Error::Conflict(manifest_path.clone()))?;
-            entries = serde_json::from_value(value)
-                .map_err(|_| Error::Conflict(manifest_path.clone()))?;
+                .ok_or_else(|| damaged_record(&manifest_path))?;
+            entries = serde_json::from_value(value).map_err(|_| damaged_record(&manifest_path))?;
         }
         let mut used = BTreeSet::new();
         for entry in entries.values() {
             for path in &entry.paths {
-                checked_path(path)?;
-                if !path.starts_with("AI/") || !path.ends_with(".md") {
-                    return Err(Error::Conflict(manifest_path));
+                if checked_path(path).is_err() || !path.starts_with("AI/") || !path.ends_with(".md")
+                {
+                    return Err(damaged_record(&manifest_path));
                 }
                 used.insert(path.to_lowercase());
             }
@@ -138,7 +144,9 @@ impl<'a> Applier<'a> {
                 return Ok(paths);
             }
         }
-        Err(Error::Invalid("too many notes share one name".into()))
+        Err(refuse(
+            "Too many notes already share this name. Rename or move some of the notes in the AI folder, then import again.",
+        ))
     }
 
     /// Write the notes of one conversation or document.
@@ -211,7 +219,7 @@ impl<'a> Applier<'a> {
         }
         let note = wi_note::set_key(&parse(base.as_bytes())?, CHECKSUM, &json!(rendered))
             .map_err(|e| Error::Invalid(e.to_string()))?;
-        self.check_size(&note, existing.as_ref(), path)?;
+        self.check_size(&note, existing.as_ref())?;
         self.vault.write(WriteRequest {
             path: path.to_owned(),
             content: note.to_bytes().to_vec(),
@@ -227,12 +235,7 @@ impl<'a> Applier<'a> {
         Ok(None)
     }
 
-    fn check_size(
-        &self,
-        note: &wi_note::Note,
-        old: Option<&wi_store::ReadResult>,
-        path: &str,
-    ) -> Result<()> {
+    fn check_size(&self, note: &wi_note::Note, old: Option<&wi_store::ReadResult>) -> Result<()> {
         let origin = match old {
             Some(old) => field(&parse(&old.bytes)?, "origin"),
             None => Some(
@@ -247,9 +250,7 @@ impl<'a> Applier<'a> {
             None => note.to_bytes().len(),
         };
         if size > self.bound {
-            return Err(Error::Invalid(format!(
-                "{path} exceeds configured note bound"
-            )));
+            return Err(note_limit_too_small());
         }
         Ok(())
     }

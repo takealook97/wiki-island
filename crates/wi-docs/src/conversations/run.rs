@@ -42,9 +42,6 @@ fn detect(src: &Source) -> Result<Detected> {
             ))),
         };
     }
-    if src.single {
-        return Ok(Detected::NotOurs);
-    }
     let kind = if src.claude_hint() {
         Some(Kind::Claude)
     } else if src.chatgpt_hint() {
@@ -256,7 +253,10 @@ mod tests {
     #[test]
     fn json_over_the_limit_is_refused_with_a_next_step() {
         let (_tmp, vault) = vault();
-        let limits = Limits { max_json_bytes: 40 };
+        let limits = Limits {
+            max_json_bytes: 40,
+            ..Limits::default()
+        };
         std::fs::write(vault.root().join("c.json"), CONVERSATIONS).unwrap();
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         writer
@@ -287,6 +287,7 @@ mod tests {
         // Within the limit the same sources import.
         let roomy = Limits {
             max_json_bytes: 4096,
+            ..Limits::default()
         };
         assert!(try_import(&vault, "c.zip", &roomy).unwrap().is_some());
     }
@@ -331,6 +332,7 @@ mod tests {
         );
         let limits = Limits {
             max_json_bytes: 4096,
+            ..Limits::default()
         };
         assert!(
             std::fs::metadata(vault.root().join("c.zip")).unwrap().len() > limits.max_json_bytes
@@ -353,6 +355,7 @@ mod tests {
         );
         let limits = Limits {
             max_json_bytes: 150,
+            ..Limits::default()
         };
         let error = try_import(&vault, "c.zip", &limits).unwrap_err();
         let sentence = super::super::owner_sentence(&error).unwrap();
@@ -378,6 +381,7 @@ mod tests {
         put(&vault, "c.zip", &bytes);
         let limits = Limits {
             max_json_bytes: 4096,
+            ..Limits::default()
         };
         let error = try_import(&vault, "c.zip", &limits).unwrap_err();
         let sentence = super::super::owner_sentence(&error).expect("a plain sentence");
@@ -402,5 +406,68 @@ mod tests {
             sentence,
             "This archive is too big to be opened directly. Unpack it, then import the unpacked folder."
         );
+    }
+
+    fn put_in(vault: &Vault, path: &str, bytes: &[u8]) {
+        let full = vault.root().join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, bytes).unwrap();
+    }
+
+    #[test]
+    fn unrelated_files_do_not_count_toward_the_entry_limit() {
+        let (_tmp, vault) = vault();
+        put_in(&vault, "export/conversations.json", CONVERSATIONS);
+        for n in 0..20 {
+            put_in(&vault, &format!("export/aaa{n:03}"), b"");
+        }
+        let limits = Limits {
+            max_entries: 3,
+            max_listing: 1000,
+            ..Limits::default()
+        };
+        let report = try_import(&vault, "export", &limits).unwrap().unwrap();
+        assert_eq!(report.conversations.unwrap().created, 1);
+    }
+
+    #[test]
+    fn too_many_conversation_files_are_refused_with_a_next_step() {
+        let (_tmp, vault) = vault();
+        for n in 0..4 {
+            put_in(
+                &vault,
+                &format!("export/conversations-{n:03}.json"),
+                CONVERSATIONS,
+            );
+        }
+        let limits = Limits {
+            max_entries: 3,
+            max_listing: 1000,
+            ..Limits::default()
+        };
+        let error = try_import(&vault, "export", &limits).unwrap_err();
+        let sentence = super::super::owner_sentence(&error).expect("a plain sentence");
+        assert!(sentence.contains("more than 3"), "{sentence}");
+        assert!(sentence.contains("new folder"), "{sentence}");
+        assert!(!vault.root().join("AI").exists());
+    }
+
+    #[test]
+    fn a_listing_past_the_bound_is_refused_not_cut() {
+        let (_tmp, vault) = vault();
+        put_in(&vault, "export/conversations.json", CONVERSATIONS);
+        for n in 0..20 {
+            put_in(&vault, &format!("export/aaa{n:03}"), b"");
+        }
+        let limits = Limits {
+            max_entries: 3,
+            max_listing: 10,
+            ..Limits::default()
+        };
+        let error = try_import(&vault, "export", &limits).unwrap_err();
+        let sentence = super::super::owner_sentence(&error).expect("a plain sentence");
+        assert!(sentence.contains("more than 10"), "{sentence}");
+        assert!(sentence.contains("folder of its own"), "{sentence}");
+        assert!(!vault.root().join("AI").exists());
     }
 }

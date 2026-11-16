@@ -503,5 +503,54 @@ fn conversation_archive_with_an_escaping_path_is_refused_with_a_sentence() {
     let report = json(&out);
     let error = report["imports"][0]["error"].as_str().unwrap();
     assert!(error.contains("leaves the archive"), "{report}");
+    assert!(error.ends_with("import the new file."), "{report}");
     assert!(!vault.join("AI").exists());
+}
+
+#[test]
+fn conversation_folder_with_a_dotted_name_imports() {
+    let tmp = setup();
+    let vault = tmp.path().join("vault");
+    fs::create_dir_all(vault.join("export.data")).unwrap();
+    fs::write(
+        vault.join("export.data/conversations.json"),
+        claude_export(),
+    )
+    .unwrap();
+    let out = command(&tmp)
+        .args(["import", "export.data"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let counts = &json(&out)["imports"][0]["conversations"];
+    assert_eq!(counts["created"].as_u64(), Some(1), "{counts}");
+}
+
+#[test]
+fn an_empty_conversation_file_says_there_is_nothing_to_import() {
+    let tmp = setup();
+    let vault = tmp.path().join("vault");
+    fs::write(vault.join("empty.json"), b"[]").unwrap();
+    let out = command(&tmp)
+        .args(["import", "empty.json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let counts = &json(&out)["imports"][0]["conversations"];
+    assert_eq!(counts["created"].as_u64(), Some(0), "{counts}");
+
+    let json_cmd = command(&tmp);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wi"));
+    cmd.envs(json_cmd.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))
+        .env_remove("XDG_CONFIG_HOME")
+        .arg("--vault")
+        .arg(&vault)
+        .args(["import", "empty.json"]);
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("This export holds no conversations."),
+        "{text}"
+    );
 }

@@ -2,7 +2,7 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Map, Value, json};
 
-use super::{Conversation, Message, ProjectDoc};
+use super::{Conversation, Message, ProjectDoc, refuse};
 use crate::{Error, Result, render as render_note};
 
 /// Room kept for the provenance the store adds to a new note.
@@ -11,6 +11,13 @@ const ORIGIN_RESERVE: usize = 256;
 const MIN_BUDGET: usize = 64;
 const MAX_NAME_BYTES: usize = 120;
 const UNTITLED: &str = "Untitled";
+
+/// The refusal for a note size limit that cannot hold a conversation.
+pub(crate) fn note_limit_too_small() -> Error {
+    refuse(
+        "The note size limit of this vault is too small for imported conversations. Raise max_note_bytes in the vault configuration, then import again.",
+    )
+}
 
 pub(crate) fn timestamp(time: DateTime<Utc>) -> String {
     time.to_rfc3339_opts(SecondsFormat::Secs, true)
@@ -197,9 +204,7 @@ pub(crate) fn parts(draft: &Draft, bound: usize) -> Result<Vec<String>> {
     let overhead = render_note(Value::Object(probe), "")?.len() + ORIGIN_RESERVE;
     let budget = bound.saturating_sub(overhead);
     if budget < MIN_BUDGET {
-        return Err(Error::Invalid(
-            "the configured note size limit is too small for imported conversations".into(),
-        ));
+        return Err(note_limit_too_small());
     }
     let sections = (draft.sections)(budget);
     let mut bodies: Vec<String> = Vec::new();

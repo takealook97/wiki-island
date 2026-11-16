@@ -15,16 +15,25 @@ use crate::notion::{
 };
 use crate::{Error, MAX_SOURCE_BYTES, Result, source_input};
 
+/// Directory entries examined in one folder before it is refused as too large.
+const MAX_LISTING: usize = 1_000_000;
+
 /// Safety limits; injectable so tests need no huge files.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Limits {
     pub max_json_bytes: u64,
+    /// Conversation and kind-detection files read from one folder.
+    pub max_entries: usize,
+    /// Entries of one folder that may be looked through by name.
+    pub max_listing: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
             max_json_bytes: MAX_SOURCE_BYTES,
+            max_entries: MAX_ENTRIES,
+            max_listing: MAX_LISTING,
         }
     }
 }
@@ -97,6 +106,24 @@ fn too_large(limit: u64, origin: Origin) -> Error {
     ))
 }
 
+fn too_many_files(limit: usize) -> Error {
+    refuse(format!(
+        "This folder holds more than {limit} conversation files. Copy the files you want into a new folder and import that folder."
+    ))
+}
+
+fn too_big_a_folder(limit: usize) -> Error {
+    refuse(format!(
+        "This folder holds more than {limit} files, too many to look through. Put the export in a folder of its own and import that folder."
+    ))
+}
+
+fn unreadable_archive() -> Error {
+    refuse(
+        "This archive could not be read and may be incomplete. Download the export again and import the new file.",
+    )
+}
+
 fn zip64() -> Error {
     refuse(
         "This archive is too big to be opened directly. Unpack it, then import the unpacked folder.",
@@ -113,7 +140,7 @@ fn structural(path: &str) -> Result<()> {
         || (path.len() > 1 && path.as_bytes()[1] == b':')
     {
         return Err(refuse(
-            "This archive contains a file path that leaves the archive, so it was not opened.",
+            "This archive contains a file path that leaves the archive, so it was not opened. Download the export again and import the new file.",
         ));
     }
     Ok(())
@@ -153,6 +180,13 @@ fn file_of<'a>(path: &'a str, dir: &str) -> Option<&'a str> {
 /// a conversation source and the caller should carry on as before.
 pub(crate) fn load(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Source>> {
     let input = source_input(source);
+    // A folder is a folder whatever its name ends with.
+    if let Some(full) = source_path(vault.root(), input.as_ref())
+        .ok()
+        .filter(|p| p.is_dir())
+    {
+        return load_dir(&full, limits);
+    }
     let ext = Path::new(input.as_ref())
         .extension()
         .and_then(|e| e.to_str())
@@ -160,8 +194,7 @@ pub(crate) fn load(vault: &Vault, source: &str, limits: &Limits) -> Result<Optio
     match ext.as_deref() {
         Some("zip") => load_zip(vault, input.as_ref(), limits),
         Some("json") => load_json(vault, input.as_ref(), limits),
-        Some(_) => Ok(None),
-        None => load_dir(vault, input.as_ref(), limits),
+        _ => Ok(None),
     }
 }
 
@@ -185,10 +218,27 @@ fn load_json(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Sour
         .unwrap_or("conversations.json")
         .to_owned();
     Ok(Some(Source {
-        conversations: vec![(name, bytes)],
+        conversations: vec![(name.clone(), bytes)],
+        siblings: sibling_hints(&full, &name, limits),
         single: true,
         ..Source::default()
     }))
+}
+
+/// Names beside a single file that only tell which service made the export.
+fn sibling_hints(file: &Path, own: &str, limits: &Limits) -> Vec<String> {
+    let Some(parent) = file.parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    entries
+        .take(limits.max_listing)
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+        .filter(|n| n != own && is_hint(n))
+        .collect()
 }
 
 /// Reads at most `remaining + 1` bytes, whatever the entry declares.
@@ -201,35 +251,53 @@ fn read_limited(
     bounded_read(reader, remaining as usize).map_err(|_| too_large(limits.max_json_bytes, origin))
 }
 
-fn load_dir(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Source>> {
-    let full = source_path(vault.root(), source)?;
-    if !full.is_dir() {
-        return Ok(None);
+fn is_hint(name: &str) -> bool {
+    CLAUDE_HINTS.contains(&name) || CHATGPT_HINTS.contains(&name)
+}
+
+/// Names of one folder, refusing a listing past the bound instead of cutting it.
+fn list_dir(dir: &Path, limits: &Limits) -> Result<Vec<std::fs::DirEntry>> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        if entries.len() >= limits.max_listing {
+            return Err(too_big_a_folder(limits.max_listing));
+        }
+        entries.push(entry?);
     }
-    let Some(dir) = dir_with_conversations(&full)? else {
+    Ok(entries)
+}
+
+fn load_dir(full: &Path, limits: &Limits) -> Result<Option<Source>> {
+    let Some(dir) = dir_with_conversations(full, limits)? else {
         return Ok(None);
     };
     let base = if dir.is_empty() {
-        full
+        full.to_path_buf()
     } else {
         full.join(&dir)
     };
+    // Select by name first: unrelated files are neither counted nor opened.
+    let mut selected: Vec<_> = list_dir(&base, limits)?
+        .into_iter()
+        .filter_map(|e| {
+            let name = e.file_name().to_str().map(str::to_owned)?;
+            (wanted(&name) || is_hint(&name)).then_some((name, e))
+        })
+        .collect();
+    if selected.len() > limits.max_entries {
+        return Err(too_many_files(limits.max_entries));
+    }
+    selected.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = Source::default();
     let mut remaining = limits.max_json_bytes;
-    let mut entries: Vec<_> = std::fs::read_dir(&base)?.collect::<std::io::Result<_>>()?;
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries.into_iter().take(MAX_ENTRIES) {
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        let kind = entry.file_type()?;
+    for (name, entry) in selected {
         if !wanted(&name) {
             out.siblings.push(name);
             continue;
         }
-        if !kind.is_file() {
+        if !entry.file_type()?.is_file() {
             return Err(refuse(
-                "A conversation file in this folder is a link or not a regular file, so it was not opened.",
+                "A conversation file in this folder is a link or not a regular file, so it was not opened. Copy the export into a new folder as ordinary files and import that folder.",
             ));
         }
         if entry.metadata()?.len() > remaining {
@@ -248,11 +316,10 @@ fn load_dir(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Sourc
 }
 
 /// Root, or the first directory one level below it, holding conversation files.
-fn dir_with_conversations(full: &Path) -> Result<Option<String>> {
+fn dir_with_conversations(full: &Path, limits: &Limits) -> Result<Option<String>> {
     let mut names = Vec::new();
     let mut dirs = Vec::new();
-    for entry in std::fs::read_dir(full)?.take(MAX_ENTRIES) {
-        let entry = entry?;
+    for entry in list_dir(full, limits)? {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
@@ -268,12 +335,13 @@ fn dir_with_conversations(full: &Path) -> Result<Option<String>> {
     }
     dirs.sort();
     for dir in dirs {
-        let Ok(inner) = std::fs::read_dir(full.join(&dir)) else {
-            continue;
+        let inner = match list_dir(&full.join(&dir), limits) {
+            Ok(inner) => inner,
+            Err(error) if super::owner_sentence(&error).is_some() => return Err(error),
+            Err(_) => continue,
         };
         let found = inner
-            .take(MAX_ENTRIES)
-            .flatten()
+            .iter()
             .any(|e| e.file_name().to_str().is_some_and(conversation_file));
         if found {
             return Ok(Some(dir));
@@ -287,22 +355,26 @@ fn load_zip(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Sourc
     // The archive stays on disk: only its directory and the entries that are
     // needed are read, so images and other large entries cost nothing.
     let mut file = std::fs::File::open(&full)?;
-    zip_preflight_file(&mut file).map_err(|e| if is_zip64(&e) { zip64() } else { e })?;
+    zip_preflight_file(&mut file).map_err(|e| match e {
+        e if is_zip64(&e) => zip64(),
+        Error::Invalid(_) => unreadable_archive(),
+        e => e,
+    })?;
     let mut archive =
-        zip::ZipArchive::new(BufReader::new(file)).map_err(|e| Error::Invalid(e.to_string()))?;
+        zip::ZipArchive::new(BufReader::new(file)).map_err(|_| unreadable_archive())?;
     let mut names = Vec::new();
     let mut index_of = BTreeMap::new();
     for index in 0..archive.len() {
         let entry = archive
             .by_index_raw(index)
-            .map_err(|e| Error::Invalid(e.to_string()))?;
+            .map_err(|_| unreadable_archive())?;
         let name = entry.name().trim_end_matches('/').to_owned();
         structural(&name)?;
         if entry.unix_mode().is_some_and(|mode| {
             mode & 0o170000 != 0 && !matches!(mode & 0o170000, 0o100000 | 0o040000)
         }) {
             return Err(refuse(
-                "This archive contains a link or special file, so it was not opened.",
+                "This archive contains a link or special file, so it was not opened. Download the export again and import the new file.",
             ));
         }
         if !entry.is_dir() {
@@ -326,7 +398,7 @@ fn load_zip(vault: &Vault, source: &str, limits: &Limits) -> Result<Option<Sourc
         checked_path(name)?;
         let mut entry = archive
             .by_index(index_of[name])
-            .map_err(|e| Error::Invalid(e.to_string()))?;
+            .map_err(|_| unreadable_archive())?;
         if entry.size() > remaining {
             return Err(too_large(limits.max_json_bytes, Origin::Zip));
         }
@@ -354,7 +426,12 @@ pub(crate) fn is_export(root: &Path, source: &str) -> bool {
     let Ok(full) = source_path(root, input.as_ref()) else {
         return false;
     };
-    full.is_dir() && dir_with_conversations(&full).is_ok_and(|d| d.is_some())
+    full.is_dir()
+        && match dir_with_conversations(&full, &Limits::default()) {
+            Ok(dir) => dir.is_some(),
+            // Too large to look through: import repeats the check and says so.
+            Err(error) => super::owner_sentence(&error).is_some(),
+        }
 }
 
 fn without_bom(bytes: &[u8]) -> &[u8] {

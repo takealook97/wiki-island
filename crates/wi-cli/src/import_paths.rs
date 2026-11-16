@@ -74,8 +74,19 @@ pub(crate) fn conversation_summary(report: &serde_json::Value) -> Option<String>
     let counts = report.get("conversations")?;
     let number = |key: &str| counts[key].as_u64().unwrap_or(0);
     let folder = report["sidecar_path"].as_str().unwrap_or("");
+    let all = [
+        "created",
+        "updated",
+        "unchanged",
+        "conflicts",
+        "skipped",
+        "redacted",
+    ];
+    if all.iter().all(|key| number(key) == 0) {
+        return Some("This export holds no conversations.".to_owned());
+    }
     let place = if folder.is_empty() {
-        "No conversations found"
+        "Conversations"
     } else {
         folder
     };

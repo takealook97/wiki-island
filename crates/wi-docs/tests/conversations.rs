@@ -657,3 +657,100 @@ fn conversation_import_redacts_names() {
     // The same export again changes nothing.
     assert!(run(&vault, "n.zip").unchanged);
 }
+
+#[test]
+fn a_folder_name_with_an_extension_is_still_a_folder() {
+    let (_tmp, vault) = setup();
+    put(
+        &vault,
+        "export.data/conversations.json",
+        bytes(&claude_conversations()),
+    );
+    let report = run(&vault, "export.data");
+    assert_eq!(counts(&report), (2, 0, 0, 0, 2));
+    assert_eq!(report.sidecar_path, "AI/Claude");
+}
+
+#[test]
+fn an_empty_single_file_succeeds_with_nothing_created() {
+    let (_tmp, vault) = setup();
+    put(&vault, "empty/empty.json", b"[]");
+    let report = run(&vault, "empty/empty.json");
+    assert_eq!(counts(&report), (0, 0, 0, 0, 0));
+    assert!(report.unchanged);
+    assert!(!vault.root().join("AI").exists());
+
+    // A sibling name only decides the kind.
+    put(&vault, "known/empty.json", b"[]");
+    put(&vault, "known/projects.json", b"[]");
+    let report = run(&vault, "known/empty.json");
+    assert_eq!(counts(&report), (0, 0, 0, 0, 0));
+    assert_eq!(report.sidecar_path, "AI/Claude");
+}
+
+#[test]
+fn a_single_array_of_something_else_is_still_refused() {
+    let (_tmp, vault) = setup();
+    put(&vault, "other.json", b"[{\"foo\": 1}]");
+    assert!(import(&vault, "other.json", ImportOptions::default()).is_err());
+    assert!(!vault.root().join("AI").exists());
+}
+
+#[test]
+fn refusals_name_the_next_step() {
+    let (_tmp, vault) = setup();
+    let good = bytes(&claude_conversations());
+    let sentence = |path: &str| {
+        let err = import(&vault, path, ImportOptions::default()).unwrap_err();
+        wi_docs::conversations::owner_sentence(&err)
+            .unwrap_or_else(|| panic!("no owner sentence for {path}: {err}"))
+            .to_owned()
+    };
+
+    put(
+        &vault,
+        "escape.zip",
+        zip(&[("conversations.json", &good), ("../outside.md", b"x")]),
+    );
+    assert_eq!(
+        sentence("escape.zip"),
+        "This archive contains a file path that leaves the archive, so it was not opened. Download the export again and import the new file."
+    );
+
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "conversations.json",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+    writer.write_all(&good).unwrap();
+    writer
+        .add_symlink("link", "x", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    put(&vault, "link.zip", writer.finish().unwrap().into_inner());
+    assert_eq!(
+        sentence("link.zip"),
+        "This archive contains a link or special file, so it was not opened. Download the export again and import the new file."
+    );
+
+    let whole = zip(&[("conversations.json", &good)]);
+    put(&vault, "cut.zip", &whole[..whole.len() / 2]);
+    assert!(
+        sentence("cut.zip").ends_with("Download the export again and import the new file."),
+        "{}",
+        sentence("cut.zip")
+    );
+
+    // A damaged import record.
+    put(&vault, "ok.json", &good);
+    run(&vault, "ok.json");
+    put(
+        &vault,
+        ".wiki-island/imports/conversations/claude.md",
+        b"not a note",
+    );
+    let damaged = sentence("ok.json");
+    assert!(damaged.contains("is damaged"), "{damaged}");
+    assert!(damaged.ends_with("your notes are kept."), "{damaged}");
+}
