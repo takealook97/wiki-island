@@ -53,6 +53,8 @@ wi mcp install --host claude --yes    # apply; the original file is backed up fi
 
 `--host` takes `claude`, `codex`, `agy`, `gemini`, `cursor`, `windsurf`, `claude-desktop`, `vscode`, `opencode` or `zed`. Only the wiki-island entry is edited and everything else in the file is kept.
 
+**A second notes folder.** `wi setup --vault ~/work-notes --name work` connects another vault beside the first; your apps list it as `wiki-island-work`, and each vault is set up and removed on its own ([integrations](docs/INTEGRATIONS.md#several-vaults)).
+
 **Any other MCP host.** Add a stdio server that runs `wi mcp` with your notes folder. Use the absolute path of `wi` (`which wi`), because some apps do not inherit your shell `PATH`. In the common JSON form:
 
 ```json

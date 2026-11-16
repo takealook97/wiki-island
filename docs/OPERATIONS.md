@@ -287,6 +287,7 @@ Nothing here puts a daemon, network or model on the capture or search path.
 ### Doctor and binaries
 
 - `wi doctor` says in plain words whether the background service runs (macOS: loaded; Linux: enabled and active; Windows: registered and running), reports no warning for a work request already converted, and its help names `~/wiki-island` as the default notes folder.
+- `wi doctor` has an `apps` check: the vault name, or that it is the default vault, its app entry name, and every app recorded at setup whose config no longer has this vault's entry, with `wi setup` as the next step. It is absent when this device records no app connections ([INTEGRATIONS](INTEGRATIONS.md#several-vaults)).
 - The installer refuses a development binary: a Cargo `CACHEDIR.TAG` or `.rustc_info.json` among up to four canonical executable ancestors (custom `CARGO_TARGET_DIR` included). `--allow-dev-binary` overrides. `wi setup` uses the path it was invoked by, so a package-manager symlink stays the service binary; on Linux and Windows `wi service install` does the same.
 
 ## Install and release

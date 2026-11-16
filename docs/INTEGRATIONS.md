@@ -14,6 +14,21 @@ How wiki-island connects to AI hosts and editors. Support is claimed only for a 
 
 `wi uninstall` reverses everything wiki-island owns: the service, the host MCP entries and the exported skills, including files and empty containers it created itself (for example a VS Code `mcp.json`). Log and LaunchAgents folders are left only if they existed before. It never deletes notes, removes the disposable device cache and prints one sentence saying the notes were kept. After setup the owner only talks to their AI; maintenance, repair and skill upkeep are silent unless something needs a human, in which case the maintenance procedure tells the owner in one plain sentence.
 
+## Several vaults
+
+Each vault has its own entry in every detected AI app, its own background service and its own MCP server process. `wi setup --vault <dir> --name <name>` sets up another vault beside the first under the entry `wiki-island-<name>`. A name has 1 to 32 letters, digits, hyphens or underscores; any other name is refused with one sentence before anything is written. Setup never asks a question. The entry name is decided once per run and used for every app:
+
+- A vault keeps the entry recorded on this device (`name` and `entry` in `targets.json` in the per-device local directory) unless `--name` gives a different name, or another vault now holds that entry. On a rename the new entry is written and the old one is removed from each recorded app, only where it still points at this vault.
+- Without a name, the vault uses `wiki-island` when no app's `wiki-island` entry serves another vault. An entry pointing at a folder that no longer holds a vault is taken over.
+- Otherwise the vault is named automatically from its folder name (ASCII letters, digits, `_` and `-`, lower-cased), or from the first 8 characters of its vault id when that is empty or `wiki-island`. The automatic name is recorded like a given one.
+- When `wiki-island-<name>` already serves another vault in some app, `-2`, `-3` and so on is appended.
+
+An entry "serves" a vault when its arguments are `mcp --vault <root>` with that vault's root, in the per-app shape setup writes. Setting up the same vault again updates its own entry in place and never changes another vault's entry. `wi uninstall --vault <dir>` removes only that vault's entries, service, skills and cache; the other vaults keep working. `wi mcp install` decides the entry the same way. The setup summary names the entry when it is not `wiki-island`, and `wi doctor` shows the vault name, the entry name and any recorded app whose config lost the entry ([OPERATIONS](OPERATIONS.md#doctor-and-binaries)). A named vault's MCP instructions say its name ([PROTOCOL](PROTOCOL.md#transport)).
+
+With `--github`, a named vault uses its own repository, `<login>/wiki-island-notes-<name>`. Give the same vault the same `--name` on every device, so each device connects to the same repository. Every vault runs its own `wi mcp` process, so idle memory grows with the number of connected vaults; the per-process target is in [PERFORMANCE](PERFORMANCE.md#targets).
+
+Existing single-vault setups keep working without any action: a record without `name` and `entry` is the default vault with the entry `wiki-island`.
+
 ## Host table
 
 MCP registration is data-driven over a host table in `crates/wi-export` (`hosts` module, `detect(home)`). A host is configured only if its config file or directory already exists: wiki-island detects, and never creates, a host's application directories. Each entry names its detection path, config path, format (a JSON key path or a TOML table), backup and edit strategy.
@@ -93,6 +108,7 @@ Request a data export in the app and run `wi import <export>` on the zip, the un
 
 - `wi sync setup <url>` connects an existing private git remote. `wi sync` makes one attempt and accepts `--json`; `wi sync status` reports local status without network access. Transport is available in git mode only ([OPERATIONS](OPERATIONS.md#git-history-and-sync)).
 - `wi setup --github` uses an installed, authenticated `gh` to create or reuse the private `<login>/wiki-island-notes` repository and connects it; this is the only network use of `wi setup`, and it runs only with the flag. A public repository is refused. If the CLI or authentication is unavailable, setup prints the command for connecting an existing remote.
+- A vault with a recorded name uses `<login>/wiki-island-notes-<name>` instead ([Several vaults](#several-vaults)).
 - Background care runs sync separately from maintenance and from Notion publishing, including when a remote is connected after service startup. Each device builds its own index. Conflicting note bytes are retained in a committed copy and a work request; local files receive no conflict markers.
 - Never place a git directory in an iCloud Drive or Google Drive folder. A vault inside such a folder uses folder mode, which keeps history in the per-device data directory ([DESIGN](DESIGN.md#storage-and-history)).
 
