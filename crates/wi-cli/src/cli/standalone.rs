@@ -118,7 +118,10 @@ pub(crate) fn run_standalone(
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?
-                .block_on(wi_mcp::serve_stdio(vault_root(&root)))?;
+                .block_on(wi_mcp::serve_stdio_named(
+                    vault_root(&root),
+                    setup_name::recorded_name(&vault_root(&root)),
+                ))?;
             Ok(Output {
                 json: Value::Null,
                 human: String::new(),

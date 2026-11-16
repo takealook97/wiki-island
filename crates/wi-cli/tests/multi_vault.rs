@@ -312,3 +312,117 @@ fn invalid_name_is_refused_with_a_plain_sentence() {
     assert!(!f.path("work").exists());
     assert!(!f.config(HostId::Claude).exists());
 }
+
+/// Runs `wi mcp` for `vault`, sends the session-start requests and returns
+/// each result with its wire size, measured as in `tests/mcp.rs`.
+fn session_start(f: &Fixture, vault: &str) -> Vec<(Value, usize)> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut child = support::spawn(
+        Command::new(f.path("bin/wi"))
+            .args(["mcp", "--vault", f.path(vault).to_str().unwrap()])
+            .env("HOME", f.path("home"))
+            .env("WI_DATA_DIR", f.path("data"))
+            .env("WI_CACHE_DIR", f.path("cache"))
+            .env_remove("WI_VAULT")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null()),
+    );
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut send = |message: Value| {
+        writeln!(input, "{message}").unwrap();
+        input.flush().unwrap();
+    };
+    let mut request = |id: u64, method: &str, params: Value| {
+        if id == 2 {
+            send(serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+        }
+        send(serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
+        loop {
+            let mut line = String::new();
+            assert!(output.read_line(&mut line).unwrap() > 0, "server closed");
+            let reply: Value = serde_json::from_str(&line).unwrap();
+            if reply["id"] == id {
+                let result = reply["result"].clone();
+                let wire = serde_json::json!({"jsonrpc":"2.0","id":id,"result":result});
+                return (result, serde_json::to_vec(&wire).unwrap().len());
+            }
+        }
+    };
+    let init_params = serde_json::json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}});
+    let brief = serde_json::json!({"uri":"wiki-island://brief"});
+    let replies = vec![
+        request(1, "initialize", init_params),
+        request(2, "tools/list", serde_json::json!({})),
+        request(3, "resources/list", serde_json::json!({})),
+        request(4, "resources/read", brief),
+    ];
+    let _ = child.kill();
+    let _ = child.wait();
+    replies
+}
+
+const NAMED_SENTENCE: &str = "Use it only when the conversation is about that subject; another wiki-island vault may be connected for everything else.";
+
+#[test]
+fn named_vault_instructions_name_the_vault() {
+    let f = Fixture::new();
+    f.setup("personal", None);
+    let name = "a".repeat(32);
+    f.setup("work", Some(&name));
+    let unnamed = session_start(&f, "personal");
+    let unnamed_text = unnamed[0].0["instructions"].as_str().unwrap().to_owned();
+    assert!(unnamed_text.starts_with("Save what you learn as a plain note"));
+    assert!(!unnamed_text.contains("This vault is named"));
+    let named = session_start(&f, "work");
+    let named_text = named[0].0["instructions"].as_str().unwrap();
+    assert_eq!(
+        named_text,
+        format!("{unnamed_text} This vault is named \"{name}\". {NAMED_SENTENCE}")
+    );
+    assert_eq!(named[0].0["serverInfo"]["name"], "wiki-island");
+}
+
+#[test]
+fn named_vault_session_start_stays_within_budget() {
+    // The vault of the session-start budget test in `tests/mcp.rs`, with a 32-character name.
+    let f = Fixture::new();
+    let root = f.path("vault");
+    f.ok(&["init", root.to_str().unwrap()]);
+    for (path, text) in [
+        ("coffee.md", "# Coffee\nCoffee is served warm.\n"),
+        ("tea.md", "# Tea\nTea is served warm.\n"),
+    ] {
+        fs::write(root.join(path), text).unwrap();
+    }
+    let root = fs::canonicalize(&root).unwrap();
+    let naming = wi_export::local::Naming {
+        name: Some("a".repeat(32)),
+        entry: format!("wiki-island-{}", "a".repeat(32)),
+    };
+    wi_export::local::Targets {
+        home: f.path("home"),
+        hosts: vec![],
+        skill_dirs: vec![],
+        cache_root: f.path("cache"),
+    }
+    .save_named(&root, &naming)
+    .unwrap();
+    let replies = session_start(&f, "vault");
+    assert!(
+        replies[0].0["instructions"]
+            .as_str()
+            .unwrap()
+            .ends_with(NAMED_SENTENCE)
+    );
+    let sizes: Vec<_> = replies.iter().map(|(_, size)| *size).collect();
+    let start: usize = sizes.iter().sum();
+    eprintln!(
+        "Named session wire bytes initialize/tools/resources/brief: {sizes:?}; total {start}"
+    );
+    assert!(
+        start < 8 * 1024,
+        "session start uses {start} bytes: {sizes:?}"
+    );
+}

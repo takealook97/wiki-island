@@ -34,6 +34,12 @@ pub(crate) fn recorded(root: &Path) -> Option<Naming> {
     Naming::load(root).ok().flatten()
 }
 
+/// The recorded vault name for `wi mcp`, best effort: none when the record is missing.
+pub(crate) fn recorded_name(root: &Path) -> Option<String> {
+    let root = std::fs::canonicalize(root).ok()?;
+    recorded(&root)?.name
+}
+
 /// Decide the entry name for this vault across `hosts`.
 pub(crate) fn resolve(
     root: &Path,

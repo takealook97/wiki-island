@@ -20,7 +20,7 @@ pub use provider as lifecycle;
 pub use provider::*;
 pub use result::{MAX_BYTES, MAX_HITS};
 pub use schema::tools;
-pub use server::{Runtime, Server, ServerError, serve_stdio, serve_stdio_with};
+pub use server::{Runtime, Server, ServerError, serve_stdio, serve_stdio_named, serve_stdio_with};
 
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
