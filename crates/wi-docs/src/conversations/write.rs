@@ -263,7 +263,17 @@ impl<'a> Applier<'a> {
             "properties": properties,
         });
         let content = render(fields, "# Conversation import\n")?;
-        if self.old_manifest.as_ref().map(|m| m.bytes.as_slice()) != Some(content.as_bytes()) {
+        let current = match &self.old_manifest {
+            Some(old) => {
+                let mut note = parse(&old.bytes)?;
+                for key in ["origin", "imported_at"] {
+                    note = remove_key(&note, key).map_err(|e| Error::Invalid(e.to_string()))?;
+                }
+                Some(note.to_bytes().to_vec())
+            }
+            None => None,
+        };
+        if current.as_deref() != Some(content.as_bytes()) {
             self.vault.write_import_record(WriteRequest {
                 path: self.manifest_path.clone(),
                 content: content.into_bytes(),

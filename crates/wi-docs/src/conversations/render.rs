@@ -92,12 +92,17 @@ pub(crate) fn conversation_fields(kind: super::Kind, conv: &Conversation) -> Map
     fields
 }
 
+/// Identity of a project document in notes and in the import record.
+pub(crate) fn document_key(doc: &ProjectDoc) -> String {
+    format!("project:{}:{}", doc.project_id, doc.id)
+}
+
 pub(crate) fn document_fields(doc: &ProjectDoc) -> Map<String, Value> {
     let mut fields = Map::new();
     fields.insert("type".into(), json!("note"));
     fields.insert("title".into(), json!(doc.filename.trim()));
     fields.insert("conversation_source".into(), json!("claude"));
-    fields.insert("conversation_id".into(), json!(doc.id));
+    fields.insert("conversation_id".into(), json!(document_key(doc)));
     fields.insert("claude_project".into(), json!(doc.project.trim()));
     if let Some(time) = doc.created {
         fields.insert("conversation_created".into(), json!(timestamp(time)));

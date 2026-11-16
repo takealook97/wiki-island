@@ -115,7 +115,7 @@ fn import_projects(bytes: &[u8], applier: &mut Applier<'_>) -> Result<()> {
                 sections: Box::new(move |budget| render::split_lines(&content, budget)),
                 separator: "",
             };
-            let id = format!("project:{}:{}", doc.project_id, doc.id);
+            let id = render::document_key(&doc);
             applier.apply(&id, &folder, &stem, &draft)?;
         }
         Ok(true)
