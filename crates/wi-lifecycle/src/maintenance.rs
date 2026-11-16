@@ -7,7 +7,7 @@
 pub const SKILL_ID: &str = "wiki-island.maintenance";
 
 /// Revision of the compiled procedure text.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// One-line summary (procedure `summary` and host skill description).
 pub const SUMMARY: &str = "Keep this wiki-island vault healthy: work through open maintenance items within a small budget, and save durable memory as claims.";
@@ -38,6 +38,12 @@ or at the end of a session.
   procedure note (`type: memory`, `kind: procedure`, a unique `skill_id`).
 - When an item says a procedure is stale, too large, duplicated or failing
   lint, revise that procedure as a candidate revision; do not edit it in place.
+
+## Search
+
+When a search finds nothing relevant, search again with synonyms or other
+words, then in the other language (Korean or English). If that also finds
+nothing, say plainly that nothing was found.
 
 ## Never
 
@@ -110,5 +116,7 @@ mod tests {
         assert!(note_bytes().len() < 16_384);
         assert!(PROCEDURE_MARKDOWN.contains("type: memory"));
         assert!(PROCEDURE_MARKDOWN.contains("at most 3 items"));
+        assert!(PROCEDURE_MARKDOWN.contains("## Search"));
+        assert!(PROCEDURE_MARKDOWN.contains("in the other language (Korean or English)"));
     }
 }
