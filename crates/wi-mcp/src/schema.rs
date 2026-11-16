@@ -72,7 +72,7 @@ pub fn tools() -> Vec<Tool> {
     vec![
         tool(
             "wi_read",
-            "Read a note. Claims retain all qualifiers; optional section or line range.",
+            "Read a note. Claims retain all qualifiers.",
             &["identifier"],
             &[
                 ("identifier", string()),
@@ -86,7 +86,7 @@ pub fn tools() -> Vec<Tool> {
         ),
         tool(
             "wi_write",
-            "Create Markdown. Replacing requires expected_checksum. Agent origin is recorded.",
+            "Create Markdown. Agent origin is recorded.",
             &["identifier", "content"],
             &[
                 ("identifier", string()),
@@ -245,7 +245,7 @@ pub fn tools() -> Vec<Tool> {
         ),
         tool(
             "wi_work",
-            "Next tasks (3 items/4096 bytes), list/open/close/sweep. Unsupported closure needs limits and a reopen trigger.",
+            "Next tasks (3 items/4096 bytes). Unsupported closure needs limits and a reopen trigger.",
             &["action"],
             &[
                 (

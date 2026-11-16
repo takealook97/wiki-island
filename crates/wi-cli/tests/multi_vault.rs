@@ -412,12 +412,13 @@ fn session_start_after_setup(f: &Fixture, vault: &str, name: Option<&str>) -> us
 fn session_start_after_setup_stays_within_budget() {
     let f = Fixture::new();
     let unnamed = session_start_after_setup(&f, "plain", None);
-    assert!(unnamed <= 8192, "session start uses {unnamed} bytes");
+    assert!(unnamed <= 8192 - 88, "session start uses {unnamed} bytes");
     let name = "a".repeat(32);
     let named = session_start_after_setup(&f, "work", Some(&name));
     // ` This vault is named "<name>". Use it only for that subject.`: 54 bytes plus the name,
     // plus two backslashes that JSON puts before the quotes on the wire.
     assert_eq!(named, unnamed + 56 + name.len());
+    assert!(named <= 8192, "named session start uses {named} bytes");
 }
 
 #[test]
