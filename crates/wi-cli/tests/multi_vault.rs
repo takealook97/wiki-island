@@ -410,8 +410,9 @@ fn session_start_after_setup_stays_within_budget() {
     assert!(unnamed <= 8192, "session start uses {unnamed} bytes");
     let name = "a".repeat(32);
     let named = session_start_after_setup(&f, "work", Some(&name));
-    // ` This vault is named "<name>". Use it only for that subject.`: 54 bytes plus the name.
-    assert_eq!(named, unnamed + 54 + name.len());
+    // ` This vault is named "<name>". Use it only for that subject.`: 54 bytes plus the name,
+    // plus two backslashes that JSON puts before the quotes on the wire.
+    assert_eq!(named, unnamed + 56 + name.len());
 }
 
 #[test]

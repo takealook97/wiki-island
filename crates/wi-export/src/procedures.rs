@@ -39,7 +39,7 @@ fn entries(vault: &Vault, mode: ProcedureMode) -> wi_store::Result<Vec<Value>> {
             .is_some_and(|state| !matches!(state, "fresh" | "timeless"));
         entries.push(json!({
             "uri": uri(id), "name": id, "mimeType":"application/json",
-            "description": "Procedure evidence; check eligibility before executing.",
+            "description": "Procedure evidence; check eligibility first.",
             "path": label.path, "status": lifecycle.status,
             "freshness":label.freshness, "eligibility": label.eligibility,
             "mode": if current { "current" } else { "explore" },
