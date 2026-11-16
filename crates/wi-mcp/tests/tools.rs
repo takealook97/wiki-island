@@ -1764,3 +1764,34 @@ fn search_withheld_only_reports_retry_code() {
         "{v}"
     );
 }
+
+#[test]
+fn search_budget_withheld_does_not_report_retry_code() {
+    let (_t, e) = fixture(Arc::new(Unavailable));
+    engine_write(
+        &e,
+        "large.md",
+        &format!(
+            "---\ntype: note\nextra: {}\n---\nzebrafish\n",
+            "x".repeat(20000)
+        ),
+    );
+    let v = good(&e, "wi_search", json!({"query":"zebrafish"}));
+    assert!(v["hits"].as_array().unwrap().is_empty(), "{v}");
+    assert!(
+        v["withheld"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["reason"] == "does-not-fit"),
+        "{v}"
+    );
+    assert!(
+        !v["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "no-hits"),
+        "{v}"
+    );
+}
