@@ -212,3 +212,63 @@ fn report(
         conversations: Some(counts),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use wi_store::OpenOptions;
+
+    fn vault() -> (tempfile::TempDir, Vault) {
+        let tmp = tempfile::tempdir().unwrap();
+        let (vault, _) = Vault::init_with(
+            tmp.path().join("vault"),
+            OpenOptions {
+                index_path: Some(tmp.path().join("cache.sqlite3")),
+            },
+        )
+        .unwrap();
+        (tmp, vault)
+    }
+
+    const CONVERSATIONS: &[u8] =
+        br#"[{"uuid":"1","name":"A long enough name","chat_messages":[{"sender":"human","text":"hello there"}]}]"#;
+
+    #[test]
+    fn json_over_the_limit_is_refused_with_a_next_step() {
+        let (_tmp, vault) = vault();
+        let limits = Limits { max_json_bytes: 40 };
+        std::fs::write(vault.root().join("c.json"), CONVERSATIONS).unwrap();
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "conversations.json",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        writer.write_all(CONVERSATIONS).unwrap();
+        std::fs::write(
+            vault.root().join("c.zip"),
+            writer.finish().unwrap().into_inner(),
+        )
+        .unwrap();
+        std::fs::create_dir(vault.root().join("folder")).unwrap();
+        std::fs::write(
+            vault.root().join("folder/conversations.json"),
+            CONVERSATIONS,
+        )
+        .unwrap();
+        for source in ["c.json", "c.zip", "folder"] {
+            let error = try_import(&vault, source, &limits).unwrap_err();
+            let sentence = super::super::owner_sentence(&error).expect(source);
+            assert!(sentence.contains("smaller date range"), "{sentence}");
+            assert!(sentence.contains("conversations-000.json"), "{sentence}");
+        }
+        assert!(!vault.root().join("AI").exists());
+        // Within the limit the same sources import.
+        let roomy = Limits {
+            max_json_bytes: 4096,
+        };
+        assert!(try_import(&vault, "c.zip", &roomy).unwrap().is_some());
+    }
+}

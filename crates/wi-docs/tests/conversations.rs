@@ -425,3 +425,179 @@ fn conversation_import_redacts_secrets() {
     let again = run(&vault, "s.zip");
     assert!(again.unchanged);
 }
+
+fn with_note_bound(tmp: &TempDir, vault: Vault, bound: usize) -> Vault {
+    let config = vault.root().join(".wiki-island/config.toml");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str(&format!("\nmax_note_bytes = {bound}\n"));
+    fs::write(config, text).unwrap();
+    let root = vault.root().to_path_buf();
+    drop(vault);
+    Vault::open_with(
+        root,
+        OpenOptions {
+            index_path: Some(tmp.path().join("cache.sqlite3")),
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn oversized_conversation_is_split_at_message_boundaries() {
+    const BOUND: usize = 3000;
+    let (tmp, vault) = setup();
+    let vault = with_note_bound(&tmp, vault, BOUND);
+    let line = "word ".repeat(30);
+    let messages: Vec<Value> = (0..8)
+        .map(|i| {
+            json!({"sender": if i % 2 == 0 { "human" } else { "assistant" },
+                   "text": format!("message {i}\n{line}\n{line}\n{line}\n{line}")})
+        })
+        .collect();
+    let huge = format!("huge start\n{}", format!("{line}\n").repeat(40));
+    let conversations = json!([
+        {"uuid": "big-1", "name": "Long talk", "created_at": "2025-06-01T00:00:00Z", "chat_messages": messages},
+        {"uuid": "big-2", "name": "One huge message", "created_at": "2025-06-02T00:00:00Z",
+         "chat_messages": [{"sender": "human", "text": huge}]}
+    ]);
+    put(&vault, "big.json", bytes(&conversations));
+    let report = run(&vault, "big.json");
+    let c = report.conversations.as_ref().unwrap();
+    assert!(c.created >= 4, "{c:?}");
+
+    let mut seen = Vec::new();
+    for index in 1.. {
+        let path = match index {
+            1 => "AI/Claude/2025-06-01 Long talk.md".to_string(),
+            n => format!("AI/Claude/2025-06-01 Long talk ({n}).md"),
+        };
+        let Ok(read_result) = vault.read(&path) else {
+            break;
+        };
+        assert!(read_result.bytes.len() <= BOUND, "{path}");
+        let note = Note::parse(&read_result.bytes).unwrap();
+        assert_eq!(field(&note, "conversation_part"), json!(index));
+        assert!(note.body().starts_with("## User") || note.body().starts_with("## Assistant"));
+        seen.push(note.body().to_string());
+    }
+    assert!(seen.len() >= 2);
+    let joined = seen.join("\n\n");
+    let positions: Vec<usize> = (0..8)
+        .map(|i| {
+            joined
+                .find(&format!("message {i}\n"))
+                .expect("message kept whole")
+        })
+        .collect();
+    assert!(positions.windows(2).all(|w| w[0] < w[1]));
+    let parts = seen.len();
+    for note in &seen {
+        // Parts start at a message heading, never inside a message.
+        assert!(!note.starts_with("word"));
+    }
+    let first = read(&vault, "AI/Claude/2025-06-01 Long talk.md");
+    assert_eq!(field(&first, "conversation_parts"), json!(parts));
+
+    // One message larger than the limit is cut at line ends, each piece with its heading.
+    let mut pieces = 0;
+    let mut text = String::new();
+    for index in 1.. {
+        let path = match index {
+            1 => "AI/Claude/2025-06-02 One huge message.md".to_string(),
+            n => format!("AI/Claude/2025-06-02 One huge message ({n}).md"),
+        };
+        let Ok(r) = vault.read(&path) else { break };
+        assert!(r.bytes.len() <= BOUND);
+        let body = Note::parse(&r.bytes).unwrap().body().to_string();
+        assert!(body.starts_with("## User\n\n"));
+        text.push_str(body.strip_prefix("## User\n\n").unwrap());
+        pieces += 1;
+    }
+    assert!(pieces >= 2);
+    assert_eq!(text.trim_end(), huge.trim_end());
+
+    // Re-importing writes nothing, split or not.
+    let again = run(&vault, "big.json");
+    assert!(again.unchanged);
+    assert_eq!(again.conversations.as_ref().unwrap().unchanged, c.created);
+}
+
+#[test]
+fn split_conversation_files_are_all_imported() {
+    let (_tmp, vault) = setup();
+    let second = json!([{
+        "id": "g-2", "title": "Second file", "create_time": 1_750_000_000.0, "current_node": "u",
+        "mapping": {"u": gpt_node(None, &[], gpt_message("user", "From file two", 1.0))}
+    }]);
+    put(
+        &vault,
+        "split.zip",
+        zip(&[
+            ("conversations-000.json", &bytes(&chatgpt_conversations())),
+            ("conversations-001.json", &bytes(&second)),
+        ]),
+    );
+    let report = run(&vault, "split.zip");
+    assert_eq!(counts(&report), (2, 0, 0, 0, 0));
+    assert!(vault.read("AI/ChatGPT/2025-06-15 Second file.md").is_ok());
+}
+
+#[test]
+fn archives_that_escape_or_hold_links_are_refused() {
+    let (_tmp, vault) = setup();
+    let good = bytes(&claude_conversations());
+    for bad in [
+        "../outside.md",
+        "/outside.md",
+        "a/../../outside.md",
+        "a\\outside.md",
+        "a//outside.md",
+    ] {
+        put(
+            &vault,
+            "bad.zip",
+            zip(&[("conversations.json", &good), (bad, b"x")]),
+        );
+        assert!(
+            import(&vault, "bad.zip", ImportOptions::default()).is_err(),
+            "{bad}"
+        );
+    }
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "conversations.json",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+    writer.write_all(&good).unwrap();
+    writer
+        .add_symlink(
+            "link",
+            "../../outside",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+    put(&vault, "bad.zip", writer.finish().unwrap().into_inner());
+    let err = import(&vault, "bad.zip", ImportOptions::default()).unwrap_err();
+    assert!(
+        wi_docs::conversations::owner_sentence(&err).is_some(),
+        "{err}"
+    );
+    assert!(!vault.root().join("AI").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_conversation_file_in_a_folder_is_refused() {
+    let (tmp, vault) = setup();
+    fs::write(tmp.path().join("real.json"), bytes(&claude_conversations())).unwrap();
+    fs::create_dir_all(vault.root().join("folder")).unwrap();
+    std::os::unix::fs::symlink(
+        tmp.path().join("real.json"),
+        vault.root().join("folder/conversations.json"),
+    )
+    .unwrap();
+    assert!(import(&vault, "folder", ImportOptions::default()).is_err());
+    assert!(!vault.root().join("AI").exists());
+}
