@@ -151,3 +151,25 @@ fn init_prints_the_setup_next_step() {
         "{text}"
     );
 }
+
+#[test]
+fn search_no_matches_prints_retry_hint() {
+    let env = Env::new();
+    env.ok(&[
+        "write",
+        "notes/a.md",
+        "--content",
+        "# Title\n\nzebracrossing\n",
+    ]);
+    let miss = env.ok(&["search", "quokkaword"]);
+    assert!(miss.contains("no matches\n"), "{miss}");
+    assert!(
+        miss.contains("hint: try other words or the other language (Korean or English)"),
+        "{miss}"
+    );
+    let hit = env.ok(&["search", "zebracrossing"]);
+    assert!(!hit.contains("hint:"), "{hit}");
+    let json: Value = serde_json::from_str(&env.ok(&["search", "quokkaword", "--json"])).unwrap();
+    let codes = json["diagnostics"].as_array().expect("diagnostics list");
+    assert!(codes.iter().any(|c| c == "no-hits"), "{json}");
+}

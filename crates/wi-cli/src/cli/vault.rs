@@ -283,7 +283,9 @@ pub(crate) fn run_in_vault(vault: &Session, command: Command) -> Result<Output> 
                 }
             }
             if response.hits.is_empty() {
-                human.push_str("no matches\n");
+                human.push_str(
+                    "no matches\nhint: try other words or the other language (Korean or English)\n",
+                );
             }
             human.push_str(&format!(
                 "index as of {} · generation {}",
@@ -314,6 +316,11 @@ pub(crate) fn run_in_vault(vault: &Session, command: Command) -> Result<Output> 
             }
             let mut json = serde_json::to_value(&response)?;
             json["lifecycle"] = serde_json::to_value(&labels)?;
+            if response.hits.is_empty()
+                && let Some(ds) = json["diagnostics"].as_array_mut()
+            {
+                ds.push(serde_json::json!("no-hits"));
+            }
             Ok(Output { json, human })
         }
         Command::Capture(args) => lifecycle_cmd::capture(vault, args),
