@@ -81,33 +81,6 @@ pub(crate) fn retire(root: &Path, hosts: &[(HostId, PathBuf)], entry: &str) -> R
     Ok(())
 }
 
-/// The naming `wi mcp install` uses for one host: the same resolution as `wi setup`.
-pub(crate) fn for_host(
-    root: &Path,
-    host: HostId,
-    home: &Path,
-    codex_home: Option<&Path>,
-) -> Result<Naming> {
-    let hosts = locations(&[host], home, codex_home)?;
-    let id = std::fs::read_to_string(root.join(".wiki-island/config.toml"))
-        .ok()
-        .and_then(|text| wi_note::VaultConfig::parse(&text).ok())
-        .and_then(|config| config.vault_id().map(str::to_owned))
-        .unwrap_or_default();
-    Ok(resolve(root, None, &hosts, &id).naming)
-}
-
-/// Record a changed naming when this device already records the vault's apps.
-pub(crate) fn remember(root: &Path, naming: &Naming) -> Result<()> {
-    if recorded(root).as_ref() == Some(naming) {
-        return Ok(());
-    }
-    if let Some(targets) = wi_export::local::Targets::load(root)? {
-        targets.save_named(root, naming)?;
-    }
-    Ok(())
-}
-
 /// Plan and check this vault's entry in every host without writing anything.
 pub(crate) fn plans(
     hosts: &[HostId],

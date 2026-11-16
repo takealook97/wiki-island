@@ -11,6 +11,7 @@ mod error_text;
 mod errors;
 mod import_paths;
 mod lifecycle_cmd;
+mod mcp_install;
 mod publish_cmd;
 mod service_cmd;
 mod session;

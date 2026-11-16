@@ -10,7 +10,7 @@ use wi_store::{Vault, WatchEvent};
 use super::Output;
 use super::args::{Command, McpCommand, NoteCommand};
 use super::session::{ingest_warnings, open, print_ingest_warnings, vault_root};
-use super::{publish_cmd, service_cmd, setup_cmd, setup_name, sync_cmd};
+use super::{mcp_install, publish_cmd, service_cmd, setup_cmd, setup_name, sync_cmd};
 
 /// Refresh the host skill copies of this vault's procedures. Problems are warnings: notes and
 /// maintenance are unaffected, and the next pass tries again.
@@ -70,32 +70,18 @@ pub(crate) fn run_standalone(
             let home = setup_cmd::integration_home()?;
             let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
             let vault = std::fs::canonicalize(vault_root(&root))?;
-            let naming = setup_name::for_host(&vault, host.into(), &home, codex_home.as_deref())?;
-            let plan = wi_export::install::plan_host(
+            let mcp_install::Installed { plan, backup } = mcp_install::install(
+                &vault,
                 host.into(),
                 &home,
                 codex_home.as_deref(),
                 &setup_cmd::executable()?,
-                &vault,
-                &naming.entry,
+                yes,
             )?;
             // Keep the MCP stream silent; install is a separate CLI subcommand.
             if yes && !json {
                 print!("{}", plan.diff);
             }
-            let backup = if yes {
-                let backup = plan.apply()?;
-                let (vault, _) = Vault::init(&vault)?;
-                setup_name::remember(vault.root(), &naming)?;
-                let targets: Vec<_> = wi_export::skills::SkillTarget::for_host(host.into())
-                    .into_iter()
-                    .collect();
-                wi_export::skills::enable(&vault, &targets)?;
-                wi_export::skills::sync(&vault, &home, &targets, true)?;
-                backup
-            } else {
-                None
-            };
             Ok(Output {
                 human: if yes {
                     format!(

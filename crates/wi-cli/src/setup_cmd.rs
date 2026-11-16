@@ -263,10 +263,7 @@ fn setup_with_options(
             .map(|(host, plan)| (*host, plan.path.clone()))
             .collect(),
         skill_dirs: targets.iter().map(|target| target.root(home)).collect(),
-        cache_root: {
-            let cache = cache_root(home)?;
-            std::fs::canonicalize(&cache).or_else(|_| std::path::absolute(cache))?
-        },
+        cache_root: recorded_cache_root(home)?,
     }
     .save_named(&root, &resolution.naming)?;
     let background_plan = if background_ready {
@@ -403,6 +400,12 @@ fn start_background(
 /// True when the target's service manager is no longer reachable.
 fn manager_lost(runner: &service::Runner) -> bool {
     cfg!(any(target_os = "linux", windows)) && !super::service_cmd::ready(runner)
+}
+
+/// The cache folder as `targets.json` records it.
+pub(crate) fn recorded_cache_root(home: &Path) -> Result<PathBuf> {
+    let cache = cache_root(home)?;
+    Ok(std::fs::canonicalize(&cache).or_else(|_| std::path::absolute(cache))?)
 }
 
 fn cache_root(home: &Path) -> Result<PathBuf> {

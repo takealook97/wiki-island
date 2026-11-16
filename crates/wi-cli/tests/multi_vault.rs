@@ -173,21 +173,26 @@ fn setup_second_vault_adds_second_entry() {
 
 /// The text of the default entry as it appears in a host config.
 fn first_entry_text(host: HostId, bytes: &[u8]) -> String {
+    entry_text(host, bytes, "wiki-island")
+}
+
+/// The text of entry `name` as it appears in a host config.
+fn entry_text(host: HostId, bytes: &[u8], name: &str) -> String {
     let text = String::from_utf8_lossy(bytes).into_owned();
     if host == HostId::Codex {
-        let start = text.find("[mcp_servers.wiki-island]").unwrap();
+        let start = text.find(&format!("[mcp_servers.{name}]")).unwrap();
         let end = text[start + 1..]
             .find("\n[")
             .map_or(text.len(), |i| start + 1 + i);
         return text[start..end].to_owned();
     }
     let value: Value = serde_json::from_str(&text).unwrap();
-    let entry = serde_json::to_string(&value["mcpServers"]["wiki-island"]).unwrap();
+    let entry = serde_json::to_string(&value["mcpServers"][name]).unwrap();
     // The JSON writer keeps the entry compact on one line or pretty-printed.
     if text.contains(&entry) {
         entry
     } else {
-        let start = text.find("\"wiki-island\"").unwrap();
+        let start = text.find(&format!("\"{name}\"")).unwrap();
         let end = text[start..].find('}').unwrap() + start + 1;
         text[start..end].to_owned()
     }
@@ -466,4 +471,62 @@ fn doctor_shows_the_vault_name_and_entry() {
         .unwrap()
         .clone();
     assert_eq!(check["status"], "warn");
+}
+
+#[test]
+fn mcp_install_rename_migrates_recorded_hosts() {
+    let f = Fixture::new();
+    f.setup("first", None);
+    f.setup("second", Some("second"));
+    let (first, second) = (f.canonical("first"), f.canonical("second"));
+    // Claude's default entry now serves the second vault, so the first vault needs a new name.
+    let claude = f.config(HostId::Claude);
+    let text = fs::read_to_string(&claude).unwrap();
+    let edited = text.replace(first.to_str().unwrap(), second.to_str().unwrap());
+    assert_ne!(text, edited);
+    fs::write(&claude, edited).unwrap();
+    let second_entries = |host: HostId| -> Vec<String> {
+        let bytes = fs::read(f.config(host)).unwrap();
+        f.entries(host)
+            .into_iter()
+            .filter(|(_, vault)| vault.as_deref() == Some(second.as_path()))
+            .map(|(name, _)| entry_text(host, &bytes, &name))
+            .collect()
+    };
+    let before: Vec<_> = HOSTS.iter().map(|h| second_entries(*h)).collect();
+    f.ok(&[
+        "mcp",
+        "install",
+        "--host",
+        "claude",
+        "--yes",
+        "--vault",
+        f.path("first").to_str().unwrap(),
+    ]);
+    for (host, before) in HOSTS.iter().zip(before) {
+        let mine: Vec<_> = f
+            .entries(*host)
+            .into_iter()
+            .filter(|(_, vault)| vault.as_deref() == Some(first.as_path()))
+            .collect();
+        assert_eq!(
+            mine,
+            vec![entry("wiki-island-first", first.clone())],
+            "{host:?}"
+        );
+        let after = String::from_utf8(fs::read(f.config(*host)).unwrap()).unwrap();
+        for text in before {
+            assert!(after.contains(&text), "{host:?}: {text}");
+        }
+    }
+    f.uninstall("first");
+    for host in HOSTS {
+        assert!(
+            f.entries(host)
+                .iter()
+                .all(|(_, vault)| vault.as_deref() != Some(first.as_path())),
+            "{host:?}: {:?}",
+            f.entries(host)
+        );
+    }
 }
