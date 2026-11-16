@@ -1737,4 +1737,30 @@ fn search_no_hits_reports_retry_code() {
     );
     let hit = good(&e, "wi_search", json!({"query":"zebrafish"}));
     assert!(!codes(&hit).iter().any(|d| d["code"] == "no-hits"), "{hit}");
+    let past_end = good(&e, "wi_search", json!({"query":"zebrafish","offset":8}));
+    assert!(
+        !codes(&past_end).iter().any(|d| d["code"] == "no-hits"),
+        "{past_end}"
+    );
+}
+
+#[test]
+fn search_withheld_only_reports_retry_code() {
+    let (_t, e) = fixture(Arc::new(wi_mcp::provider::VaultLifecycle));
+    engine_write(
+        &e,
+        "hidden.md",
+        "---\ntype: memory\nstatus: draft\nsummary: zebrafish\n---\nzebrafish\n",
+    );
+    let v = good(&e, "wi_search", json!({"query":"zebrafish"}));
+    println!("WITHHELD: {v}");
+    assert!(v["hits"].as_array().unwrap().is_empty(), "{v}");
+    assert!(!v["withheld"].as_array().unwrap().is_empty(), "{v}");
+    assert!(
+        v["diagnostics"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"code":"no-hits","count":1})),
+        "{v}"
+    );
 }

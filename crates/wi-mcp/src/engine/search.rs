@@ -214,11 +214,15 @@ impl Engine {
             None => None,
         };
         let window = window::fill(&self.vault, query, offset, limit, accept)?;
-        let no_hits = window.total == 0;
         let page = window.page(offset, limit, out);
-        if no_hits && let Some(ds) = out["diagnostics"].as_array_mut() {
+        self.hydrate(page, a, out)?;
+        let delivered_none = out["hits"].as_array().is_some_and(Vec::is_empty);
+        if offset == 0
+            && delivered_none
+            && let Some(ds) = out["diagnostics"].as_array_mut()
+        {
             ds.push(json!("no-hits"));
         }
-        self.hydrate(page, a, out)
+        Ok(())
     }
 }
