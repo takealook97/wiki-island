@@ -530,3 +530,34 @@ fn mcp_install_rename_migrates_recorded_hosts() {
         );
     }
 }
+
+#[test]
+fn mcp_install_records_its_entry_name() {
+    let f = Fixture::new();
+    f.setup("first", None);
+    let second = f.path("second");
+    f.ok(&["init", second.to_str().unwrap()]);
+    let install = || {
+        f.ok(&[
+            "mcp",
+            "install",
+            "--host",
+            "claude",
+            "--yes",
+            "--vault",
+            second.to_str().unwrap(),
+        ])
+    };
+    install();
+    f.uninstall("first");
+    install();
+    assert_eq!(
+        f.entries(HostId::Claude),
+        vec![entry("wiki-island-second", f.canonical("second"))]
+    );
+    f.setup("second", None);
+    f.uninstall("second");
+    for host in HOSTS {
+        assert_eq!(f.entries(host), vec![], "{host:?}");
+    }
+}

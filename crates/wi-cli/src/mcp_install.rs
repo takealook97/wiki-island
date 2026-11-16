@@ -69,10 +69,7 @@ pub(crate) fn install(
     let (vault, _) = Vault::init(vault)?;
     let target = skills::SkillTarget::for_host(host);
     let path = installed.plan.path.clone();
-    if previous.is_some() {
-        record(previous, (host, path), target, home)?
-            .save_named(vault.root(), &resolution.naming)?;
-    }
+    record(previous, (host, path), target, home)?.save_named(vault.root(), &resolution.naming)?;
     let targets: Vec<_> = target.into_iter().collect();
     skills::enable(&vault, &targets)?;
     skills::sync(&vault, home, &targets, true)?;
