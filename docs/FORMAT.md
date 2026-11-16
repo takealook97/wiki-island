@@ -12,6 +12,7 @@ A vault is one directory of notes with git history, either in `<vault>/.git` (gi
   <file>.pdf, <file>.pdf.md original and its import sidecar
   document-ingestion-runs/  import run notes
   archive/                  archived notes, original relative path kept
+  AI/Claude/, AI/ChatGPT/   imported conversations, one note each
   .wiki-island/exports/     generated rules fragments (hidden, still synced; no wall-clock field)
   .wiki-island/
     config.toml             vault config, tracked (`vault_id`, `primary_device`, ...)
@@ -177,6 +178,48 @@ Document and run notes get no `origin` key; the manifest's `import` actor record
 ### Notion exports
 
 `wi import` recognizes a Notion export (a `.zip` or folder whose names carry 32-hex Notion ids) and converts it offline into ordinary notes under `Notion/<export name>/`: Notion ids are stripped from names, links are rewritten, CSV databases become notes with their columns as top-level properties (prefixed only when a column collides with an engine key), pages get minimal frontmatter with no absolute paths, and attachments (images, files) are copied beside the converted pages. A hidden record at `.wiki-island/imports/Notion/<export name>.md` keeps the mapping and checksums (a `_Import.md` an older version left beside the pages moves there once), so a repeated import changes only what changed, and a converted note or copied attachment edited in the vault is never overwritten. Nothing is fetched and no live sync exists. An outer zip that contains `*-Part-N.zip` members is recognized too. A folder export is passed as one argument (`wi import "Notion Export"`), not expanded into its files.
+
+### Conversation exports
+
+`wi import` also recognizes a Claude or ChatGPT data export: a `.zip`, an unpacked folder, or a single JSON file. A source is an export when `conversations.json` or `conversations-<n>.json` sits at its root or one folder below it, or when a single JSON file is a list whose first item has `chat_messages` (Claude) or `mapping` (ChatGPT). Only the conversation files and Claude's `projects.json` are read; images, HTML and other members are neither read nor counted toward the 256 MiB source limit. Every conversation is read on its own: one that cannot be read, or has no message to keep, is skipped and counted. The field names below follow public descriptions of the two exports and are read tolerantly (unknown keys are ignored, optional keys may be missing); they were not checked against an export from the services themselves.
+
+Each conversation becomes one plain `type: note`, never a lifecycle item, rule or preference, written with ingress `Import`.
+
+| Source | Folder | Messages kept |
+| --- | --- | --- |
+| Claude | `AI/Claude/` | `human` and `assistant` messages; text from the `text` content blocks, else the `text` field |
+| Claude project documents | `AI/Claude/Projects/<project name>/<file name>.md` | one note per document, content unchanged |
+| ChatGPT | `AI/ChatGPT/` | the branch ending at `current_node` (else the newest leaf); `user` and `assistant` messages of type text or multimodal text, not hidden and not addressed to a tool |
+
+File names are `<YYYY-MM-DD> <title>.md` (date of creation in UTC; no date when the export has none; `Untitled` when there is no title). Characters that are not portable in names, and brackets and `#`, become spaces. Two conversations with the same name get the first eight characters of the conversation id appended to the second.
+
+Frontmatter keys: `type: note`, `title`, `conversation_source` (`claude` or `chatgpt`), `conversation_id`, `conversation_created` and `conversation_updated` (UTC, RFC 3339, when the export has them), `conversation_checksum` (the hash of the note as written, used to tell an edit from an update), and for a split conversation `conversation_part` and `conversation_parts`. A project document carries `claude_project` and its project-qualified id in `conversation_id`.
+
+```markdown
+---
+conversation_checksum: sha256:...
+conversation_created: 2025-03-04T05:06:07Z
+conversation_id: 11111111-aaaa
+conversation_source: claude
+title: Trip plan
+type: note
+---
+## User
+
+Where should we go?
+
+Attachment: map.pdf
+
+## Assistant
+
+Lisbon.
+```
+
+The body has one `## User` or `## Assistant` section per message, in order, with the text unchanged. Attachments and images are not imported; a line `Attachment: <name>` (`Attachment: image` when no name is given) follows the message that carried them. Secret-like strings in titles, messages and project documents are replaced with `[redacted]` before writing, using the same pattern list as the capture filter ([OPERATIONS](OPERATIONS.md#conversation-import)).
+
+A note that would pass `max_note_bytes` is split at message boundaries into `<name>.md`, `<name> (2).md` and so on; each part keeps the frontmatter and its part number. One message larger than the limit is cut at line ends and every piece repeats its heading.
+
+A hidden record per source, `.wiki-island/imports/conversations/claude.md` or `chatgpt.md`, keeps `properties.conversations`: for each conversation id (or `project:<project id>:<document id>`), the note paths and their checksums. Existing vaults keep working: the import adds only new folders and the hidden record, and changes no index schema.
 
 ## Generated rules fragments
 

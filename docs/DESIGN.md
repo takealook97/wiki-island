@@ -19,7 +19,7 @@ In scope:
 - permalinks and identity
 - search: text, title, permalink, metadata filters
 - context traversal, list and find
-- document import with sidecars and page maps ([FORMAT](FORMAT.md#document-sidecars)) and Notion export import
+- document import with sidecars and page maps ([FORMAT](FORMAT.md#document-sidecars)), Notion export import and Claude and ChatGPT conversation import ([FORMAT](FORMAT.md#conversation-exports))
 - procedures exported as host skills and served over MCP ([SKILLS](SKILLS.md))
 - optional git remote synchronization in git mode ([OPERATIONS](OPERATIONS.md#git-history-and-sync))
 - an optional one-way, read-only Notion view of committed notes ([INTEGRATIONS](INTEGRATIONS.md#notion-view))
@@ -93,7 +93,7 @@ Twelve crates. A crate depends only on crates listed before it:
 2. `wi-lifecycle` (gates, eligibility, caps; pure) depends on `wi-note`.
 3. `wi-index` (SQLite index, literal fallback) depends on `wi-note` and `wi-lifecycle`.
 4. `wi-store` (write path, watcher, recovery, maintenance, lifecycle wiring) depends on `wi-note`, `wi-history`, `wi-index` and `wi-lifecycle`, and on `wi-sys` on Windows.
-5. `wi-export` (rules export, host table and registration, skills sync, service) depends on `wi-store`, `wi-note`, `wi-lifecycle` and `wi-history`; `wi-docs` (document and Notion import) depends on `wi-note`, `wi-store`, `wi-history` and `wi-index`, and on `wi-sys` on Windows.
+5. `wi-export` (rules export, host table and registration, skills sync, service) depends on `wi-store`, `wi-note`, `wi-lifecycle` and `wi-history`; `wi-docs` (document, Notion and conversation import) depends on `wi-note`, `wi-store`, `wi-history`, `wi-index` and `wi-lifecycle` (the secret patterns used for redaction), and on `wi-sys` on Windows.
 6. `wi-mcp` (MCP stdio server and its lifecycle `provider` module) depends on `wi-export`, `wi-store` and `wi-note`; `wi-lifecycle` is a dev-dependency used by its tests.
 7. `wi-notion` (one-way Notion publisher; takes notes from the caller and never depends on `wi-store`) depends on `wi-note` and `wi-history`, and on `wi-sys` on Windows.
 8. `wi-cli` (the `wi` and `wiki-island` binaries) depends on `wi-export`, `wi-docs`, `wi-note`, `wi-store`, `wi-mcp`, `wi-lifecycle`, `wi-history` and `wi-notion`, and on `wi-index` and `wi-sys` on Windows only.

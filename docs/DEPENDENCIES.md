@@ -73,7 +73,7 @@ Reuses `wi-note`, `wi-store`, `wi-history`, `serde`, `serde_json`, `thiserror` a
 | Crate | Version | Reason and alternative |
 | --- | --- | --- |
 | `lopdf` | =0.38.0, default features off | Native per-page PDF text, CMap decoding and geometry without a system executable. Not a layout or OCR engine. |
-| `zip` | =4.6.1, deflate only | Read DOCX/PPTX members and Notion zips without unpacking to disk. |
+| `zip` | =4.6.1, deflate only | Read DOCX/PPTX members, Notion zips and the conversation files of Claude and ChatGPT exports without unpacking to disk. |
 | `quick-xml` | =0.38.4 | Streaming paragraph and slide text; a DOM retains more memory. |
 | `csv` | =1.4.0 | Correct quoted fields and Tesseract TSV parsing. |
 | `imagesize` | =0.14.0 | Image dimensions without decoding pixels. |

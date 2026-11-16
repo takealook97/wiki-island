@@ -77,6 +77,10 @@ Run `wi export rules --host claude|codex|gemini|all --json` (default all). The J
 
 Export the workspace as Markdown & CSV (zip or folder) and run `wi import <export>`. The export may be at an absolute path outside the vault (for example `~/Downloads/Export.zip`): it is read-only and the converted copy is written into the vault. A folder inside the vault also works. The conversion is offline ([FORMAT](FORMAT.md#notion-exports)).
 
+## Claude and ChatGPT
+
+Request a data export in the app and run `wi import <export>` on the zip, the unpacked folder or one JSON file. Conversations become notes under `AI/Claude/` and `AI/ChatGPT/`, searchable like any note; Claude project documents go to `AI/Claude/Projects/`. The export is only read. Details, limits and what is left out: [OPERATIONS](OPERATIONS.md#conversation-import) and [FORMAT](FORMAT.md#conversation-exports).
+
 ## Notion view
 
 - One-way and read-only: committed notes (the branch tip, never unsaved files) become pages under one parent page. Each page says it is a read-only view; edits made in Notion are never imported.

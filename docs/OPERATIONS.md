@@ -223,6 +223,16 @@ Originals stay inside the git repository by default and import never modifies th
 - **Timeouts.** Each external extraction tool runs in its own process group (on Windows, in a kill-on-close Job Object) with a 60 s timeout per call (`WI_TOOL_TIMEOUT_MS`) and an output cap; a timeout or cap kill stops its descendants too. Each document has a total budget (`WI_IMPORT_BUDGET_MS`). A run that ended `partial` from a timeout or the budget, or `needs_ocr`, is re-extracted on the next import; if the retry fails, the prior original/run pair stays intact. Permanent results are reused from the cache.
 - **Safety bounds** (unmeasured): a 256 MiB source-size preflight; both derived notes must fit `max_note_bytes` (oversized output keeps a whole-page prefix, status `partial`, `pages_not_indexed`); CSV records parse incrementally and stop at the logical-page text bound. These are not a hard process memory limit.
 
+### Conversation import
+
+`wi import <path>` turns a Claude or ChatGPT data export into notes ([FORMAT](FORMAT.md#conversation-exports)); no flag is needed. Request the export in the app (the data export setting of the account), download the zip file and pass it as is, or pass the unpacked folder, or one JSON file of it. A large ChatGPT export may hold several `conversations-<n>.json` files; the zip or folder imports them all, and a single one can be imported alone.
+
+- **Imported:** the conversations and, for Claude, the documents of its projects. **Not imported:** images, attached files, thinking and tool steps, system and tool messages, and conversation branches other than the current one.
+- **Redaction.** Titles, messages and project documents are scanned with the secret patterns of the capture filter (private keys, cloud and service tokens, `password:` style assignments, links with credentials). Each match is replaced with `[redacted]`; the report counts the replacements. Notion and document imports do not redact.
+- **Repeating an import.** Conversations are matched by their id. The same content writes nothing; a changed conversation updates its note when nobody edited it; a note a person edited is kept and reported as a conflict with its path, and the other conversations still import. A conversation missing from a later export is left alone: nothing is deleted.
+- **Report.** `wi import` prints one or two lines (new, updated, unchanged, then edited notes kept, items skipped and secrets replaced). `--json` shows the same under `conversations`: `created`, `updated`, `unchanged`, `conflicts`, `conflict_paths`, `skipped` and `redacted`. Notes are counted, so a split conversation counts each part.
+- **Limits.** Conversation files above 256 MiB in total are refused with the next step (export a smaller date range, or unpack the archive and import the `conversations-<n>.json` files one by one). A zip file above 256 MiB is refused with the advice to unpack it and import the folder, which has no such limit for images. A zip with paths that leave the archive, links or special files is refused before anything is written.
+
 ## Zero-maintenance operations
 
 Nothing here puts a daemon, network or model on the capture or search path.

@@ -90,6 +90,7 @@ You can also open the notes folder (`~/wiki-island`, on Windows `%USERPROFILE%\w
 
 - **Obsidian or any folder of Markdown:** use that folder as the notes folder (`wi setup --vault <folder>`).
 - **Notion:** in Notion, choose Export, pick Markdown & CSV, and save the file to your Downloads folder. Then run `wi import ~/Downloads/<name of the export>.zip`. Your export is only read; wiki-island writes a cleaned copy into `Notion/<export name>/` in your notes folder, with Notion's id codes removed from names, links fixed and databases turned into notes.
+- **Claude and ChatGPT conversations:** in the app, request a data export and download the zip file. Then run `wi import ~/Downloads/<name of the export>.zip` (an unpacked folder or a single `conversations.json` works too). Each conversation becomes one plain note under `AI/Claude/` or `AI/ChatGPT/`, with your messages and the replies in order. Text that looks like a password, key or token is replaced with `[redacted]`. Images and attached files are not copied. Importing the same export again changes nothing, and a note you edited is never overwritten.
 - **PDF, Word, PowerPoint, CSV and images:** put them in the notes folder and run `wi import <file-or-folder>`. Text is extracted on your computer into a companion note; originals stay untouched.
 
 ## Three ways to keep your notes
