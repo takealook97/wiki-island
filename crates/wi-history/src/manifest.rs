@@ -709,11 +709,18 @@ impl Manifest {
         }
         file.write_all(&frame)
             .map_err(|e| HistoryError::io(&path, e))?;
+        let written = crate::manifest_cache::state_of(&file);
         crate::fault::manifest_append_barrier()?;
         durable::barrier_at(&file, &path, vault.durability())?;
+        crate::fault::after_manifest_append_barrier(&path);
+        let states = crate::manifest_cache::AppendStates {
+            before,
+            written,
+            after: crate::manifest_cache::state_of(&file),
+        };
         vault
             .manifest_cache()
-            .appended(&file, before, snap.valid_len, &frame);
+            .appended(states, snap.valid_len, &frame);
         Ok(())
     }
 

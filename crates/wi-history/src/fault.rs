@@ -101,8 +101,23 @@ pub(crate) fn manifest_append_barrier() -> crate::error::Result<()> {
     Ok(())
 }
 
+/// After a manifest frame passed its barrier and before the cache records
+/// it. Unit tests can run another writer here.
+pub(crate) fn after_manifest_append_barrier(_path: &std::path::Path) {
+    #[cfg(test)]
+    if let Some(hook) = AFTER_MANIFEST_BARRIER.with(std::cell::RefCell::take) {
+        hook(_path);
+    }
+}
+
+/// A hook run once by the next [`after_manifest_append_barrier`] on this
+/// thread (unit tests only).
+#[cfg(test)]
+pub(crate) type BarrierHook = Box<dyn FnOnce(&std::path::Path)>;
+
 #[cfg(test)]
 thread_local! {
+    pub(crate) static AFTER_MANIFEST_BARRIER: std::cell::RefCell<Option<BarrierHook>> = const { std::cell::RefCell::new(None) };
     pub(crate) static FAIL_REF_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static FAIL_MANIFEST_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static UNKNOWN_FILE_STATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

@@ -215,18 +215,19 @@ impl ManifestCache {
         Ok(Some(parse_fold(&bytes).1))
     }
 
-    /// Fold `frame`, which this process appended at offset `at` of `file`
-    /// and whose barrier returned, while the publisher lock is still held.
-    /// `before` is the file state taken just before the write. The cache
+    /// Fold `frame`, which this process appended at offset `at` and whose
+    /// barrier returned, while the publisher lock is still held. The cache
     /// takes the frame only when it held exactly the bytes before it and the
     /// file was proved unchanged up to the write; otherwise it keeps its
-    /// state and the next load compares.
-    pub(crate) fn appended(&self, file: &File, before: Option<FileState>, at: u64, frame: &[u8]) {
+    /// state and the next load compares. It records the file state only
+    /// when [`AppendStates::own`] proves nothing else wrote during the
+    /// barrier.
+    pub(crate) fn appended(&self, states: AppendStates, at: u64, frame: &[u8]) {
         let mut state = self.lock();
         let Some(cached) = state.as_mut() else {
             return;
         };
-        if cached.valid_len() != at || !cached.unchanged(before) {
+        if cached.valid_len() != at || !cached.unchanged(states.before) {
             return;
         }
         let start = cached.prefix.len();
@@ -236,12 +237,32 @@ impl ManifestCache {
             return;
         }
         cached.prefix.extend_from_slice(frame);
-        let after = file_state(file).filter(|s| s.len == cached.valid_len());
-        cached.state = after;
+        cached.state = states.own(cached.valid_len());
     }
 }
 
-/// File state of an open manifest, for [`ManifestCache::appended`].
+/// File states an own append samples from its handle: just before the
+/// write, right after it returned, and after the barrier.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AppendStates {
+    pub(crate) before: Option<FileState>,
+    pub(crate) written: Option<FileState>,
+    pub(crate) after: Option<FileState>,
+}
+
+impl AppendStates {
+    /// The state to record after the append, known only when the two
+    /// samples after the write are equal, the file is the one written to
+    /// and it is `len` bytes long. The barrier keeps the change time, so
+    /// any other write during it is seen here.
+    fn own(&self, len: u64) -> Option<FileState> {
+        let (before, written) = (self.before?, self.written?);
+        let same_file = written.device == before.device && written.file_id == before.file_id;
+        (self.after == Some(written) && same_file && written.len == len).then_some(written)
+    }
+}
+
+/// File state of an open manifest, for [`AppendStates`].
 pub(crate) fn state_of(file: &File) -> Option<FileState> {
     file_state(file)
 }
