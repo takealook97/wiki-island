@@ -160,6 +160,60 @@ jobs:
           test "$state" != active
           test "$state" != activating
           if systemctl --user is-enabled "$unit"; then exit 1; fi
+      # XDG_CONFIG_HOME is the runner's real config folder, so the cleanup runs even on failure.
+      - name: Two vaults and a foreign unit against the real manager
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/wi-systemd-two"
+          mkdir -p "$work/home/.claude" "$work/bin"
+          install -m 755 target/debug/wi "$work/bin/wi"
+          export HOME="$work/home" WI_CACHE_DIR="$work/cache"
+          wi() { "$work/bin/wi" "$@"; }
+          cleanup() {
+            set +e
+            for v in a b; do WI_VAULT="$work/home/$v" wi uninstall; done
+            if test -n "${unit_c:-}"; then
+              systemctl --user stop "$unit_c" 2>/dev/null
+              systemctl --user reset-failed "$unit_c" 2>/dev/null
+            fi
+            rm -f "$XDG_CONFIG_HOME"/systemd/user/wiki-island-*.service
+          }
+          trap cleanup EXIT
+          units() { ls "$XDG_CONFIG_HOME"/systemd/user/ | grep -E '^wiki-island-.*\.service$' || true; }
+          test -z "$(units)"
+          WI_VAULT="$work/home/a" wi setup --name a
+          unit_a=$(units)
+          test "$(echo "$unit_a" | wc -l)" -eq 1
+          WI_VAULT="$work/home/b" wi setup --name b
+          test "$(units | wc -l)" -eq 2
+          for unit in $(units); do
+            systemctl --user is-enabled "$unit"
+            sleep 2
+            test "$(systemctl --user is-active "$unit")" = active
+          done
+          grep -F '"wiki-island-a"' "$work/home/.claude.json"
+          grep -F '"wiki-island-b"' "$work/home/.claude.json"
+          WI_VAULT="$work/home/a" wi uninstall
+          test ! -e "$XDG_CONFIG_HOME/systemd/user/$unit_a"
+          test "$(units | wc -l)" -eq 1
+          unit_b=$(units)
+          test "$(systemctl --user is-active "$unit_b")" = active
+          grep -F '"wiki-island-b"' "$work/home/.claude.json"
+          if grep -F '"wiki-island-a"' "$work/home/.claude.json"; then exit 1; fi
+          WI_VAULT="$work/home/b" wi uninstall
+          test -z "$(units)"
+          # A running unit of this vault's name that wiki-island did not create is refused
+          # with its own sentence, and the unit keeps running.
+          WI_VAULT="$work/home/c" wi setup --name c
+          unit_c=$(units)
+          WI_VAULT="$work/home/c" wi uninstall
+          systemd-run --user --unit="${unit_c%.service}" sleep 600
+          if WI_VAULT="$work/home/c" wi setup --name c 2> "$work/foreign.txt"; then exit 1; fi
+          cat "$work/foreign.txt"
+          grep -F "is running without a unit file wiki-island knows; stop it, then run wi setup again" "$work/foreign.txt"
+          if grep -F "Setup could not" "$work/foreign.txt"; then exit 1; fi
+          systemctl --user stop "$unit_c"
 
   # Hosted Windows runners are administrators, so the no-elevation proof runs as a newly
   # created standard local user. Start-Process -Credential starts the proof script under that
