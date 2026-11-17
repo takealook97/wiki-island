@@ -4,6 +4,7 @@ use anyhow::Result;
 
 use super::Output;
 use super::service_cmd;
+use wi_export::local::Naming;
 use wi_store::Vault;
 
 pub(crate) fn doctor(vault: &Vault) -> Result<Output> {
@@ -81,10 +82,14 @@ pub(crate) fn doctor(vault: &Vault) -> Result<Output> {
 /// longer has this vault's entry. `None` when this device records no apps.
 fn apps_check(vault: &Vault) -> Option<wi_store::Check> {
     let targets = wi_export::local::Targets::load(vault).ok()??;
-    let naming = wi_export::local::Naming::load(vault)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    // Entry names resolve as setup and uninstall resolve them; a recorded name this program
+    // does not write is never shown or compared.
+    let recorded = wi_export::local::Naming::load(vault).ok().flatten();
+    let Some(naming) = recorded.as_ref().map_or(Some(Naming::default()), |_| {
+        super::setup_name::recorded(vault.root())
+    }) else {
+        return Some(unsupported_name_check(vault.root()));
+    };
     let missing: Vec<&str> = targets
         .hosts
         .iter()
@@ -100,11 +105,17 @@ fn apps_check(vault: &Vault) -> Option<wi_store::Check> {
     Some(apps_check_from(&naming, &missing, vault.root()))
 }
 
-fn apps_check_from(
-    naming: &wi_export::local::Naming,
-    missing: &[&str],
-    root: &std::path::Path,
-) -> wi_store::Check {
+/// The recorded app name is outside the form `wi setup` writes; setup chooses it again.
+fn unsupported_name_check(root: &std::path::Path) -> wi_store::Check {
+    wi_store::Check {
+        name: "apps",
+        status: "warn",
+        detail: "The recorded AI app name is not one wi writes, so wi cannot tell which name AI apps use for this vault.".into(),
+        fix: Some(format!("run {}", super::setup_cmd::setup_command_for(root))),
+    }
+}
+
+fn apps_check_from(naming: &Naming, missing: &[&str], root: &std::path::Path) -> wi_store::Check {
     let mut detail = match &naming.name {
         Some(name) => format!(
             "This vault is named \"{name}\"; AI apps reach it as {}.",
