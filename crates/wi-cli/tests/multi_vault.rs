@@ -865,3 +865,93 @@ fn recorded_entry_outside_the_naming_rule_is_resolved_again() {
         );
     }
 }
+
+/// Set a vault up and remove it again, so its id is known and no service or record remains.
+#[cfg(target_os = "linux")]
+fn vault_without_service(f: &Fixture) -> String {
+    f.setup("first", None);
+    let id = vault_id(&f.path("first"));
+    f.uninstall("first");
+    id
+}
+
+#[cfg(target_os = "linux")]
+fn setup_first(f: &Fixture) -> (String, String) {
+    let out = f.run(&["setup", "--vault", f.path("first").to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    (
+        String::from_utf8(out.stderr).unwrap(),
+        String::from_utf8(out.stdout).unwrap(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_foreign_unit_reports_stop_step() {
+    let f = Fixture::new();
+    let id = vault_without_service(&f);
+    // A unit of this vault's name runs, but no unit file wiki-island knows exists.
+    fs::write(
+        f.path("home/manager")
+            .join(format!("wiki-island-{id}.service.active")),
+        "",
+    )
+    .unwrap();
+    let (error, stdout) = setup_first(&f);
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(
+        error.contains(
+            "is running without a unit file wiki-island knows; stop it, then run wi setup again"
+        ),
+        "{error}"
+    );
+    assert!(!error.contains("Setup could not"), "{error}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_foreign_unit_file_reports_rename_step() {
+    let f = Fixture::new();
+    let id = vault_without_service(&f);
+    let unit = f
+        .path("home/.config/systemd/user")
+        .join(format!("wiki-island-{id}.service"));
+    fs::create_dir_all(unit.parent().unwrap()).unwrap();
+    fs::write(&unit, "[Service]\nExecStart=/bin/true\n").unwrap();
+    let (error, _) = setup_first(&f);
+    assert!(
+        error.contains("already exists; rename or remove it, then run wi setup again"),
+        "{error}"
+    );
+    assert!(!error.contains("Setup could not"), "{error}");
+    assert_eq!(
+        fs::read_to_string(&unit).unwrap(),
+        "[Service]\nExecStart=/bin/true\n"
+    );
+}
+
+#[test]
+fn doctor_reports_resolved_entry_name() {
+    let f = Fixture::new();
+    f.setup("first", None);
+    f.setup("second", Some("second"));
+    let doctor = |vault: &str| {
+        let out = f.ok(&["doctor", "--vault", f.path(vault).to_str().unwrap()]);
+        String::from_utf8(out.stdout).unwrap()
+    };
+    // A supported recorded name is printed as before.
+    assert!(
+        doctor("second").contains("AI apps reach it as wiki-island-second."),
+        "{}",
+        doctor("second")
+    );
+    let record = f.path("first").join(".wiki-island/local/targets.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    value["entry"] = "owner entry!".into();
+    fs::write(&record, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    let text = doctor("first");
+    assert!(!text.contains("owner entry!"), "{text}");
+    let line = text.lines().find(|l| l.contains("apps:")).unwrap();
+    assert!(line.starts_with("[warn] apps:"), "{text}");
+    assert!(text.contains("Next: run wi setup"), "{text}");
+}
