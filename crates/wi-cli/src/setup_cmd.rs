@@ -161,7 +161,22 @@ pub(crate) fn setup(
         runner,
         wi_store::OpenOptions::default(),
         Choices { primary, name },
-    ).map_err(|_| anyhow::anyhow!("Setup could not finish; check that wiki-island is installed in its permanent location and your AI app settings are readable and writable, then run wi setup again."))
+    )
+    .map_err(|error| {
+        keep_owner_sentence(
+            error,
+            "Setup could not finish; check that wiki-island is installed in its permanent location and your AI app settings are readable and writable, then run wi setup again.",
+        )
+    })
+}
+
+/// `error` when it is a refusal written for the owner; otherwise `fallback`, with no internal text.
+fn keep_owner_sentence(error: anyhow::Error, fallback: &'static str) -> anyhow::Error {
+    use wi_export::install::Error;
+    match error.downcast_ref::<Error>() {
+        Some(Error::Refused(_) | Error::EntryInUse) => error,
+        _ => anyhow::anyhow!(fallback),
+    }
 }
 fn setup_with_options(
     root: &Path,
@@ -239,9 +254,12 @@ fn setup_with_options(
         request(&selected, id)?;
         Ok(selected)
     };
-    let selected = preflight().map_err(|_| anyhow::anyhow!(
-        "Setup could not start; install the program in its permanent location and check that your AI app settings are readable and writable."
-    ))?;
+    let selected = preflight().map_err(|error| {
+        keep_owner_sentence(
+            error,
+            "Setup could not start; install the program in its permanent location and check that your AI app settings are readable and writable.",
+        )
+    })?;
     // Inside a file-synced folder the vault starts in folder mode (history
     // in this device's data folder); otherwise in git mode.
     let (vault, _) = Vault::init_with(&root, options)?;

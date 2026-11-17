@@ -25,6 +25,9 @@ pub enum Error {
         "Another notes folder already uses this connection name in your AI app settings; run wi setup in this notes folder to choose a free name."
     )]
     EntryInUse,
+    /// A refusal written for the owner, with its next step; shown as is.
+    #[error("{0}")]
+    Refused(String),
 }
 #[derive(Debug, Serialize)]
 pub struct Plan {

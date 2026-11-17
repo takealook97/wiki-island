@@ -150,13 +150,13 @@ fn with_path(paths: &[PathBuf], path: &Path) -> Vec<PathBuf> {
 }
 
 fn foreign(label: &str) -> Error {
-    Error::Config(format!(
+    Error::Refused(format!(
         "A different service unit named {label} already exists; rename or remove it, then run wi setup again"
     ))
 }
 
 fn foreign_running(label: &str) -> Error {
-    Error::Config(format!(
+    Error::Refused(format!(
         "A different service unit named {label} is running without a unit file wiki-island knows; stop it, then run wi setup again"
     ))
 }

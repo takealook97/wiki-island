@@ -146,7 +146,7 @@ fn sentence(text: &str) -> Error {
 }
 
 fn foreign(task: &str) -> Error {
-    Error::Config(format!(
+    Error::Refused(format!(
         "A scheduled task named {task} already exists and was not created by wiki-island; rename or remove it in Task Scheduler, then run wi setup again"
     ))
 }
