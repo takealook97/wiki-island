@@ -1,52 +1,95 @@
 //! The parsed manifest kept between snapshots of one vault handle.
 //!
-//! Disk stays the only truth. Each load opens the file and checks the cached
-//! state against it: same file (device and inode on Unix), not shorter than
-//! the cached valid prefix, the same modification time when the length is
-//! unchanged, and the same bytes in the checkpoint frame and the last cached
-//! frame. When the file only grew, the new frames are folded into a copy of
-//! the cached state; otherwise the whole file is parsed. A state is cached
-//! only when every byte read folded cleanly, so a damaged manifest is never
-//! cached, and a frame enters the cache only once it is read back from the
-//! file. Writers that replace the file also invalidate. Damage written into
-//! the middle of a file that keeps its identity and grows is not seen here;
-//! retirement parses the whole file before it copies frames.
+//! Disk stays the only truth. The cache keeps the raw bytes of the prefix
+//! it parsed and the full file state (identity, length, modification and
+//! change time) recorded right after its last parse, fold or own append. A
+//! load reuses the cache without reading the file only when the file state
+//! equals that record. Otherwise it reads the file and compares the cached
+//! prefix byte for byte: equal, only the bytes after it are folded; any
+//! difference, a shorter file or a read error, the whole file is parsed. A
+//! state is cached only when every byte read folded cleanly, so a damaged
+//! manifest is never cached. Where the platform gives no file state, every
+//! load compares. Lock-free reads never fill or fold the cache, and a frame
+//! this process appends enters it only after its barrier, under the
+//! publisher lock. Writers that replace the file also invalidate.
 
 use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
-use std::time::SystemTime;
 
 use crate::error::{HistoryError, Result};
-use crate::manifest::{Fold, MAGIC, ManifestSnapshot, parse_fold};
+use crate::manifest::{Fold, ManifestSnapshot, parse_fold};
 
-/// File identity: device and inode on Unix; none elsewhere, where the byte
-/// checks alone decide.
-type Identity = Option<(u64, u64)>;
-
-#[cfg(unix)]
-fn identity(meta: &Metadata) -> Identity {
-    use std::os::unix::fs::MetadataExt;
-    Some((meta.dev(), meta.ino()))
+/// Everything the platform tells about a file that changes when its bytes
+/// do: identity, length, modification time and change time at full
+/// resolution. User space cannot set the change time back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileState {
+    device: u64,
+    file_id: u128,
+    len: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
 }
 
-#[cfg(not(unix))]
-fn identity(_meta: &Metadata) -> Identity {
+#[cfg(unix)]
+fn platform_state(_file: &File, meta: &Metadata) -> Option<FileState> {
+    use std::os::unix::fs::MetadataExt;
+    Some(FileState {
+        device: meta.dev(),
+        file_id: u128::from(meta.ino()),
+        len: meta.len(),
+        modified: (meta.mtime(), meta.mtime_nsec()),
+        changed: (meta.ctime(), meta.ctime_nsec()),
+    })
+}
+
+#[cfg(windows)]
+fn platform_state(file: &File, _meta: &Metadata) -> Option<FileState> {
+    let stat = wi_sys::fs::stamp(file).ok()?;
+    Some(FileState {
+        device: stat.volume_serial,
+        file_id: stat.file_id,
+        len: stat.size,
+        modified: (stat.last_write, 0),
+        changed: (stat.change_time, 0),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn platform_state(_file: &File, _meta: &Metadata) -> Option<FileState> {
     None
+}
+
+/// The state of the open file, or `None` when it is unknown and every load
+/// must compare bytes.
+fn file_state(file: &File) -> Option<FileState> {
+    if crate::fault::file_state_unknown() {
+        return None;
+    }
+    let meta = file.metadata().ok()?;
+    platform_state(file, &meta)
 }
 
 struct Cached {
     fold: Fold,
-    valid_len: u64,
-    identity: Identity,
-    /// Modification time when `valid_len` was read, if known.
-    modified: Option<SystemTime>,
-    /// Magic line and checkpoint frame: they name the manifest id, the
-    /// retired prefix and the sequence state, and every rewrite changes them.
-    head: Vec<u8>,
-    /// Offset and bytes of the last frame of the valid prefix.
-    last: (u64, Vec<u8>),
+    /// The file bytes the fold covers, all of them valid frames.
+    prefix: Vec<u8>,
+    /// File state right after the fold, when known and consistent.
+    state: Option<FileState>,
+}
+
+impl Cached {
+    fn valid_len(&self) -> u64 {
+        self.prefix.len() as u64
+    }
+
+    /// Whether the file is proved unchanged since the fold.
+    fn unchanged(&self, now: Option<FileState>) -> bool {
+        self.state
+            .is_some_and(|s| Some(s) == now && s.len == self.valid_len())
+    }
 }
 
 /// Per-handle cache of the parsed manifest.
@@ -59,62 +102,28 @@ impl std::fmt::Debug for ManifestCache {
     }
 }
 
-fn read_at(file: &mut File, path: &Path, offset: u64, len: usize) -> Result<Vec<u8>> {
-    let mut buf = vec![0u8; len];
-    file.seek(SeekFrom::Start(offset))
-        .and_then(|_| file.read_exact(&mut buf))
-        .map_err(|e| HistoryError::io(path, e))?;
-    Ok(buf)
+/// Open `path`; `None` when it does not exist.
+fn open(path: &Path) -> Result<Option<File>> {
+    match File::open(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(HistoryError::io(path, e)),
+    }
 }
 
-impl Cached {
-    /// Cache the state of a clean fold whose valid prefix ends at
-    /// `valid_len`. `tail` holds the file bytes from `tail_start` on and
-    /// must cover the checkpoint frame when `head` is `None`.
-    fn new(
-        fold: Fold,
-        valid_len: u64,
-        (identity, modified): (Identity, Option<SystemTime>),
-        head: Option<Vec<u8>>,
-        tail: &[u8],
-        tail_start: usize,
-    ) -> Option<Self> {
-        let head = head.or_else(|| {
-            tail.get(..fold.head_end.checked_sub(tail_start)?)
-                .map(<[u8]>::to_vec)
-        })?;
-        let last_range = fold
-            .frames()
-            .last()
-            .map_or(MAGIC.len()..fold.head_end, |(_, r)| r.clone());
-        let local =
-            last_range.start.checked_sub(tail_start)?..last_range.end.checked_sub(tail_start)?;
-        let last = (last_range.start as u64, tail.get(local)?.to_vec());
-        Some(Self {
-            fold,
-            valid_len,
-            identity,
-            modified,
-            head,
-            last,
-        })
-    }
+fn read_all(file: &mut File, path: &Path) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| file.read_to_end(&mut bytes))
+        .map_err(|e| HistoryError::io(path, e))?;
+    Ok(bytes)
+}
 
-    /// Whether the open file still starts with the cached valid prefix.
-    fn matches(&self, file: &mut File, path: &Path, meta: &Metadata) -> Result<bool> {
-        let len = meta.len();
-        if identity(meta) != self.identity || len < self.valid_len {
-            return Ok(false);
-        }
-        // Same length but written since: rewritten in place.
-        if len == self.valid_len && meta.modified().ok() != self.modified {
-            return Ok(false);
-        }
-        if read_at(file, path, 0, self.head.len())? != self.head {
-            return Ok(false);
-        }
-        Ok(read_at(file, path, self.last.0, self.last.1.len())? == self.last.1)
-    }
+/// The state to record for `bytes` just read: known only when the file did
+/// not change while it was read.
+fn settled(before: Option<FileState>, file: &File, bytes: &[u8]) -> Option<FileState> {
+    let after = file_state(file)?;
+    (before == Some(after) && after.len == bytes.len() as u64).then_some(after)
 }
 
 impl ManifestCache {
@@ -131,7 +140,7 @@ impl ManifestCache {
     /// Length of the cached valid prefix, if a state is cached.
     #[cfg(test)]
     pub(crate) fn cached_len(&self) -> Option<u64> {
-        self.lock().as_ref().map(|c| c.valid_len)
+        self.lock().as_ref().map(Cached::valid_len)
     }
 
     /// Forget the cached state; the next load parses the whole file.
@@ -140,63 +149,99 @@ impl ManifestCache {
     }
 
     /// The snapshot of the manifest at `path`, or `None` when it does not
-    /// exist or is empty. Corruption is reported in the snapshot.
+    /// exist or is empty, updating the cache. Callers hold the publisher
+    /// lock. Corruption is reported in the snapshot.
     pub(crate) fn load(&self, path: &Path) -> Result<Option<ManifestSnapshot>> {
-        let mut file = match File::open(path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.invalidate();
-                return Ok(None);
-            }
-            Err(e) => return Err(HistoryError::io(path, e)),
+        let Some(mut file) = open(path)? else {
+            self.invalidate();
+            return Ok(None);
         };
-        let meta = file.metadata().map_err(|e| HistoryError::io(path, e))?;
-        let len = meta.len();
+        let before = file_state(&file);
         let mut state = self.lock();
-        if len == 0 {
-            *state = None;
-            return Ok(None);
-        }
-        let stamp = (identity(&meta), meta.modified().ok());
-        // Taken out so new frames fold in place; put back only when clean.
-        if let Some(cached) = state.take()
-            && cached.matches(&mut file, path, &meta)?
+        if let Some(cached) = state.as_ref()
+            && cached.unchanged(before)
         {
-            if len == cached.valid_len {
-                let snap = cached.fold.snapshot(len, None);
-                *state = Some(cached);
-                return Ok(Some(snap));
-            }
-            let start = usize::try_from(cached.valid_len).unwrap_or(usize::MAX);
-            let tail_len = usize::try_from(len - cached.valid_len).unwrap_or(usize::MAX);
-            let tail = read_at(&mut file, path, cached.valid_len, tail_len)?;
-            let mut fold = cached.fold;
-            let (end, corrupt) = fold.fold_frames(&tail, start);
-            let snap = fold.snapshot(end as u64, corrupt);
-            if snap.corrupt.is_none() {
-                *state = Cached::new(fold, len, stamp, Some(cached.head), &tail, start);
-            }
-            return Ok(Some(snap));
+            return Ok(Some(cached.fold.snapshot(cached.valid_len(), None)));
         }
-        let mut bytes = Vec::new();
-        file.seek(SeekFrom::Start(0))
-            .and_then(|_| file.read_to_end(&mut bytes))
-            .map_err(|e| HistoryError::io(path, e))?;
+        // Taken out so new frames fold in place; put back only when clean.
+        let cached = state.take();
+        let bytes = read_all(&mut file, path)?;
         if bytes.is_empty() {
-            *state = None;
             return Ok(None);
         }
-        let (fold, snap) = parse_fold(&bytes);
-        // Bytes appended after the metadata was read leave the time unknown.
-        let stamp = if bytes.len() as u64 == len {
-            stamp
-        } else {
-            (stamp.0, None)
+        let recorded = settled(before, &file, &bytes);
+        let (fold, snap) = match cached {
+            Some(cached) if Self::extends(&cached, &bytes) => {
+                let mut fold = cached.fold;
+                let start = cached.prefix.len();
+                let (end, corrupt) = fold.fold_frames(&bytes[start..], start);
+                let snap = fold.snapshot(end as u64, corrupt);
+                (fold, snap)
+            }
+            _ => parse_fold(&bytes),
         };
-        *state = match snap.corrupt {
-            None => Cached::new(fold, bytes.len() as u64, stamp, None, &bytes, 0),
-            Some(_) => None,
-        };
+        if snap.corrupt.is_none() {
+            *state = Some(Cached {
+                fold,
+                prefix: bytes,
+                state: recorded,
+            });
+        }
         Ok(Some(snap))
     }
+
+    /// Whether `bytes` start with the cached prefix, compared byte for byte.
+    fn extends(cached: &Cached, bytes: &[u8]) -> bool {
+        crate::fault::count_prefix_compare();
+        bytes.starts_with(&cached.prefix)
+    }
+
+    /// Lock-free read: the cached snapshot when the file is proved
+    /// unchanged, otherwise a full parse that leaves the cache as it was.
+    pub(crate) fn peek(&self, path: &Path) -> Result<Option<ManifestSnapshot>> {
+        let Some(mut file) = open(path)? else {
+            return Ok(None);
+        };
+        let now = file_state(&file);
+        if let Some(cached) = self.lock().as_ref()
+            && cached.unchanged(now)
+        {
+            return Ok(Some(cached.fold.snapshot(cached.valid_len(), None)));
+        }
+        let bytes = read_all(&mut file, path)?;
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(parse_fold(&bytes).1))
+    }
+
+    /// Fold `frame`, which this process appended at offset `at` of `file`
+    /// and whose barrier returned, while the publisher lock is still held.
+    /// `before` is the file state taken just before the write. The cache
+    /// takes the frame only when it held exactly the bytes before it and the
+    /// file was proved unchanged up to the write; otherwise it keeps its
+    /// state and the next load compares.
+    pub(crate) fn appended(&self, file: &File, before: Option<FileState>, at: u64, frame: &[u8]) {
+        let mut state = self.lock();
+        let Some(cached) = state.as_mut() else {
+            return;
+        };
+        if cached.valid_len() != at || !cached.unchanged(before) {
+            return;
+        }
+        let start = cached.prefix.len();
+        let (end, corrupt) = cached.fold.fold_frames(frame, start);
+        if corrupt.is_some() || end != start + frame.len() {
+            *state = None;
+            return;
+        }
+        cached.prefix.extend_from_slice(frame);
+        let after = file_state(file).filter(|s| s.len == cached.valid_len());
+        cached.state = after;
+    }
+}
+
+/// File state of an open manifest, for [`ManifestCache::appended`].
+pub(crate) fn state_of(file: &File) -> Option<FileState> {
+    file_state(file)
 }

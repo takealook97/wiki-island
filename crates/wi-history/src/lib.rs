@@ -29,6 +29,8 @@ mod vault;
 #[cfg(test)]
 mod barrier_tests;
 #[cfg(test)]
+mod manifest_cache_damage_tests;
+#[cfg(test)]
 mod manifest_cache_tests;
 
 pub use changes::{PublicationMark, changed_paths_since, publication_mark};
@@ -36,7 +38,7 @@ pub use cloud::{cloud_service, cloud_sync_warning, resolve_path};
 pub use durable::Durability;
 pub use error::{HistoryError, Result};
 #[cfg(any(test, feature = "fault-injection"))]
-pub use fault::manifest_full_parses;
+pub use fault::{manifest_full_parses, manifest_prefix_compares};
 pub use flush::{CommitSummary, FlushBlock, FlushReport, Flusher};
 pub use history::{Deletion, History, HistoryEntry, OperationHit, OperationScan, OperationTrailer};
 pub use lock::{FlushLock, PublisherGuard, PublisherLock};

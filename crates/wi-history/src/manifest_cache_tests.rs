@@ -12,13 +12,13 @@ use crate::{Seq, Vault, hash_bytes};
 /// Long enough for a coarse file-time clock to tick between two writes.
 const CLOCK_TICK: Duration = Duration::from_millis(50);
 
-fn new_vault() -> (tempfile::TempDir, Vault) {
+pub(crate) fn new_vault() -> (tempfile::TempDir, Vault) {
     let dir = tempfile::tempdir().unwrap();
     let vault = Vault::init(dir.path()).unwrap();
     (dir, vault)
 }
 
-fn record(vault: &Vault, path: &str, bytes: &[u8]) -> IntentRecord {
+pub(crate) fn record(vault: &Vault, path: &str, bytes: &[u8]) -> IntentRecord {
     IntentRecord {
         op_id: None,
         request_digest: "d".into(),
@@ -34,7 +34,7 @@ fn record(vault: &Vault, path: &str, bytes: &[u8]) -> IntentRecord {
     }
 }
 
-fn save(vault: &Vault, path: &str) -> Seq {
+pub(crate) fn save(vault: &Vault, path: &str) -> Seq {
     let bytes = format!("# {path}\n");
     let guard = PublisherLock::acquire(vault).unwrap();
     let seq =
@@ -44,17 +44,17 @@ fn save(vault: &Vault, path: &str) -> Seq {
     seq
 }
 
-fn strict(vault: &Vault) -> crate::Result<ManifestSnapshot> {
+pub(crate) fn strict(vault: &Vault) -> crate::Result<ManifestSnapshot> {
     let guard = PublisherLock::acquire(vault).unwrap();
     Manifest::snapshot(vault, &guard)
 }
 
 /// The parsed state a fresh handle (an empty cache) reads.
-fn fresh(vault: &Vault) -> ManifestSnapshot {
+pub(crate) fn fresh(vault: &Vault) -> ManifestSnapshot {
     strict(&Vault::open(vault.root()).unwrap()).unwrap()
 }
 
-fn assert_same(cached: &ManifestSnapshot, full: &ManifestSnapshot) {
+pub(crate) fn assert_same(cached: &ManifestSnapshot, full: &ManifestSnapshot) {
     assert_eq!(cached.manifest_id, full.manifest_id);
     assert_eq!(cached.retired_upto, full.retired_upto);
     assert_eq!(cached.next_seq, full.next_seq);

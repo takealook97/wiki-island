@@ -58,9 +58,35 @@ pub fn manifest_full_parses() -> u64 {
     FULL_PARSES.with(std::cell::Cell::get)
 }
 
+/// Count one byte comparison of a cached manifest prefix with the file on
+/// this thread (tests only).
+pub(crate) fn count_prefix_compare() {
+    #[cfg(any(test, feature = "fault-injection"))]
+    PREFIX_COMPARES.with(|c| c.set(c.get() + 1));
+}
+
+/// Cached manifest prefixes compared with the file on the calling thread so
+/// far: zero growth means a load reused its cache without reading the file.
+/// Present only in test and `fault-injection` builds.
+#[cfg(any(test, feature = "fault-injection"))]
+pub fn manifest_prefix_compares() -> u64 {
+    PREFIX_COMPARES.with(std::cell::Cell::get)
+}
+
 #[cfg(any(test, feature = "fault-injection"))]
 thread_local! {
     static FULL_PARSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PREFIX_COMPARES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this thread reads manifest file state as unknown, as on a
+/// platform that exposes no file identity (unit tests only).
+pub(crate) fn file_state_unknown() -> bool {
+    #[cfg(test)]
+    if UNKNOWN_FILE_STATE.with(std::cell::Cell::get) {
+        return true;
+    }
+    false
 }
 
 /// After a manifest frame is written and before its barrier. Unit tests
@@ -79,6 +105,7 @@ pub(crate) fn manifest_append_barrier() -> crate::error::Result<()> {
 thread_local! {
     pub(crate) static FAIL_REF_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static FAIL_MANIFEST_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static UNKNOWN_FILE_STATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub(crate) fn pause_after_snapshot() {

@@ -324,8 +324,6 @@ pub(crate) fn encode_frame(record: &Record) -> Result<Vec<u8>> {
 pub(crate) struct Fold {
     snap: ManifestSnapshot,
     max_seq: Seq,
-    /// End of the checkpoint frame.
-    pub(crate) head_end: usize,
 }
 
 impl Fold {
@@ -460,10 +458,6 @@ impl Fold {
         }
     }
 
-    pub(crate) fn frames(&self) -> &[(Seq, Range<usize>)] {
-        &self.snap.frames
-    }
-
     /// Fold the frames of `bytes`, which start at file offset `base`.
     /// Returns the end of the last valid frame and the first damage, if any.
     /// A record that does not apply leaves the state as it was before it.
@@ -485,11 +479,8 @@ impl Fold {
                     if let Err(reason) = self.apply(record) {
                         return (at, Some((at as u64, reason)));
                     }
-                    match seq {
-                        Some(seq) => {
-                            Arc::make_mut(&mut self.snap.frames).push((seq, at..base + end))
-                        }
-                        None => self.head_end = base + end,
+                    if let Some(seq) = seq {
+                        Arc::make_mut(&mut self.snap.frames).push((seq, at..base + end));
                     }
                     pos = end;
                 }
@@ -647,12 +638,15 @@ impl Manifest {
 
     /// Lock-free read for generation checks and pin lookups. A partially
     /// written tail is reported in the snapshot, not treated as an error.
+    /// It never fills the handle's cache; it reuses the cached state only
+    /// when the file is proved unchanged.
     pub fn snapshot_unlocked(vault: &Vault) -> Result<ManifestSnapshot> {
-        Ok(Self::load(vault)?.unwrap_or_default())
+        let path = Self::path(vault);
+        Ok(vault.manifest_cache().peek(&path)?.unwrap_or_default())
     }
 
     /// The parsed manifest, through the handle's cache; `None` when it does
-    /// not exist (or is empty).
+    /// not exist (or is empty). Callers hold the publisher lock.
     pub(crate) fn load(vault: &Vault) -> Result<Option<ManifestSnapshot>> {
         vault.manifest_cache().load(&Self::path(vault))
     }
@@ -696,10 +690,13 @@ impl Manifest {
     fn append(vault: &Vault, snap: &ManifestSnapshot, record: &Record) -> Result<()> {
         let frame = encode_frame(record)?;
         let path = Self::path(vault);
+        // Read access lets every platform report the file state.
         let mut file = OpenOptions::new()
+            .read(true)
             .append(true)
             .open(&path)
             .map_err(|e| HistoryError::io(&path, e))?;
+        let before = crate::manifest_cache::state_of(&file);
         let len = file
             .metadata()
             .map_err(|e| HistoryError::io(&path, e))?
@@ -713,7 +710,11 @@ impl Manifest {
         file.write_all(&frame)
             .map_err(|e| HistoryError::io(&path, e))?;
         crate::fault::manifest_append_barrier()?;
-        durable::barrier_at(&file, &path, vault.durability())
+        durable::barrier_at(&file, &path, vault.durability())?;
+        vault
+            .manifest_cache()
+            .appended(&file, before, snap.valid_len, &frame);
+        Ok(())
     }
 
     /// Refuse a record on `paths` while an open intent changes one of them.
