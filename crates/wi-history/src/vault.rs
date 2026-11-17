@@ -350,12 +350,13 @@ impl Vault {
         self.data_root.as_deref()
     }
 
-    /// The folder this folder-mode vault was bound to before it moved on
-    /// this device (empty when unknown), for doctor.
+    /// The parsed manifest kept between snapshots of this handle.
     pub(crate) fn manifest_cache(&self) -> &ManifestCache {
         &self.manifest_cache
     }
 
+    /// The folder this folder-mode vault was bound to before it moved on
+    /// this device (empty when unknown), for doctor.
     pub fn rebound_from(&self) -> Option<&Path> {
         self.rebound_from.as_deref()
     }
