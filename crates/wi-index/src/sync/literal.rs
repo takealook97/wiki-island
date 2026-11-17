@@ -90,10 +90,11 @@ pub fn literal_search(vault_root: impl AsRef<Path>, query: &Query) -> Result<Sea
         }) {
             continue;
         }
-        let (permalink, title) = names(&path, &metadata);
+        let (permalink, identity) = names(&path, &metadata);
+        let title = search_title(&path, &identity, &metadata, note.body()).text;
         let haystack = match query.mode {
             SearchMode::Text => format!("{title}\n{}", note.body()),
-            SearchMode::Title => title.clone(),
+            SearchMode::Title => title,
             SearchMode::Permalink => permalink.clone(),
         }
         .to_lowercase();

@@ -1,6 +1,6 @@
 CREATE TABLE index_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE files(path TEXT PRIMARY KEY, mtime_ns TEXT NOT NULL, size INTEGER NOT NULL, content_hash TEXT NOT NULL);
-CREATE TABLE notes(path TEXT NOT NULL UNIQUE REFERENCES files(path) ON DELETE CASCADE, permalink TEXT NOT NULL, title TEXT NOT NULL, note_type TEXT NOT NULL, content TEXT NOT NULL, metadata TEXT NOT NULL CHECK(json_valid(metadata)));
+CREATE TABLE notes(path TEXT NOT NULL UNIQUE REFERENCES files(path) ON DELETE CASCADE, permalink TEXT NOT NULL, title TEXT NOT NULL, note_type TEXT NOT NULL, content TEXT NOT NULL, metadata TEXT NOT NULL CHECK(json_valid(metadata)), title_key TEXT NOT NULL DEFAULT '', identity_key TEXT NOT NULL DEFAULT '');
 CREATE INDEX notes_permalink ON notes(permalink);
 CREATE INDEX notes_title ON notes(title);
 CREATE INDEX notes_type ON notes(note_type);

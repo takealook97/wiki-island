@@ -54,6 +54,41 @@ pub(super) fn names(path: &str, metadata: &Value) -> (String, String) {
         });
     (permalink, title)
 }
+/// What search matches as a note's title. `text` feeds the FTS `title`
+/// column and its script n-grams; `keys` are the exact ordering keys.
+pub(crate) struct SearchTitle {
+    pub(crate) text: String,
+    pub(crate) keys: [String; 2],
+}
+
+/// The searchable title of the note at `path` whose link identity
+/// (frontmatter `title` or file stem, see [`names`]) is `identity`: the
+/// delivered title and, when it differs, the identity, so a file name or an
+/// old frontmatter title still finds the note. Each key is the trimmed
+/// Unicode lower case of one of the two; normalization forms are not unified.
+/// The index and the literal fallback both derive titles here.
+pub(crate) fn search_title(
+    path: &str,
+    identity: &str,
+    metadata: &Value,
+    body: &str,
+) -> SearchTitle {
+    let delivered = wi_note::hit_title(path, metadata, body);
+    let text = if delivered == identity {
+        delivered.clone()
+    } else {
+        format!("{delivered}\n{identity}")
+    };
+    SearchTitle {
+        text,
+        keys: [exact_key(&delivered), exact_key(identity)],
+    }
+}
+
+/// The exact ordering key of a title or a query.
+pub(crate) fn exact_key(text: &str) -> String {
+    text.trim().to_lowercase()
+}
 pub(super) fn store(tx: &Transaction<'_>, item: Prepared) -> Result<()> {
     let size =
         i64::try_from(item.stamp.size).map_err(|_| Error::InvalidPath(item.path.clone().into()))?;
@@ -72,12 +107,12 @@ pub(super) fn store(tx: &Transaction<'_>, item: Prepared) -> Result<()> {
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("note");
-        tx.prepare_cached("INSERT INTO notes(path,permalink,title,note_type,content,metadata) VALUES(?1,?2,?3,?4,?5,?6)")?.execute(params![item.path,permalink,title,note_type,note.body(),metadata.to_string()])?;
+        let searchable = search_title(&item.path, &title, &metadata, note.body());
+        let [title_key, identity_key] = &searchable.keys;
+        tx.prepare_cached("INSERT INTO notes(path,permalink,title,note_type,content,metadata,title_key,identity_key) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?.execute(params![item.path,permalink,title,note_type,note.body(),metadata.to_string(),title_key,identity_key])?;
         let rowid = tx.last_insert_rowid();
-        // The searchable title is the one the owner sees; `notes.title` stays
-        // the link identity.
-        let delivered = wi_note::hit_title(&item.path, &metadata, note.body());
-        tx.prepare_cached("INSERT INTO search_fts(rowid,title,content,script_ngrams,permalink) VALUES(?1,?2,?3,?4,?5)")?.execute(params![rowid,delivered,note.body(),build_script_ngrams(&[&delivered,note.body()]),permalink])?;
+        // `notes.title` stays the link identity; search matches both titles.
+        tx.prepare_cached("INSERT INTO search_fts(rowid,title,content,script_ngrams,permalink) VALUES(?1,?2,?3,?4,?5)")?.execute(params![rowid,searchable.text,note.body(),build_script_ngrams(&[&searchable.text,note.body()]),permalink])?;
         // Every lifecycle note gets a row (the cold listing reads only this
         // table) holding its engine snapshot of these bytes when that
         // round-trips, so a cold current read need not re-parse each file.

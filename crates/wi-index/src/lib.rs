@@ -359,6 +359,13 @@ impl Index {
                     |r| r.get::<_, bool>(0),
                 )?;
             }
+            // A `notes` table without the exact ordering keys is incomplete
+            // and rebuilds like any other schema change.
+            schema_complete &= tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes') WHERE name='identity_key')",
+                [],
+                |r| r.get::<_, bool>(0),
+            )?;
             if version != SCHEMA_VERSION || !schema_complete {
                 tx.execute_batch("DROP TABLE IF EXISTS lifecycle_snapshots; DROP TABLE IF EXISTS operations; DROP TABLE IF EXISTS search_fts; DROP TABLE IF EXISTS relations; DROP TABLE IF EXISTS observations; DROP TABLE IF EXISTS notes; DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS index_meta;")?;
                 tx.execute_batch(include_str!("schema.sql"))?;
@@ -618,13 +625,15 @@ impl Index {
             format!("WHERE {}", conditions.join(" AND "))
         };
         let count_params = params.clone();
-        // A delivered title equal to the query (case-insensitive, trimmed)
-        // ranks first in text and title mode; permalink mode matches addresses.
+        // A note whose delivered title or link identity equals the query
+        // (Unicode case-insensitive, trimmed; keys folded in Rust because
+        // SQLite `lower()` folds ASCII only) ranks first in text and title
+        // mode; permalink mode matches addresses.
         let exact_title = if matches!(query.mode, SearchMode::Title | SearchMode::Text)
             && !query.text.trim().is_empty()
         {
-            params.push(SqlValue::Text(query.text.trim().into()));
-            format!("(lower(search_fts.title)=lower(?{}))", params.len())
+            params.push(SqlValue::Text(sync::exact_key(&query.text)));
+            format!("(n.title_key=?{0} OR n.identity_key=?{0})", params.len())
         } else {
             "0".into()
         };

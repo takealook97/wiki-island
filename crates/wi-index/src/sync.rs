@@ -15,6 +15,7 @@ mod storage;
 mod walk;
 
 pub use literal::literal_search;
+pub(crate) use storage::exact_key;
 use storage::*;
 use walk::*;
 pub use walk::{
