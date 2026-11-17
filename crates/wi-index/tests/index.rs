@@ -283,7 +283,7 @@ fn previous_cache_version_resets_and_reprojects_script_tokens() {
     assert_eq!(
         c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        7
+        8
     );
     assert_eq!(
         c.query_row("SELECT count(*) FROM search_fts", [], |r| r
@@ -685,11 +685,11 @@ fn script_search_with_metadata_preserves_bm25_ranking() {
     );
     f.write(
         "weak.md",
-        "---\ntitle: 適者生存\nstatus: active\n---\nCLI metadata regression",
+        "---\ntitle: 適者生存 note\nstatus: active\n---\nCLI metadata regression",
     );
     f.write(
         "excluded.md",
-        "---\ntitle: 適者生存\nstatus: archived\n---\nCLI metadata regression",
+        "---\ntitle: 適者生存 note\nstatus: archived\n---\nCLI metadata regression",
     );
     f.sync();
     let q = Query {

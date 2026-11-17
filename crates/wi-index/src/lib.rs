@@ -26,7 +26,7 @@ pub use sync::{
 };
 pub type RelPath = PathBuf;
 pub type Result<T> = std::result::Result<T, Error>;
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 /// Largest text or title query, in bytes of the raw query text. An
 /// unmeasured policy choice: it keeps query parsing and FTS work small.
 pub const MAX_QUERY_BYTES: usize = 2048;
@@ -618,9 +618,13 @@ impl Index {
             format!("WHERE {}", conditions.join(" AND "))
         };
         let count_params = params.clone();
-        let exact_title = if query.mode == SearchMode::Title {
+        // A delivered title equal to the query (case-insensitive, trimmed)
+        // ranks first in text and title mode; permalink mode matches addresses.
+        let exact_title = if matches!(query.mode, SearchMode::Title | SearchMode::Text)
+            && !query.text.trim().is_empty()
+        {
             params.push(SqlValue::Text(query.text.trim().into()));
-            format!("(lower(n.title)=lower(?{}))", params.len())
+            format!("(lower(search_fts.title)=lower(?{}))", params.len())
         } else {
             "0".into()
         };

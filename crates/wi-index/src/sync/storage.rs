@@ -74,7 +74,10 @@ pub(super) fn store(tx: &Transaction<'_>, item: Prepared) -> Result<()> {
             .unwrap_or("note");
         tx.prepare_cached("INSERT INTO notes(path,permalink,title,note_type,content,metadata) VALUES(?1,?2,?3,?4,?5,?6)")?.execute(params![item.path,permalink,title,note_type,note.body(),metadata.to_string()])?;
         let rowid = tx.last_insert_rowid();
-        tx.prepare_cached("INSERT INTO search_fts(rowid,title,content,script_ngrams,permalink) VALUES(?1,?2,?3,?4,?5)")?.execute(params![rowid,title,note.body(),build_script_ngrams(&[&title,note.body()]),permalink])?;
+        // The searchable title is the one the owner sees; `notes.title` stays
+        // the link identity.
+        let delivered = wi_note::hit_title(&item.path, &metadata, note.body());
+        tx.prepare_cached("INSERT INTO search_fts(rowid,title,content,script_ngrams,permalink) VALUES(?1,?2,?3,?4,?5)")?.execute(params![rowid,delivered,note.body(),build_script_ngrams(&[&delivered,note.body()]),permalink])?;
         // Every lifecycle note gets a row (the cold listing reads only this
         // table) holding its engine snapshot of these bytes when that
         // round-trips, so a cold current read need not re-parse each file.

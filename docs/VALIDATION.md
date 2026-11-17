@@ -45,6 +45,7 @@ Each row is a finite, checkable statement.
 - Deleting the index loses nothing; a schema-version change rebuilds it.
 - Exact and prefix matches, title weighting, Korean two-syllable queries and mixed-script queries find the intended notes.
 - A plain multi-term query returns all-terms hits first, then ranked OR hits; quoted phrases and explicit operators stay strict.
+- A text query equal to a note's delivered title (heading, frontmatter or memory summary, any case, surrounding spaces) ranks that note first among 500 notes repeating its words, for heading-titled and frontmatter-titled notes (`search_exact_title_outranks_body_matches`, `search_exact_title_ignores_case_and_surrounding_spaces`, `search_exact_title_uses_the_summary_of_a_memory_note` in `crates/wi-index/tests/exact_title.rs`); link resolution by title is unchanged for a heading-titled note (`link_resolution_by_title_is_unchanged_for_a_heading_titled_note`); an index at schema 7 is rebuilt on open and then ranks correctly (`an_index_built_at_schema_7_is_rebuilt_on_open_and_ranks_correctly`); the same through `wi_search` (`wi_search_ranks_a_heading_titled_note_first_among_repeating_notes` in `crates/wi-mcp/tests/title_search.rs`). Existing vaults keep working; the index is rebuilt once.
 - A missing or corrupt index answers from a labelled literal scan; malformed query syntax selects the fallback.
 - Per-file failures are reported as skipped paths and diagnostics while other files commit.
 - `.obsidian/` and `.trash/` are never indexed; ignored directories are pruned without an error.
