@@ -18,6 +18,7 @@ mod gitops;
 mod history;
 mod lock;
 mod manifest;
+mod manifest_cache;
 mod missing;
 mod pin;
 mod recovery;
@@ -27,17 +28,21 @@ mod vault;
 
 #[cfg(test)]
 mod barrier_tests;
+#[cfg(test)]
+mod manifest_cache_tests;
 
 pub use changes::{PublicationMark, changed_paths_since, publication_mark};
 pub use cloud::{cloud_service, cloud_sync_warning, resolve_path};
 pub use durable::Durability;
 pub use error::{HistoryError, Result};
+#[cfg(any(test, feature = "fault-injection"))]
+pub use fault::manifest_full_parses;
 pub use flush::{CommitSummary, FlushBlock, FlushReport, Flusher};
 pub use history::{Deletion, History, HistoryEntry, OperationHit, OperationScan, OperationTrailer};
 pub use lock::{FlushLock, PublisherGuard, PublisherLock};
 pub use manifest::{
-    BatchMark, IngestRecord, IntentRecord, Manifest, ManifestEntry, ManifestSnapshot, OpRecord,
-    OpStatus, Seq,
+    BatchMark, Entries, IngestRecord, IntentRecord, Manifest, ManifestEntry, ManifestSnapshot,
+    OpRecord, OpStatus, Seq,
 };
 pub use missing::{Missing, MissingEntry};
 pub use pin::{PinRef, PinResolution, PinSource, resolve_pin};

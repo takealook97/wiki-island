@@ -12,6 +12,8 @@ use crate::error::{HistoryError, Result};
 use crate::fault;
 use crate::gitops::{self, TreeEdit};
 use crate::lock::{FlushLock, PublisherLock};
+use std::sync::Arc;
+
 use crate::manifest::{Manifest, ManifestEntry, ManifestSnapshot, OpRecord, OpStatus, Seq};
 use crate::vault::Vault;
 
@@ -186,14 +188,14 @@ fn check(entry: &ManifestEntry, committed: &Committed) -> Option<FlushBlock> {
 /// Members of the batch starting at `rest[0]`, through its first `last`
 /// record, and that record's sequence id.
 fn batch_group<'a>(
-    rest: &'a [ManifestEntry],
+    rest: &'a [Arc<ManifestEntry>],
     id: &str,
     committed: &Committed,
 ) -> std::result::Result<(Group<'a>, Seq), FlushBlock> {
     let mut members = Vec::new();
     let mut interleaved = Vec::new();
     let mut last = None;
-    for e in rest {
+    for e in rest.iter().map(Arc::as_ref) {
         if e.op.batch().is_some_and(|b| b.id == id) {
             members.push(e);
             if e.op.batch().is_some_and(|b| b.last) {

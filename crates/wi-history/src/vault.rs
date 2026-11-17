@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::durable::{self, Durability};
 use crate::error::{HistoryError, Result};
 use crate::manifest::Manifest;
+use crate::manifest_cache::ManifestCache;
 use crate::storage::{self, StorageMode};
 
 /// Staging directory for a new repository; `.git` appears only by rename
@@ -127,6 +128,7 @@ pub struct Vault {
     mode: StorageMode,
     data_root: Option<PathBuf>,
     rebound_from: Option<PathBuf>,
+    manifest_cache: ManifestCache,
 }
 
 impl fmt::Debug for Vault {
@@ -334,6 +336,7 @@ impl Vault {
             mode,
             data_root: None,
             rebound_from: None,
+            manifest_cache: ManifestCache::default(),
         })
     }
 
@@ -349,6 +352,10 @@ impl Vault {
 
     /// The folder this folder-mode vault was bound to before it moved on
     /// this device (empty when unknown), for doctor.
+    pub(crate) fn manifest_cache(&self) -> &ManifestCache {
+        &self.manifest_cache
+    }
+
     pub fn rebound_from(&self) -> Option<&Path> {
         self.rebound_from.as_deref()
     }

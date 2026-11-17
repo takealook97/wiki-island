@@ -37,6 +37,7 @@ Each row is a finite, checkable statement.
 - A killed process at each flush step ends in the old state or the completed operation, never a lost acknowledged write.
 - Flush commits each recorded operation in order, retires only the committed prefix, and never forces a moved branch.
 - A corrupt manifest tail is quarantined with everything after it and a work item is opened.
+- The parsed manifest a handle keeps equals a full parse by a fresh handle after another handle appended, after the file was replaced, after a same-length rewrite in place, after a damaged tail (never kept, then quarantined) and after a failed append barrier (kept state unchanged) (`manifest_cache_tests`). Writing 500 notes runs no more full manifest parses than writing 50, inside one bulk batch and without one (`bulk_publish_does_not_reparse_history_manifest`, `single_publishes_do_not_reparse_history_manifest`).
 - Two processes cannot publish at once; a bulk batch commits as one commit and a move never leaves its source behind.
 - Revert never rewrites history and refuses while records are pending.
 

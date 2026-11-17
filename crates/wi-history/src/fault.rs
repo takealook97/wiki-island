@@ -45,9 +45,40 @@ pub(crate) fn after_ref_before_barrier() -> crate::error::Result<()> {
     Ok(())
 }
 
+/// Count one full parse of a manifest on this thread (tests only).
+pub(crate) fn count_full_parse() {
+    #[cfg(any(test, feature = "fault-injection"))]
+    FULL_PARSES.with(|c| c.set(c.get() + 1));
+}
+
+/// Full manifest parses run on the calling thread so far. Present only in
+/// test and `fault-injection` builds.
+#[cfg(any(test, feature = "fault-injection"))]
+pub fn manifest_full_parses() -> u64 {
+    FULL_PARSES.with(std::cell::Cell::get)
+}
+
+#[cfg(any(test, feature = "fault-injection"))]
+thread_local! {
+    static FULL_PARSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// After a manifest frame is written and before its barrier. Unit tests
+/// can make it return an error (an fsync failure on append).
+pub(crate) fn manifest_append_barrier() -> crate::error::Result<()> {
+    #[cfg(test)]
+    if FAIL_MANIFEST_BARRIER.with(std::cell::Cell::get) {
+        return Err(crate::error::HistoryError::Injected(
+            "manifest_append_barrier",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 thread_local! {
     pub(crate) static FAIL_REF_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static FAIL_MANIFEST_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub(crate) fn pause_after_snapshot() {

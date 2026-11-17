@@ -7,11 +7,11 @@
 //! retired prefix. Retirement rewrites the file atomically with a new
 //! checkpoint followed by the byte-identical frames of unretired records.
 
-use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -218,6 +218,27 @@ pub struct ManifestEntry {
     pub status: OpStatus,
 }
 
+/// Unretired operations in sequence order. Snapshots share the list and
+/// its records, so taking one copies no record; the list is copied only
+/// when a manifest folds new records while an older snapshot is alive.
+#[derive(Debug, Clone, Default)]
+pub struct Entries(Arc<Vec<Arc<ManifestEntry>>>);
+
+impl std::ops::Deref for Entries {
+    type Target = [Arc<ManifestEntry>];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> IntoIterator for &'a Entries {
+    type Item = &'a Arc<ManifestEntry>;
+    type IntoIter = std::slice::Iter<'a, Arc<ManifestEntry>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 /// A parsed view of the manifest.
 #[derive(Debug, Clone, Default)]
 pub struct ManifestSnapshot {
@@ -226,13 +247,15 @@ pub struct ManifestSnapshot {
     pub next_seq: Seq,
     pub generation: Seq,
     /// Unretired operations in sequence order.
-    pub entries: Vec<ManifestEntry>,
+    pub entries: Entries,
+    /// Sequence ids of open intents, ascending.
+    pub(crate) open: Vec<Seq>,
     /// Bytes of the valid prefix.
     pub(crate) valid_len: u64,
     /// First invalid byte and the reason, when the tail is corrupt.
     pub(crate) corrupt: Option<(u64, String)>,
     /// Frames of non-checkpoint records: sequence id and byte range.
-    pub(crate) frames: Vec<(Seq, Range<usize>)>,
+    pub(crate) frames: Arc<Vec<(Seq, Range<usize>)>>,
 }
 
 impl ManifestSnapshot {
@@ -240,7 +263,7 @@ impl ManifestSnapshot {
         self.entries
             .binary_search_by_key(&seq, |e| e.seq)
             .ok()
-            .map(|i| &self.entries[i])
+            .map(|i| &*self.entries[i])
     }
 
     /// The first open intent, if any.
@@ -252,7 +275,7 @@ impl ManifestSnapshot {
     /// their paths are disjoint: recovery holds an intent open while one of
     /// its paths cannot be settled, and writes to other paths go on.
     pub fn open_intents(&self) -> impl Iterator<Item = &ManifestEntry> {
-        self.entries.iter().filter(|e| e.status == OpStatus::Open)
+        self.open.iter().filter_map(|&seq| self.entry(seq))
     }
 
     /// The first open intent that changes any of `paths`.
@@ -264,6 +287,7 @@ impl ManifestSnapshot {
     pub fn unacked_conflicts(&self) -> impl Iterator<Item = &ManifestEntry> {
         self.entries
             .iter()
+            .map(Arc::as_ref)
             .filter(|e| matches!(e.status, OpStatus::Conflict { acked: false, .. }))
     }
 }
@@ -294,10 +318,14 @@ pub(crate) fn encode_frame(record: &Record) -> Result<Vec<u8>> {
     Ok(frame)
 }
 
-struct Fold {
+/// The state of a manifest folded record by record. `snap.next_seq` holds
+/// the checkpoint value until [`Fold::snapshot`] raises it above `max_seq`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Fold {
     snap: ManifestSnapshot,
-    ops: BTreeMap<Seq, ManifestEntry>,
     max_seq: Seq,
+    /// End of the checkpoint frame.
+    pub(crate) head_end: usize,
 }
 
 impl Fold {
@@ -337,40 +365,30 @@ impl Fold {
                 fresh_seq(self, seq)?;
                 let op = OpRecord::Intent(rec);
                 let paths: Vec<&str> = op.paths().collect();
-                if let Some(open) = self
-                    .ops
-                    .values()
-                    .find(|e| e.status == OpStatus::Open && e.op.touches(&paths))
-                {
+                if let Some(open) = self.snap.open_intent_touching(&paths) {
                     return Err(format!(
                         "intent {seq} while intent {} is open on the same path",
                         open.seq
                     ));
                 }
-                self.max_seq = seq;
-                self.ops.insert(
+                self.push(ManifestEntry {
                     seq,
-                    ManifestEntry {
-                        seq,
-                        time_ms,
-                        op,
-                        status: OpStatus::Open,
-                    },
-                );
+                    time_ms,
+                    op,
+                    status: OpStatus::Open,
+                });
+                // Sequence ids only grow, so the list stays ascending.
+                self.snap.open.push(seq);
             }
             Record::Ingest { seq, time_ms, rec } => {
                 fresh_seq(self, seq)?;
-                self.max_seq = seq;
                 self.snap.generation = self.snap.generation.max(seq);
-                self.ops.insert(
+                self.push(ManifestEntry {
                     seq,
-                    ManifestEntry {
-                        seq,
-                        time_ms,
-                        op: OpRecord::Ingest(rec),
-                        status: OpStatus::Done,
-                    },
-                );
+                    time_ms,
+                    op: OpRecord::Ingest(rec),
+                    status: OpStatus::Done,
+                });
             }
             Record::Done { seq, .. } => {
                 self.settle(seq, OpStatus::Done)?;
@@ -386,7 +404,7 @@ impl Fold {
                     acked: false,
                 },
             )?,
-            Record::ConflictAck { seq, .. } => match self.ops.get_mut(&seq) {
+            Record::ConflictAck { seq, .. } => match self.entry_mut(seq) {
                 Some(ManifestEntry {
                     status: OpStatus::Conflict { acked, .. },
                     ..
@@ -397,60 +415,108 @@ impl Fold {
         Ok(())
     }
 
+    /// Append an entry; its sequence id is above every earlier one, so
+    /// `entries` stays sorted.
+    fn push(&mut self, entry: ManifestEntry) {
+        self.max_seq = entry.seq;
+        Arc::make_mut(&mut self.snap.entries.0).push(Arc::new(entry));
+    }
+
+    /// The entry of `seq`, copied first when a snapshot still shares it.
+    fn entry_mut(&mut self, seq: Seq) -> Option<&mut ManifestEntry> {
+        let entries = Arc::make_mut(&mut self.snap.entries.0);
+        let i = entries.binary_search_by_key(&seq, |e| e.seq).ok()?;
+        Some(Arc::make_mut(&mut entries[i]))
+    }
+
     fn settle(&mut self, seq: Seq, status: OpStatus) -> std::result::Result<(), String> {
-        match self.ops.get_mut(&seq) {
+        match self.entry_mut(seq) {
             Some(entry) if entry.status == OpStatus::Open => {
                 entry.status = status;
+                self.snap.open.retain(|&s| s != seq);
                 Ok(())
             }
             _ => Err(format!("settlement for {seq} without an open intent")),
         }
     }
-}
 
-/// Parse manifest bytes. Never fails: corruption is reported in the snapshot.
-pub(crate) fn parse(bytes: &[u8]) -> ManifestSnapshot {
-    let mut fold = Fold {
-        snap: ManifestSnapshot::default(),
-        ops: BTreeMap::new(),
-        max_seq: 0,
-    };
-    let mut pos = 0usize;
-    let corrupt = if !bytes.starts_with(MAGIC) {
-        Some((0, "missing or unknown manifest header".to_owned()))
-    } else {
-        pos = MAGIC.len();
+    /// The snapshot of this state with the valid prefix ending at `valid_len`.
+    pub(crate) fn snapshot(
+        &self,
+        valid_len: u64,
+        corrupt: Option<(u64, String)>,
+    ) -> ManifestSnapshot {
+        if self.snap.manifest_id.is_empty() && corrupt.is_none() {
+            return ManifestSnapshot {
+                corrupt: Some((valid_len, "manifest has no checkpoint".into())),
+                ..ManifestSnapshot::default()
+            };
+        }
+        ManifestSnapshot {
+            next_seq: self.snap.next_seq.max(self.max_seq + 1),
+            valid_len,
+            corrupt,
+            ..self.snap.clone()
+        }
+    }
+
+    pub(crate) fn frames(&self) -> &[(Seq, Range<usize>)] {
+        &self.snap.frames
+    }
+
+    /// Fold the frames of `bytes`, which start at file offset `base`.
+    /// Returns the end of the last valid frame and the first damage, if any.
+    /// A record that does not apply leaves the state as it was before it.
+    pub(crate) fn fold_frames(
+        &mut self,
+        bytes: &[u8],
+        base: usize,
+    ) -> (usize, Option<(u64, String)>) {
+        let mut pos = 0usize;
         loop {
             if pos == bytes.len() {
-                break None;
+                return (base + pos, None);
             }
+            let at = base + pos;
             match read_frame(bytes, pos) {
-                Err(reason) => break Some((pos as u64, reason)),
+                Err(reason) => return (at, Some((at as u64, reason))),
                 Ok((record, end)) => {
                     let seq = record.seq();
-                    if let Err(reason) = fold.apply(record) {
-                        break Some((pos as u64, reason));
+                    if let Err(reason) = self.apply(record) {
+                        return (at, Some((at as u64, reason)));
                     }
-                    if let Some(seq) = seq {
-                        fold.snap.frames.push((seq, pos..end));
+                    match seq {
+                        Some(seq) => {
+                            Arc::make_mut(&mut self.snap.frames).push((seq, at..base + end))
+                        }
+                        None => self.head_end = base + end,
                     }
                     pos = end;
                 }
             }
         }
-    };
-    let mut snap = fold.snap;
-    if snap.manifest_id.is_empty() && corrupt.is_none() {
-        return ManifestSnapshot {
-            corrupt: Some((pos as u64, "manifest has no checkpoint".into())),
-            ..ManifestSnapshot::default()
-        };
     }
-    snap.valid_len = corrupt.as_ref().map_or(bytes.len() as u64, |(o, _)| *o);
-    snap.corrupt = corrupt;
-    snap.next_seq = snap.next_seq.max(fold.max_seq + 1);
-    snap.entries = fold.ops.into_values().collect();
-    snap
+}
+
+/// Parse manifest bytes from the start into the state of their valid
+/// prefix and the snapshot. Never fails: corruption is reported in the
+/// snapshot.
+pub(crate) fn parse_fold(bytes: &[u8]) -> (Fold, ManifestSnapshot) {
+    crate::fault::count_full_parse();
+    let mut fold = Fold::default();
+    if !bytes.starts_with(MAGIC) {
+        let corrupt = Some((0, "missing or unknown manifest header".to_owned()));
+        let snap = fold.snapshot(0, corrupt);
+        return (fold, snap);
+    }
+    let (end, corrupt) = fold.fold_frames(&bytes[MAGIC.len()..], MAGIC.len());
+    let snap = fold.snapshot(end as u64, corrupt);
+    (fold, snap)
+}
+
+/// Parse manifest bytes. Never fails: corruption is reported in the snapshot.
+pub(crate) fn parse(bytes: &[u8]) -> ManifestSnapshot {
+    parse_fold(bytes).1
 }
 
 fn read_frame(bytes: &[u8], pos: usize) -> std::result::Result<(Record, usize), String> {
@@ -582,7 +648,19 @@ impl Manifest {
     /// Lock-free read for generation checks and pin lookups. A partially
     /// written tail is reported in the snapshot, not treated as an error.
     pub fn snapshot_unlocked(vault: &Vault) -> Result<ManifestSnapshot> {
-        Ok(Self::read_raw(vault)?.map_or_else(ManifestSnapshot::default, |b| parse(&b)))
+        Ok(Self::load(vault)?.unwrap_or_default())
+    }
+
+    /// The parsed manifest, through the handle's cache; `None` when it does
+    /// not exist (or is empty).
+    pub(crate) fn load(vault: &Vault) -> Result<Option<ManifestSnapshot>> {
+        vault.manifest_cache().load(&Self::path(vault))
+    }
+
+    /// Atomically replace the manifest file with `bytes`.
+    fn replace(vault: &Vault, bytes: &[u8]) -> Result<()> {
+        vault.manifest_cache().invalidate();
+        durable::write_atomic(&Self::path(vault), bytes, vault.durability())
     }
 
     /// Create an empty manifest with a fresh id. Caller holds the publisher lock.
@@ -595,21 +673,20 @@ impl Manifest {
             generation,
             retired_upto: next_seq.saturating_sub(1),
         })?);
-        durable::write_atomic(&Self::path(vault), &bytes, vault.durability())
+        Self::replace(vault, &bytes)
     }
 
     /// Strict snapshot under the publisher lock. Creates the manifest when
     /// missing; fails with `CorruptManifest` if the tail is corrupt.
     pub fn snapshot(vault: &Vault, guard: &PublisherGuard) -> Result<ManifestSnapshot> {
         guard.check(vault)?;
-        let bytes = match Self::read_raw(vault)? {
-            Some(bytes) => bytes,
+        let snap = match Self::load(vault)? {
+            Some(snap) => snap,
             None => {
                 Self::create(vault, 1, 0)?;
-                Self::read_raw(vault)?.unwrap_or_default()
+                Self::load(vault)?.unwrap_or_default()
             }
         };
-        let snap = parse(&bytes);
         if let Some((offset, reason)) = snap.corrupt {
             return Err(HistoryError::CorruptManifest { offset, reason });
         }
@@ -635,6 +712,7 @@ impl Manifest {
         }
         file.write_all(&frame)
             .map_err(|e| HistoryError::io(&path, e))?;
+        crate::fault::manifest_append_barrier()?;
         durable::barrier_at(&file, &path, vault.durability())
     }
 
@@ -665,7 +743,7 @@ impl Manifest {
             generation: seq,
             retired_upto: seq,
         })?);
-        durable::write_atomic(&Self::path(vault), &out, vault.durability())
+        Self::replace(vault, &out)
     }
 
     /// Append an `intent` record and fsync. Refused while an earlier intent
@@ -786,7 +864,13 @@ impl Manifest {
         if upto <= snap.retired_upto {
             return Ok(());
         }
+        // Frames are copied byte for byte, so every one is checked again
+        // here rather than trusted from the cache.
         let bytes = Self::read_raw(vault)?.unwrap_or_default();
+        let snap = parse(&bytes);
+        if let Some((offset, reason)) = snap.corrupt {
+            return Err(HistoryError::CorruptManifest { offset, reason });
+        }
         Self::rewrite(vault, &bytes, &snap, upto, snap.next_seq)
     }
 
@@ -807,12 +891,12 @@ impl Manifest {
             generation: snap.generation,
             retired_upto: upto,
         })?);
-        for (seq, range) in &snap.frames {
+        for (seq, range) in snap.frames.iter() {
             if *seq > upto {
                 out.extend_from_slice(&bytes[range.clone()]);
             }
         }
-        durable::write_atomic(&Self::path(vault), &out, vault.durability())
+        Self::replace(vault, &out)
     }
 }
 

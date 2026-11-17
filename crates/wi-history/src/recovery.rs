@@ -190,6 +190,10 @@ fn high_water_next_seq(
 /// durable before the manifest shrinks.
 fn quarantine_tail(vault: &Vault, guard: &PublisherGuard) -> Result<Option<QuarantineEntry>> {
     guard.check(vault)?;
+    // A clean manifest is the common case and comes from the cache.
+    if Manifest::load(vault)?.is_none_or(|snap| snap.corrupt.is_none()) {
+        return Ok(None);
+    }
     let Some(bytes) = Manifest::read_raw(vault)? else {
         return Ok(None);
     };
