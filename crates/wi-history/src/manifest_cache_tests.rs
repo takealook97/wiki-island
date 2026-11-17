@@ -179,3 +179,72 @@ fn a_failed_append_barrier_leaves_the_cache_unchanged() {
     // The next load reads what the file holds, as a fresh handle does.
     assert_same(&strict(&vault).unwrap(), &fresh(&vault));
 }
+
+#[test]
+fn a_manifest_shortened_in_place_is_parsed_again() {
+    let (_dir, vault) = new_vault();
+    for path in ["a.md", "b.md", "c.md"] {
+        save(&vault, path);
+    }
+    let snap = strict(&vault).unwrap();
+    // Cut the last save off the same file: identity and checkpoint stay.
+    let cut = snap.frames[3].1.end as u64;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(Manifest::path(&vault))
+        .unwrap();
+    file.set_len(cut).unwrap();
+    drop(file);
+    let before = manifest_full_parses();
+    let snap = strict(&vault).unwrap();
+    assert!(manifest_full_parses() > before, "shortened file reparsed");
+    assert_eq!(snap.valid_len, cut);
+    assert_eq!(snap.entries.len(), 2);
+    assert_same(&snap, &fresh(&vault));
+}
+
+#[test]
+fn a_manifest_cut_and_regrown_in_place_is_parsed_again() {
+    let (_dir, vault) = new_vault();
+    for path in ["a.md", "b.md", "c.md"] {
+        save(&vault, path);
+    }
+    let old = strict(&vault).unwrap();
+    // Another writer keeps the file, drops two saves and appends longer
+    // ones, so the file ends past the cached prefix with other bytes.
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(Manifest::path(&vault))
+        .unwrap();
+    file.set_len(old.frames[1].1.end as u64).unwrap();
+    drop(file);
+    let other = Vault::open(vault.root()).unwrap();
+    for path in ["regrown-longer-b.md", "regrown-longer-c.md", "regrown-d.md"] {
+        save(&other, path);
+    }
+    let len = std::fs::metadata(Manifest::path(&vault)).unwrap().len();
+    assert!(len > old.valid_len, "{len} <= {}", old.valid_len);
+    let before = manifest_full_parses();
+    let snap = strict(&vault).unwrap();
+    assert!(manifest_full_parses() > before, "regrown file reparsed");
+    assert_eq!(snap.entries.len(), 4);
+    assert_same(&snap, &fresh(&vault));
+}
+
+#[test]
+fn every_replace_of_the_manifest_drops_the_cached_state() {
+    let (_dir, vault) = new_vault();
+    for path in ["a.md", "b.md"] {
+        save(&vault, path);
+    }
+    let snap = strict(&vault).unwrap();
+    assert_eq!(vault.manifest_cache().cached_len(), Some(snap.valid_len));
+    let guard = PublisherLock::acquire(&vault).unwrap();
+    Manifest::retire(&vault, &guard, snap.next_seq - 1).unwrap();
+    assert_eq!(vault.manifest_cache().cached_len(), None, "retire");
+    drop(guard);
+    assert_same(&strict(&vault).unwrap(), &fresh(&vault));
+    Manifest::create(&vault, snap.next_seq, snap.generation).unwrap();
+    assert_eq!(vault.manifest_cache().cached_len(), None, "create");
+    assert_same(&strict(&vault).unwrap(), &fresh(&vault));
+}
