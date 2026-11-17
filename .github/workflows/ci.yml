@@ -170,18 +170,27 @@ jobs:
           install -m 755 target/debug/wi "$work/bin/wi"
           export HOME="$work/home" WI_CACHE_DIR="$work/cache"
           wi() { "$work/bin/wi" "$@"; }
+          unit_dir="$XDG_CONFIG_HOME/systemd/user"
+          units() { ls "$unit_dir" 2>/dev/null | grep -E '^wiki-island-.*\.service$' || true; }
+          # Cleanup touches only units this step created: unit files absent from this
+          # snapshot, found again at exit so a setup that fails midway is covered, plus
+          # the transient unit recorded before it is started.
+          before=$(units)
+          transient=""
           cleanup() {
             set +e
             for v in a b; do WI_VAULT="$work/home/$v" wi uninstall; done
-            if test -n "${unit_c:-}"; then
-              systemctl --user stop "$unit_c" 2>/dev/null
-              systemctl --user reset-failed "$unit_c" 2>/dev/null
-            fi
-            rm -f "$XDG_CONFIG_HOME"/systemd/user/wiki-island-*.service
+            for unit in $(units) $transient; do
+              if grep -qxF "$unit" <<< "$before"; then continue; fi
+              systemctl --user stop "$unit"
+              systemctl --user disable "$unit"
+              systemctl --user reset-failed "$unit"
+              rm -f "$unit_dir/$unit"
+            done
+            systemctl --user daemon-reload
           }
           trap cleanup EXIT
-          units() { ls "$XDG_CONFIG_HOME"/systemd/user/ | grep -E '^wiki-island-.*\.service$' || true; }
-          test -z "$(units)"
+          test -z "$before"
           WI_VAULT="$work/home/a" wi setup --name a
           unit_a=$(units)
           test "$(echo "$unit_a" | wc -l)" -eq 1
@@ -208,6 +217,7 @@ jobs:
           WI_VAULT="$work/home/c" wi setup --name c
           unit_c=$(units)
           WI_VAULT="$work/home/c" wi uninstall
+          transient="$unit_c"
           systemd-run --user --unit="${unit_c%.service}" sleep 600
           if WI_VAULT="$work/home/c" wi setup --name c 2> "$work/foreign.txt"; then exit 1; fi
           cat "$work/foreign.txt"
