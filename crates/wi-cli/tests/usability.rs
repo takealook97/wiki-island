@@ -27,7 +27,17 @@ impl Env {
     }
 
     fn wi(&self, args: &[&str], stdin: Option<&str>) -> Output {
-        use std::io::Write;
+        self.run(args, stdin, false)
+    }
+
+    /// Feeds `stdin` to a command that may exit before reading it, such as a
+    /// usage error; a broken pipe on that write is then expected.
+    fn wi_may_exit_before_reading(&self, args: &[&str], stdin: &str) -> Output {
+        self.run(args, Some(stdin), true)
+    }
+
+    fn run(&self, args: &[&str], stdin: Option<&str>, may_exit_early: bool) -> Output {
+        use std::io::{ErrorKind, Write};
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_wi"));
         cmd.args(args)
             .env("WI_CACHE_DIR", self.cache.path())
@@ -40,7 +50,11 @@ impl Env {
         let mut child = cmd.spawn().unwrap();
         let mut pipe = child.stdin.take().unwrap();
         if let Some(input) = stdin {
-            pipe.write_all(input.as_bytes()).unwrap();
+            match pipe.write_all(input.as_bytes()) {
+                Ok(()) => {}
+                Err(e) if may_exit_early && e.kind() == ErrorKind::BrokenPipe => {}
+                Err(e) => panic!("writing stdin: {e}"),
+            }
         }
         drop(pipe);
         child.wait_with_output().unwrap()
@@ -114,7 +128,7 @@ fn capture_from_file_works_and_two_inputs_are_a_usage_error() {
     let file = env._dir.path().join("in.txt");
     std::fs::write(&file, "from a file").unwrap();
     env.ok(&["capture", "--file", file.to_str().unwrap()]);
-    let both = env.wi(&["capture", "text", "--stdin"], Some("x"));
+    let both = env.wi_may_exit_before_reading(&["capture", "text", "--stdin"], "x");
     assert_eq!(both.status.code(), Some(2), "{both:?}");
     let none = env.wi(&["capture"], None);
     assert_eq!(none.status.code(), Some(2), "{none:?}");
