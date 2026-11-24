@@ -257,13 +257,27 @@ fn cache_path_in(dir: Option<std::ffi::OsString>, vault_id: &str) -> Result<Path
     Ok(base.join(vault_id).join("index.sqlite3"))
 }
 
+/// The index path under a set, non-empty [`CACHE_DIR_ENV`] value, else `None`.
+fn override_path_in(dir: Option<std::ffi::OsString>, vault_id: &str) -> Option<PathBuf> {
+    dir.filter(|dir| !dir.is_empty())
+        .map(|dir| PathBuf::from(dir).join(vault_id).join("index.sqlite3"))
+}
+
 impl Index {
-    /// The device index path: `$WI_CACHE_DIR/<vault_id>/index.sqlite3` when
-    /// the variable is set and non-empty, else the platform cache directory
-    /// plus `wiki-island/<vault_id>/index.sqlite3`.
-    pub fn cache_path(vault_id: &str) -> Result<PathBuf> {
+    /// `$WI_CACHE_DIR/<vault_id>/index.sqlite3` when the variable is set and
+    /// non-empty, else `None`. The id is validated either way.
+    pub fn cache_dir_override(vault_id: &str) -> Result<Option<PathBuf>> {
         validate_id(vault_id)?;
-        cache_path_in(std::env::var_os(CACHE_DIR_ENV), vault_id)
+        Ok(override_path_in(std::env::var_os(CACHE_DIR_ENV), vault_id))
+    }
+    /// The device index path: the [`Index::cache_dir_override`] path when
+    /// present, else the platform cache directory plus
+    /// `wiki-island/<vault_id>/index.sqlite3`.
+    pub fn cache_path(vault_id: &str) -> Result<PathBuf> {
+        match Self::cache_dir_override(vault_id)? {
+            Some(path) => Ok(path),
+            None => cache_path_in(None, vault_id),
+        }
     }
     pub fn open(vault_root: impl AsRef<Path>, vault_id: &str) -> Result<Self> {
         Self::open_at(vault_root, vault_id, Self::cache_path(vault_id)?)
@@ -1187,8 +1201,16 @@ mod snippet_tests {
 
 #[cfg(test)]
 mod cache_path_tests {
-    use super::cache_path_in;
+    use super::{cache_path_in, override_path_in};
     use std::{ffi::OsString, path::PathBuf};
+
+    #[test]
+    fn the_override_exists_only_for_a_non_empty_directory() {
+        let path = override_path_in(Some(OsString::from("/tmp/wi-cache")), "v1");
+        assert_eq!(path, Some(PathBuf::from("/tmp/wi-cache/v1/index.sqlite3")));
+        assert_eq!(override_path_in(None, "v1"), None);
+        assert_eq!(override_path_in(Some(OsString::new()), "v1"), None);
+    }
 
     #[test]
     fn a_set_directory_replaces_the_platform_cache() {

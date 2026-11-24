@@ -16,7 +16,7 @@ cargo run --bin wi -- init /tmp/wi-demo && cargo run --bin wi -- --vault /tmp/wi
 
 The first line is the mechanical gate and the bar for every commit. `rust-toolchain.toml` selects the toolchain; dependency versions are in `Cargo.lock`. macOS arm64 (APFS) is the primary platform; Windows x86_64 (NTFS) runs on GitHub Actions ([VALIDATION](docs/VALIDATION.md#platform)).
 
-`.cargo/config.toml` points `WI_CACHE_DIR` at `target/test-cache`, so tests keep their index caches there. Tests that open an index use a temporary cache (`WI_CACHE_DIR` or `OpenOptions::index_path`) and a temporary `HOME` (with `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` on Windows), never the real ones. Crash tests set `WI_FAULT` on a child `wi` process only. Subprocess tests that need a fixed clock set `WI_NOW`. Tests never touch real host configs or the real `~/Library/LaunchAgents`.
+By default, when `WI_CACHE_DIR` is not already set, cargo points it at `target/test-cache` (`.cargo/config.toml`), so tests keep their index caches there. Tests that open an index use a temporary cache (`WI_CACHE_DIR` or `OpenOptions::index_path`) and a temporary `HOME` (with `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` on Windows), never the real ones. Crash tests set `WI_FAULT` on a child `wi` process only. Subprocess tests that need a fixed clock set `WI_NOW`. Tests never touch real host configs or the real `~/Library/LaunchAgents`.
 
 ### Linux container
 

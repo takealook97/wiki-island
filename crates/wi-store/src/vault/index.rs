@@ -22,7 +22,7 @@ impl Vault {
         if let Some(path) = &self.options.index_path {
             return Some(path.clone());
         }
-        Index::cache_path(&self.vault_id).ok()
+        Index::cache_dir_override(&self.vault_id).ok().flatten()
     }
 
     /// Run `f` with the device index, opening it on first use. A
