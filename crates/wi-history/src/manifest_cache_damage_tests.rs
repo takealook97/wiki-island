@@ -5,6 +5,7 @@
 use std::fs::{File, FileTimes, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use crate::fault::{UNKNOWN_FILE_STATE, manifest_full_parses, manifest_prefix_compares};
 use crate::manifest::{self, MAGIC, Manifest, ManifestSnapshot, Record, encode_frame};
@@ -12,6 +13,11 @@ use crate::manifest_cache::ManifestCache;
 use crate::manifest_cache_tests::{assert_same, fresh, new_vault, record, save, strict};
 use crate::{Blob, FsWorkingTree, HistoryError, IngestRecord, PublisherLock, Recovery, Vault};
 use crate::{BlobId, hash_bytes};
+
+/// Longer than a coarse kernel clock tick (about 15.6 ms on Windows), so an
+/// outside rewrite gets a later change time than the state the cache kept;
+/// within one tick the documented coarse-timestamp limit applies instead.
+const TICK: Duration = Duration::from_millis(50);
 
 fn fake_blob() -> BlobId {
     BlobId("0123456789012345678901234567890123456789".into())
@@ -147,6 +153,7 @@ fn a_same_length_rewrite_with_the_time_set_back_is_parsed_again() {
     let replacement = encode_frame(&intent(1, "b.md")).unwrap();
     assert_eq!(range.len(), replacement.len());
     bytes[range].copy_from_slice(&replacement);
+    std::thread::sleep(TICK);
     // Truncate and regrow the same file, then restore its modification time.
     std::fs::write(&path, &bytes).unwrap();
     File::options()
@@ -181,6 +188,7 @@ fn a_stale_prefix_cannot_admit_an_overlapping_intent() {
     let snap = Manifest::snapshot(&vault, &guard).unwrap();
     let path = Manifest::path(&vault);
     let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::thread::sleep(TICK);
     let mut bytes = std::fs::read(&path).unwrap();
     // Rename the open intent from `a.md` to `b.md`, same length, checksummed.
     let range = snap.frames[0].1.clone();
