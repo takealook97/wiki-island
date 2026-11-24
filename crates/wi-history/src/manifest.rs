@@ -27,7 +27,7 @@ pub type Seq = u64;
 
 pub(crate) const MAGIC: &[u8] = b"wi-manifest 1\n";
 pub(crate) const MANIFEST_FILE: &str = "manifest.log";
-const FRAME_HEADER: usize = 12;
+pub(crate) const FRAME_HEADER: usize = 12;
 /// Smallest possible frame: a header and a one-byte payload. Bounds how many
 /// records (and so sequence ids) a quarantined tail can hold.
 pub(crate) const MIN_FRAME: u64 = FRAME_HEADER as u64 + 1;
@@ -638,8 +638,10 @@ impl Manifest {
 
     /// Lock-free read for generation checks and pin lookups. A partially
     /// written tail is reported in the snapshot, not treated as an error.
-    /// It never fills the handle's cache; it reuses the cached state only
-    /// when the file is proved unchanged.
+    /// It never fills the handle's cache. It reuses the cached snapshot when
+    /// the file is proved unchanged; after a file-state miss it reuses the
+    /// parsed prefix when the bytes still start with it and folds only the
+    /// bytes after it.
     pub fn snapshot_unlocked(vault: &Vault) -> Result<ManifestSnapshot> {
         let path = Self::path(vault);
         Ok(vault.manifest_cache().peek(&path)?.unwrap_or_default())
