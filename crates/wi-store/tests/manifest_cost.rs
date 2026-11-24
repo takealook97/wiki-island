@@ -5,14 +5,18 @@
 //! file state after every write.
 
 use std::path::Path;
+use std::time::Duration;
 
 use wi_store::{Ingress, OpenOptions, Vault, WriteRequest};
 
-/// Set the permissions the file already has: no byte changes, but the
-/// change time moves, as an indexer or backup agent can do.
+/// Move the modification time one second past its current value: no byte
+/// changes, but the file state moves on every platform, as an indexer or
+/// backup agent can do.
 fn touch_metadata(path: &Path) {
-    let permissions = std::fs::metadata(path).unwrap().permissions();
-    std::fs::set_permissions(path, permissions).unwrap();
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.set_modified(modified + Duration::from_secs(1))
+        .unwrap();
 }
 
 fn write_all(vault: &Vault, n: usize, disturb: bool) {

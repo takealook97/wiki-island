@@ -6,17 +6,21 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::Vault;
 use crate::fault::{manifest_full_parses, manifest_prefix_compares};
 use crate::manifest::{self, FRAME_HEADER, Manifest, ManifestSnapshot};
 use crate::manifest_cache_tests::{assert_same, new_vault, save, strict};
 
-/// Set the permissions the file already has: no byte changes, but the
-/// change time moves, so the kept file state no longer proves anything.
+/// Move the modification time one second past its current value: no byte
+/// changes, but the file state moves on every platform, so the kept file
+/// state no longer proves anything.
 fn touch_metadata(path: &Path) {
-    let permissions = std::fs::metadata(path).unwrap().permissions();
-    std::fs::set_permissions(path, permissions).unwrap();
+    let file = OpenOptions::new().write(true).open(path).unwrap();
+    let modified = file.metadata().unwrap().modified().unwrap();
+    file.set_modified(modified + Duration::from_secs(1))
+        .unwrap();
 }
 
 /// A vault whose handle keeps a parsed prefix, with more frames appended
