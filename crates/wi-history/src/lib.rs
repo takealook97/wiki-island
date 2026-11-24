@@ -30,6 +30,8 @@ mod vault;
 mod barrier_tests;
 #[cfg(test)]
 mod manifest_cache_damage_tests;
+#[cfg(test)]
+mod manifest_cache_peek_tests;
 #[cfg(all(test, feature = "fault-injection"))]
 mod manifest_cache_race_tests;
 #[cfg(test)]

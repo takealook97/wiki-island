@@ -9,8 +9,10 @@
 //! difference, a shorter file or a read error, the whole file is parsed. A
 //! state is cached only when every byte read folded cleanly, so a damaged
 //! manifest is never cached. Where the platform gives no file state, every
-//! load compares. Lock-free reads never fill or fold the cache, and a frame
-//! this process appends enters it only after its barrier, under the
+//! load compares. Lock-free reads never fill or fold the cache: on a state
+//! mismatch they compare the cached prefix the same way and fold only the
+//! bytes after it into a copy, or parse the whole file. A frame this
+//! process appends enters the cache only after its barrier, under the
 //! publisher lock. Writers that replace the file also invalidate.
 
 use std::fs::{File, Metadata};
@@ -196,8 +198,11 @@ impl ManifestCache {
         bytes.starts_with(&cached.prefix)
     }
 
-    /// Lock-free read: the cached snapshot when the file is proved
-    /// unchanged, otherwise a full parse that leaves the cache as it was.
+    /// Lock-free read that leaves the cache as it was: the cached snapshot
+    /// when the file is proved unchanged; otherwise the file is read and,
+    /// when it starts with the cached prefix, only the bytes after it are
+    /// folded into a copy of the cached fold, else the whole file is parsed.
+    /// The mutex is never held while the file is read or the tail folded.
     pub(crate) fn peek(&self, path: &Path) -> Result<Option<ManifestSnapshot>> {
         let Some(mut file) = open(path)? else {
             return Ok(None);
@@ -212,7 +217,19 @@ impl ManifestCache {
         if bytes.is_empty() {
             return Ok(None);
         }
-        Ok(Some(parse_fold(&bytes).1))
+        let Some((mut fold, start)) = self.copy_if_extended(&bytes) else {
+            return Ok(Some(parse_fold(&bytes).1));
+        };
+        let (end, corrupt) = fold.fold_frames(&bytes[start..], start);
+        Ok(Some(fold.snapshot(end as u64, corrupt)))
+    }
+
+    /// A copy of the cached fold and the length of the prefix it covers,
+    /// when `bytes` start with that prefix.
+    fn copy_if_extended(&self, bytes: &[u8]) -> Option<(Fold, usize)> {
+        let state = self.lock();
+        let cached = state.as_ref()?;
+        Self::extends(cached, bytes).then(|| (cached.fold.clone(), cached.prefix.len()))
     }
 
     /// Fold `frame`, which this process appended at offset `at` and whose
