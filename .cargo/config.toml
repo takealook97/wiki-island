@@ -1,0 +1,2 @@
+[env]
+WI_CACHE_DIR = { value = "target/test-cache", relative = true }

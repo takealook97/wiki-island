@@ -17,9 +17,7 @@ use crate::error::{Result, StoreError};
 use crate::paths::{CONFLICT_MARK, Target};
 use crate::work::{self, WorkRequest};
 
-/// Environment variable naming a cache directory that replaces the
-/// platform cache for the index (`<dir>/<vault_id>/index.sqlite3`).
-pub const CACHE_DIR_ENV: &str = "WI_CACHE_DIR";
+pub use wi_index::CACHE_DIR_ENV;
 /// Config key naming the device that runs lifecycle maintenance in folder mode.
 pub const PRIMARY_DEVICE_KEY: &str = "primary_device";
 

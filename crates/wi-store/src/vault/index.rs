@@ -15,18 +15,14 @@ const INDEX_PENDING_CLAIM: &str = "index-pending.claim-";
 /// checked again (an unmeasured policy value).
 const REBUILD_CHUNK: usize = 128;
 
-use super::{CACHE_DIR_ENV, IndexState, Vault};
+use super::{IndexState, Vault};
 
 impl Vault {
     pub(crate) fn index_path(&self) -> Option<PathBuf> {
         if let Some(path) = &self.options.index_path {
             return Some(path.clone());
         }
-        std::env::var_os(CACHE_DIR_ENV).map(|dir| {
-            PathBuf::from(dir)
-                .join(&self.vault_id)
-                .join("index.sqlite3")
-        })
+        Index::cache_path(&self.vault_id).ok()
     }
 
     /// Run `f` with the device index, opening it on first use. A

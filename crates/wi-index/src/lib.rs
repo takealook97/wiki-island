@@ -241,14 +241,29 @@ fn retry_initialization(mut operation: impl FnMut() -> Result<()>) -> Result<()>
     unreachable!("the final attempt returns its result")
 }
 
+/// Environment variable naming a cache directory that replaces the
+/// platform cache for the index (`<dir>/<vault_id>/index.sqlite3`).
+pub const CACHE_DIR_ENV: &str = "WI_CACHE_DIR";
+
+/// Resolve the index path from the value of [`CACHE_DIR_ENV`]; an unset or
+/// empty value selects the platform cache directory.
+fn cache_path_in(dir: Option<std::ffi::OsString>, vault_id: &str) -> Result<PathBuf> {
+    let base = match dir.filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => dirs::cache_dir()
+            .ok_or(Error::NoCacheDir)?
+            .join("wiki-island"),
+    };
+    Ok(base.join(vault_id).join("index.sqlite3"))
+}
+
 impl Index {
+    /// The device index path: `$WI_CACHE_DIR/<vault_id>/index.sqlite3` when
+    /// the variable is set and non-empty, else the platform cache directory
+    /// plus `wiki-island/<vault_id>/index.sqlite3`.
     pub fn cache_path(vault_id: &str) -> Result<PathBuf> {
         validate_id(vault_id)?;
-        Ok(dirs::cache_dir()
-            .ok_or(Error::NoCacheDir)?
-            .join("wiki-island")
-            .join(vault_id)
-            .join("index.sqlite3"))
+        cache_path_in(std::env::var_os(CACHE_DIR_ENV), vault_id)
     }
     pub fn open(vault_root: impl AsRef<Path>, vault_id: &str) -> Result<Self> {
         Self::open_at(vault_root, vault_id, Self::cache_path(vault_id)?)
@@ -1167,5 +1182,25 @@ mod snippet_tests {
     fn unmatched_queries_keep_the_fallback() {
         let text = "plain content";
         assert_eq!(snippet(text, "missing"), text);
+    }
+}
+
+#[cfg(test)]
+mod cache_path_tests {
+    use super::cache_path_in;
+    use std::{ffi::OsString, path::PathBuf};
+
+    #[test]
+    fn a_set_directory_replaces_the_platform_cache() {
+        let path = cache_path_in(Some(OsString::from("/tmp/wi-cache")), "v1").unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/wi-cache/v1/index.sqlite3"));
+    }
+
+    #[test]
+    fn an_unset_or_empty_directory_uses_the_platform_cache() {
+        for dir in [None, Some(OsString::new())] {
+            let path = cache_path_in(dir, "v1").unwrap();
+            assert!(path.ends_with("wiki-island/v1/index.sqlite3"), "{path:?}");
+        }
     }
 }
