@@ -131,7 +131,8 @@ fn settled(before: Option<FileState>, file: &File, bytes: &[u8]) -> Option<FileS
 impl ManifestCache {
     fn lock(&self) -> MutexGuard<'_, Option<Cached>> {
         // A panic while the lock was held may have left a half-updated
-        // state: drop it and parse again.
+        // state: any caller, a lock-free read included, drops it and the
+        // next load parses again.
         self.0.lock().unwrap_or_else(|poisoned| {
             let mut state = poisoned.into_inner();
             *state = None;
@@ -203,6 +204,8 @@ impl ManifestCache {
     /// when it starts with the cached prefix, only the bytes after it are
     /// folded into a copy of the cached fold, else the whole file is parsed.
     /// The mutex is never held while the file is read or the tail folded.
+    /// One exception to leaving the cache as it was: if a panic poisoned
+    /// the mutex, this read, like any other, drops the cached state.
     pub(crate) fn peek(&self, path: &Path) -> Result<Option<ManifestSnapshot>> {
         let Some(mut file) = open(path)? else {
             return Ok(None);

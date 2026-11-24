@@ -90,16 +90,23 @@ fn single_publishes_do_not_reparse_history_manifest() {
     assert_bounded(false);
 }
 
-/// Prefix compares grow with the number of outside changes and are not
-/// asserted here; full parses must not.
+/// Prefix compares grow with the number of outside changes; full parses
+/// must not. The lower bound on prefix compares proves the outside changes
+/// really caused file-state misses.
 #[test]
 fn outside_metadata_changes_do_not_reparse_history_manifest() {
     let (small, small_compares) = reads(50, true, true);
     let (large, large_compares) = reads(500, true, true);
+    let counts = format!(
+        "full parses 50 writes {small}, 500 writes {large}; prefix compares \
+         50 writes {small_compares}, 500 writes {large_compares}"
+    );
     assert!(
         large <= small + 2,
-        "full parses grow with outside metadata changes: full parses 50 writes {small}, \
-         500 writes {large}; prefix compares 50 writes {small_compares}, \
-         500 writes {large_compares}"
+        "full parses grow with outside metadata changes ({counts})"
+    );
+    assert!(
+        large_compares >= 400,
+        "outside metadata changes caused no file-state misses ({counts})"
     );
 }

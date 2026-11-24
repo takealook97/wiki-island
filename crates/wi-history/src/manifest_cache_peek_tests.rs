@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::Vault;
 use crate::fault::{manifest_full_parses, manifest_prefix_compares};
-use crate::manifest::{self, Manifest, ManifestSnapshot};
+use crate::manifest::{self, FRAME_HEADER, Manifest, ManifestSnapshot};
 use crate::manifest_cache_tests::{assert_same, new_vault, save, strict};
 
 /// Set the permissions the file already has: no byte changes, but the
@@ -81,12 +81,18 @@ fn an_unlocked_read_reports_a_torn_tail_as_a_full_parse_does() {
     let (_dir, vault) = kept_prefix_then_growth();
     let path = Manifest::path(&vault);
     let bytes = std::fs::read(&path).unwrap();
-    // Half of a copy of the last frame header and payload: a torn append.
-    let torn = &bytes[bytes.len() - 40..bytes.len() - 10];
+    let full = manifest::parse(&bytes);
+    let (_, range) = full.frames.last().unwrap().clone();
+    // A copy of the last frame cut inside its payload, the header complete:
+    // a torn append.
+    let cut = range.start + FRAME_HEADER + (range.len() - FRAME_HEADER) / 2;
+    assert!(cut > range.start + FRAME_HEADER, "cut inside the payload");
+    let torn = &bytes[range.start..cut];
     let mut file = OpenOptions::new().append(true).open(&path).unwrap();
     file.write_all(torn).unwrap();
     let read = assert_peek_folds_tail(&vault);
-    assert!(read.corrupt.is_some(), "torn tail reported");
+    let (_, reason) = read.corrupt.as_ref().expect("torn tail reported");
+    assert_eq!(reason, "truncated frame payload");
 }
 
 #[test]
